@@ -4,23 +4,23 @@ Evaluate Orbit Wars agents head-to-head.
 
 Examples
 --------
-# Evaluate a trained model vs baseline and random
+# Evaluate a trained model vs baseline and random (auto-included)
 python scripts/evaluate.py --model outputs/checkpoints/ppo_default_20260501/best_model.zip
 
-# Compare two models
+# Compare two models head-to-head
 python scripts/evaluate.py \\
     --model outputs/checkpoints/run_a/best_model.zip \\
     --vs     outputs/checkpoints/run_b/best_model.zip \\
     --games 50
 
-# Evaluate the deterministic baseline
+# Evaluate the deterministic baseline vs random
 python scripts/evaluate.py --baseline --games 30
 
-# Run a full head-to-head matrix across named agents
+# Full matrix: two RL models + baseline + random
 python scripts/evaluate.py \\
     --model outputs/checkpoints/run_a/best_model.zip:rl_v1 \\
     --model outputs/checkpoints/run_b/best_model.zip:rl_v2 \\
-    --add-baseline --add-random \\
+    --baseline --random \\
     --games 20
 """
 
@@ -109,6 +109,13 @@ def main():
         from envs.orbit_wars_env import _random_opponent
         agents = {"baseline": baseline_agent, "random": _random_opponent}
         print("No agents specified — running default: baseline vs random\n")
+    elif args.model and not args.random and not args.baseline and not args.vs:
+        # RL model(s) given without explicit opponents — auto-add baseline + random
+        from agents.baseline import agent as baseline_agent
+        from envs.orbit_wars_env import _random_opponent
+        agents["baseline"] = baseline_agent
+        agents["random"] = _random_opponent
+        print("No opponents specified — auto-adding baseline and random\n")
 
     if args.vs:
         # Single opponent mode: evaluate every agent in --model against --vs
