@@ -1,0 +1,26 @@
+[project]
+name = "orbit-wars"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "kaggle-environments>=1.28.0",
+    "stable-baselines3[extra]>=2.3.0",
+    "gymnasium>=0.29.0",
+    "torch>=2.2.0",
+    "numpy>=1.26.0",
+    "pyyaml>=6.0",
+    "grpcio-tools>=1.50.0",  # kaggle-environments pins 1.30.0 which breaks on Python 3.12
+]
+
+[project.optional-dependencies]
+dev = [
+    "tensorboard",
+    "ipykernel",
+    "jupyter",
+    "kaggle>=1.6",
+]
+
+[tool.uv]
+# For CUDA builds, replace with the appropriate index, e.g.:
+# torch-index = "https://download.pytorch.org/whl/cu121"
+# and run: uv sync --extra-index-url https://download.pytorch.org/whl/cu121

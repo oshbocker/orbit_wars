@@ -76,9 +76,19 @@ def agent(obs, config=None) -> list:
         raw_planets = obs.planets
         raw_fleets = obs.fleets
 
-    # Build simple Planet namedtuple-like objects from raw lists
-    planets = [_Planet(*p) for p in raw_planets]
-    fleets = [_Fleet(*f) for f in raw_fleets]
+    # Build simple Planet/Fleet objects from raw data (lists or dicts)
+    def _parse_planet(p):
+        if isinstance(p, (list, tuple)):
+            return _Planet(*p)
+        return _Planet(p["id"], p["owner"], p["x"], p["y"], p["radius"], p["ships"], p["production"])
+
+    def _parse_fleet(f):
+        if isinstance(f, (list, tuple)):
+            return _Fleet(*f)
+        return _Fleet(f["id"], f["owner"], f["x"], f["y"], f["angle"], f["from_planet_id"], f["ships"])
+
+    planets = [_parse_planet(p) for p in raw_planets]
+    fleets = [_parse_fleet(f) for f in raw_fleets]
 
     my_planets = [p for p in planets if p.owner == player]
     other_planets = [p for p in planets if p.owner != player]

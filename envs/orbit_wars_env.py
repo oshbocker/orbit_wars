@@ -181,7 +181,7 @@ class OrbitWarsEnv(gym.Env):
     def _decode_action(self, obs_raw, own_slot: int, tgt_slot: int, frac_bin: int) -> list:
         """Map (own_slot, tgt_slot, frac_bin) → [[planet_id, angle, ships]] or []."""
         player = _player(obs_raw)
-        planets = [_P(*p) for p in _raw_planets(obs_raw)]
+        planets = [_make_planet(p) for p in _raw_planets(obs_raw)]
         my_planets = sorted([p for p in planets if p.owner == player], key=lambda p: p.id)
 
         if own_slot >= len(my_planets) or tgt_slot >= len(planets):
@@ -214,7 +214,7 @@ class OrbitWarsEnv(gym.Env):
 
         base = OBS_GLOBAL
         for i, p_raw in enumerate(raw_planets[:MAX_PLANETS]):
-            p = _P(*p_raw)
+            p = _make_planet(p_raw)
             b = base + i * OBS_PER_PLANET
             vec[b + 0] = 1.0 if p.owner == player else 0.0
             vec[b + 1] = 1.0 if (p.owner >= 0 and p.owner != player) else 0.0
@@ -226,7 +226,7 @@ class OrbitWarsEnv(gym.Env):
 
         base = OBS_GLOBAL + MAX_PLANETS * OBS_PER_PLANET
         for i, f_raw in enumerate(raw_fleets[:MAX_FLEETS]):
-            f = _F(*f_raw)
+            f = _make_fleet(f_raw)
             b = base + i * OBS_PER_FLEET
             vec[b + 0] = 1.0 if f.owner == player else 0.0
             vec[b + 1] = 1.0 if f.owner != player else 0.0
@@ -243,8 +243,8 @@ class OrbitWarsEnv(gym.Env):
         return reward
 
     def _ship_prod_totals(self, obs_raw, player: int) -> tuple[float, float]:
-        planets = [_P(*p) for p in _raw_planets(obs_raw)]
-        fleets = [_F(*f) for f in _raw_fleets(obs_raw)]
+        planets = [_make_planet(p) for p in _raw_planets(obs_raw)]
+        fleets = [_make_fleet(f) for f in _raw_fleets(obs_raw)]
         planet_ships = sum(p.ships for p in planets if p.owner == player)
         fleet_ships = sum(f.ships for f in fleets if f.owner == player)
         prod = sum(p.production for p in planets if p.owner == player)
@@ -285,3 +285,17 @@ class _F:
     def __init__(self, id, owner, x, y, angle, from_planet_id, ships):
         self.id = id; self.owner = owner; self.x = x; self.y = y
         self.angle = angle; self.from_planet_id = from_planet_id; self.ships = ships
+
+
+def _make_planet(p):
+    """Parse a planet from list/tuple or dict."""
+    if isinstance(p, (list, tuple)):
+        return _make_planet(p)
+    return _P(p["id"], p["owner"], p["x"], p["y"], p["radius"], p["ships"], p["production"])
+
+
+def _make_fleet(f):
+    """Parse a fleet from list/tuple or dict."""
+    if isinstance(f, (list, tuple)):
+        return _make_fleet(f)
+    return _F(f["id"], f["owner"], f["x"], f["y"], f["angle"], f["from_planet_id"], f["ships"])

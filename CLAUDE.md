@@ -156,11 +156,13 @@ def agent(obs, config=None) -> list:
 
 **Observation fields** (`obs.field` or `obs["field"]` — both work):
 
+**IMPORTANT**: `planets` and `fleets` entries may be either **lists** (e.g., `[id, owner, x, y, ...]`) or **dicts** (e.g., `{"id": 0, "owner": 1, "x": 30, ...}`) depending on the Kaggle environment version. Always handle both formats when parsing them.
+
 | Field | Description |
 |-------|-------------|
 | `player` | Your player ID (0–3) |
-| `planets` | `[id, owner, x, y, radius, ships, production]` — owner = −1 neutral |
-| `fleets` | `[id, owner, x, y, angle, from_planet_id, ships]` |
+| `planets` | `[id, owner, x, y, radius, ships, production]` or dict with same keys — owner = −1 neutral |
+| `fleets` | `[id, owner, x, y, angle, from_planet_id, ships]` or dict with same keys |
 | `angular_velocity` | Rotation speed of inner planets (rad/turn) |
 | `initial_planets` | Snapshot of starting positions |
 | `comets` / `comet_planet_ids` | Active comet state |

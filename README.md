@@ -4,11 +4,49 @@ Kaggle Orbit Wars competition. Primary goal: learn reinforcement learning and bu
 
 ## Setup
 
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if you don't have it:
+
 ```bash
-pip install -r requirements.txt
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Python 3.10+ recommended. GPU optional (CPU training works fine for development).
+Then create the virtual environment and install dependencies:
+
+```bash
+uv sync
+```
+
+This creates `.venv/` and installs everything from `pyproject.toml`. To also install dev tools (TensorBoard, Jupyter):
+
+```bash
+uv sync --extra dev
+```
+
+Run any script inside the venv with `uv run`:
+
+```bash
+uv run python scripts/evaluate.py
+uv run python scripts/train.py
+uv run tensorboard --logdir outputs/logs
+```
+
+Or activate the venv once for a session:
+
+```bash
+source .venv/bin/activate
+python scripts/evaluate.py
+```
+
+### GPU / CUDA
+
+For CUDA builds of PyTorch, install torch separately before syncing:
+
+```bash
+uv pip install torch --index-url https://download.pytorch.org/whl/cu121
+uv sync
+```
+
+Python 3.10+ required. GPU is optional — CPU works fine for development.
 
 ## Evaluate Agents Locally
 
@@ -85,26 +123,71 @@ python scripts/train.py --resume outputs/checkpoints/<run>/best_model.zip
 
 Checkpoints are saved to `outputs/checkpoints/<run_name>_<timestamp>/`.
 
+### Train on Google Colab (GPU)
+
+Open `notebooks/train_colab.ipynb` in Colab for GPU-accelerated training with persistent Google Drive storage.
+
+1. Upload the notebook to Colab (or open from GitHub)
+2. Edit `REPO_URL` in the Setup cell to point to your repo
+3. Run Setup — it mounts Drive, clones the repo, and installs deps
+4. Edit the Config cell to set your experiment (config file + overrides)
+5. Run Training — checkpoints save to `My Drive/orbit_wars_outputs/`
+
+Results persist across Colab sessions via Google Drive. Resume training by setting `resume_from` to a checkpoint path on Drive.
+
+The notebook also supports hyperparameter sweeps (cell 5) and inline TensorBoard monitoring.
+
 ### Monitor training
 
 ```bash
 tensorboard --logdir outputs/logs
 ```
 
-## Generate a Kaggle Submission
+## Generate and Submit to Kaggle
+
+### One-step: generate + upload
 
 ```bash
-# Baseline (deterministic rule-based)
-python scripts/submit.py --baseline
+# Baseline agent
+python scripts/submit.py --baseline --upload
 
-# Trained RL model with embedded weights
-python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip
+# Trained RL agent
+python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip --upload
 
-# Also verify the submission runs 5 steps
-python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip --verify
+# With a custom submission message
+python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip \
+    --upload --message "PPO v2 self-play 2M steps"
+
+# Verify locally before uploading
+python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip --verify --upload
 ```
 
-Output goes to `outputs/submissions/submission.py` — upload this file directly to Kaggle.
+### Generate file only (upload manually)
+
+```bash
+python scripts/submit.py --baseline
+python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip
+```
+
+Output goes to `outputs/submissions/`. Upload manually with:
+
+```bash
+kaggle competitions submit orbit-wars -f outputs/submissions/submission_rl.py -m "my message"
+```
+
+### Kaggle CLI setup (one-time)
+
+```bash
+uv sync --extra dev   # installs the kaggle package
+```
+
+Then add your API credentials — download `kaggle.json` from [kaggle.com/settings](https://www.kaggle.com/settings) → API → Create New Token:
+
+```bash
+mkdir -p ~/.config/kaggle
+mv ~/Downloads/kaggle.json ~/.config/kaggle/kaggle.json
+chmod 600 ~/.config/kaggle/kaggle.json
+```
 
 ## Repository Structure
 
