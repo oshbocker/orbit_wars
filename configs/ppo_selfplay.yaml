@@ -1,0 +1,36 @@
+# Self-play configuration.  Loads the most recent checkpoint as the opponent
+# so the agent always trains against a copy of itself.
+#
+# Recommended workflow:
+#   1. python scripts/train.py --config configs/ppo_default.yaml  (warm up vs baseline)
+#   2. python scripts/train.py --config configs/ppo_selfplay.yaml --set training.total_timesteps=2000000
+
+env:
+  opponent: self              # will resolve to latest checkpoint in output.checkpoint_dir
+  reward_shaping: true
+  n_envs: 4
+
+training:
+  total_timesteps: 2_000_000
+  learning_rate: 1.0e-4       # lower LR for fine-tuning
+  n_steps: 1024
+  batch_size: 512
+  n_epochs: 5
+  gamma: 0.995
+  gae_lambda: 0.95
+  clip_range: 0.1             # tighter clip for stability in self-play
+  ent_coef: 0.005
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  net_arch: [256, 256]
+  device: auto
+
+eval:
+  freq: 25_000
+  n_episodes: 20
+  opponent: baseline
+
+output:
+  checkpoint_dir: outputs/checkpoints
+  log_dir: outputs/logs
+  run_name: ppo_selfplay
