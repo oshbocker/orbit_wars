@@ -61,6 +61,34 @@ def _ships_needed(target, travel_turns: float) -> int:
     return int(target.ships + production_during_flight) + 1
 
 
+# ── lightweight data classes (avoid importing kaggle_environments at import time) ─
+
+class _Planet:
+    __slots__ = ("id", "owner", "x", "y", "radius", "ships", "production")
+
+    def __init__(self, id, owner, x, y, radius, ships, production):
+        self.id = id
+        self.owner = owner
+        self.x = x
+        self.y = y
+        self.radius = radius
+        self.ships = ships
+        self.production = production
+
+
+class _Fleet:
+    __slots__ = ("id", "owner", "x", "y", "angle", "from_planet_id", "ships")
+
+    def __init__(self, id, owner, x, y, angle, from_planet_id, ships):
+        self.id = id
+        self.owner = owner
+        self.x = x
+        self.y = y
+        self.angle = angle
+        self.from_planet_id = from_planet_id
+        self.ships = ships
+
+
 def agent(obs, config=None) -> list:
     """
     Orbit Wars agent function.  Accepts both dict and namespace observations.
@@ -78,14 +106,18 @@ def agent(obs, config=None) -> list:
 
     # Build simple Planet/Fleet objects from raw data (lists or dicts)
     def _parse_planet(p):
-        if isinstance(p, (list, tuple)):
-            return _Planet(*p)
-        return _Planet(p["id"], p["owner"], p["x"], p["y"], p["radius"], p["ships"], p["production"])
+        if hasattr(p, "production"):
+            return _Planet(p.id, p.owner, p.x, p.y, p.radius, p.ships, p.production)
+        if isinstance(p, dict):
+            return _Planet(p["id"], p["owner"], p["x"], p["y"], p["radius"], p["ships"], p["production"])
+        return _Planet(*p)
 
     def _parse_fleet(f):
-        if isinstance(f, (list, tuple)):
-            return _Fleet(*f)
-        return _Fleet(f["id"], f["owner"], f["x"], f["y"], f["angle"], f["from_planet_id"], f["ships"])
+        if hasattr(f, "from_planet_id"):
+            return _Fleet(f.id, f.owner, f.x, f.y, f.angle, f.from_planet_id, f.ships)
+        if isinstance(f, dict):
+            return _Fleet(f["id"], f["owner"], f["x"], f["y"], f["angle"], f["from_planet_id"], f["ships"])
+        return _Fleet(*f)
 
     planets = [_parse_planet(p) for p in raw_planets]
     fleets = [_parse_fleet(f) for f in raw_fleets]
@@ -151,34 +183,6 @@ def agent(obs, config=None) -> list:
         claimed.add(best.id)
 
     return moves
-
-
-# ── lightweight data classes (avoid importing kaggle_environments at import time) ─
-
-class _Planet:
-    __slots__ = ("id", "owner", "x", "y", "radius", "ships", "production")
-
-    def __init__(self, id, owner, x, y, radius, ships, production):
-        self.id = id
-        self.owner = owner
-        self.x = x
-        self.y = y
-        self.radius = radius
-        self.ships = ships
-        self.production = production
-
-
-class _Fleet:
-    __slots__ = ("id", "owner", "x", "y", "angle", "from_planet_id", "ships")
-
-    def __init__(self, id, owner, x, y, angle, from_planet_id, ships):
-        self.id = id
-        self.owner = owner
-        self.x = x
-        self.y = y
-        self.angle = angle
-        self.from_planet_id = from_planet_id
-        self.ships = ships
 
 
 if __name__ == "__main__":

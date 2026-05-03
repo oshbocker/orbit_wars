@@ -154,9 +154,11 @@ def agent(obs, config=None) -> list:
     # returns [[from_planet_id, angle_radians, num_ships], ...]
 ```
 
+**CRITICAL**: Kaggle resolves the agent by finding the **last callable** defined at module level in the submission file. The `agent()` function must be the last `def`/`class` in the file (excluding `if __name__ == "__main__"` blocks). Any helper classes (e.g., `_Planet`, `_Fleet`) must be defined **before** `agent()`.
+
 **Observation fields** (`obs.field` or `obs["field"]` — both work):
 
-**IMPORTANT**: `planets` and `fleets` entries may be either **lists** (e.g., `[id, owner, x, y, ...]`) or **dicts** (e.g., `{"id": 0, "owner": 1, "x": 30, ...}`) depending on the Kaggle environment version. Always handle both formats when parsing them.
+**IMPORTANT**: `planets` and `fleets` entries may be **Struct objects** (attribute access like `p.owner`), **dicts**, or **lists** depending on the Kaggle environment version. Parsing must try attribute access first (`hasattr`), then dict access, then list unpacking. Never use `isinstance(p, (list, tuple))` as the first check — Kaggle's `Struct` objects are iterable (yielding keys, not values) and would cause incorrect unpacking.
 
 | Field | Description |
 |-------|-------------|
@@ -196,7 +198,7 @@ def agent(obs, config=None) -> list:
 
 ## RL Development Roadmap
 
-1. **Baseline** (done): deterministic rule-based agent in `agents/baseline.py`
+1. **Baseline** (done): deterministic rule-based agent in `agents/baseline.py` — **Kaggle score: 600**
 2. **PPO vs baseline**: `python scripts/train.py --config configs/ppo_default.yaml`
 3. **Self-play**: `python scripts/train.py --config configs/ppo_selfplay.yaml`
 4. **Improve gradually**:

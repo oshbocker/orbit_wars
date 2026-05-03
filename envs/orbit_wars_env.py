@@ -288,14 +288,18 @@ class _F:
 
 
 def _make_planet(p):
-    """Parse a planet from list/tuple or dict."""
-    if isinstance(p, (list, tuple)):
-        return _make_planet(p)
-    return _P(p["id"], p["owner"], p["x"], p["y"], p["radius"], p["ships"], p["production"])
+    """Parse a planet from Struct (attribute), dict, or list/tuple."""
+    if hasattr(p, "production"):
+        return _P(p.id, p.owner, p.x, p.y, p.radius, p.ships, p.production)
+    if isinstance(p, dict):
+        return _P(p["id"], p["owner"], p["x"], p["y"], p["radius"], p["ships"], p["production"])
+    return _P(*p)
 
 
 def _make_fleet(f):
-    """Parse a fleet from list/tuple or dict."""
-    if isinstance(f, (list, tuple)):
-        return _make_fleet(f)
-    return _F(f["id"], f["owner"], f["x"], f["y"], f["angle"], f["from_planet_id"], f["ships"])
+    """Parse a fleet from Struct (attribute), dict, or list/tuple."""
+    if hasattr(f, "from_planet_id"):
+        return _F(f.id, f.owner, f.x, f.y, f.angle, f.from_planet_id, f.ships)
+    if isinstance(f, dict):
+        return _F(f["id"], f["owner"], f["x"], f["y"], f["angle"], f["from_planet_id"], f["ships"])
+    return _F(*f)
