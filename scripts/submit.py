@@ -52,6 +52,11 @@ def main():
         action="store_true",
         help="Generate a baseline (rule-based) submission",
     )
+    source.add_argument(
+        "--strategic",
+        action="store_true",
+        help="Generate a strategic (advanced rule-based) submission",
+    )
 
     parser.add_argument(
         "--output", "-o",
@@ -83,6 +88,10 @@ def main():
         out = args.output or "outputs/submissions/submission_baseline.py"
         path = export_submission(None, output_path=out, mode="baseline")
         default_message = "Baseline rule-based agent"
+    elif args.strategic:
+        out = args.output or "outputs/submissions/submission_strategic.py"
+        path = export_submission(None, output_path=out, mode="strategic")
+        default_message = "Strategic rule-based agent"
     else:
         out = args.output or "outputs/submissions/submission_rl.py"
         path = export_submission(args.model, output_path=out, mode="rl")

@@ -66,13 +66,15 @@ def export_submission(
 
     if mode == "baseline":
         code = _baseline_submission_code()
+    elif mode == "strategic":
+        code = _strategic_submission_code()
     elif mode == "rl":
         if model_path is None:
             raise ValueError("model_path required for mode='rl'")
         weights_b64 = _encode_weights(Path(model_path))
         code = _rl_submission_code(weights_b64)
     else:
-        raise ValueError(f"mode must be 'baseline' or 'rl', got {mode!r}")
+        raise ValueError(f"mode must be 'baseline', 'strategic', or 'rl', got {mode!r}")
 
     output_path.write_text(code)
     size_kb = output_path.stat().st_size // 1024
@@ -92,6 +94,13 @@ def _baseline_submission_code() -> str:
     here = Path(__file__).parent
     source = (here / "baseline.py").read_text()
     # The file already defines agent(); just return it as-is.
+    return source
+
+
+def _strategic_submission_code() -> str:
+    """Read agents/strategic.py and wrap it as a submission."""
+    here = Path(__file__).parent
+    source = (here / "strategic.py").read_text()
     return source
 
 
