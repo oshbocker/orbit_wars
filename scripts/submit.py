@@ -57,6 +57,11 @@ def main():
         action="store_true",
         help="Generate a strategic (advanced rule-based) submission",
     )
+    source.add_argument(
+        "--vanguard",
+        action="store_true",
+        help="Generate a vanguard (improved strategic) submission",
+    )
 
     parser.add_argument(
         "--output", "-o",
@@ -92,6 +97,10 @@ def main():
         out = args.output or "outputs/submissions/submission_strategic.py"
         path = export_submission(None, output_path=out, mode="strategic")
         default_message = "Strategic rule-based agent"
+    elif args.vanguard:
+        out = args.output or "outputs/submissions/submission_vanguard.py"
+        path = export_submission(None, output_path=out, mode="vanguard")
+        default_message = "Vanguard rule-based agent"
     else:
         out = args.output or "outputs/submissions/submission_rl.py"
         path = export_submission(args.model, output_path=out, mode="rl")

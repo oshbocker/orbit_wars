@@ -29,3 +29,4 @@ wandb/
 
 # Large notebook outputs (the tutorial notebook has 51 MB of embedded renders)
 # To strip outputs: jupyter nbconvert --clear-output --inplace notebooks/*.ipynb
+game_replay.html
