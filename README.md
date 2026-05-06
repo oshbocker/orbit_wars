@@ -52,7 +52,7 @@ Python 3.10+ required. GPU is optional — CPU works fine for development.
 
 The `scripts/evaluate.py` script runs head-to-head matches using the Kaggle environment locally. No GPU or Kaggle account needed.
 
-### Baseline vs random (quick sanity check)
+### Aggressive vs random (quick sanity check)
 
 ```bash
 python scripts/evaluate.py
@@ -60,7 +60,7 @@ python scripts/evaluate.py
 
 ### Evaluate a trained RL model
 
-When only `--model` is given, baseline and random are added automatically:
+When only `--model` is given, aggressive and random are added automatically:
 
 ```bash
 python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip
@@ -75,13 +75,13 @@ python scripts/evaluate.py \
     --games 30
 ```
 
-### Full matrix (RL models + baseline + random)
+### Full matrix (RL models + aggressive + random)
 
 ```bash
 python scripts/evaluate.py \
     --model outputs/checkpoints/run_a/best_model.zip:rl_v1 \
     --model outputs/checkpoints/run_b/best_model.zip:rl_v2 \
-    --baseline --random \
+    --aggressive --random \
     --games 20
 ```
 
@@ -100,7 +100,7 @@ python scripts/evaluate.py \
 |------|-------------|
 | `--model PATH[:LABEL]` | Add a trained RL model; repeat for multiple |
 | `--vs PATH[:LABEL]` | Evaluate `--model` only against this single opponent |
-| `--baseline` | Include the deterministic rule-based agent |
+| `--aggressive` | Include the aggressive (production-rush) agent |
 | `--random` | Include the random agent |
 | `--games N` | Games per matchup (default: 20) |
 | `--verbose` | Print per-game results |
@@ -108,7 +108,7 @@ python scripts/evaluate.py \
 ## Train an Agent
 
 ```bash
-# Default: PPO vs baseline, 500k steps
+# Default: PPO vs aggressive, 500k steps
 python scripts/train.py
 
 # Different config
@@ -148,8 +148,8 @@ tensorboard --logdir outputs/logs
 ### One-step: generate + upload
 
 ```bash
-# Baseline agent
-python scripts/submit.py --baseline --upload
+# Aggressive agent
+python scripts/submit.py --aggressive --upload
 
 # Trained RL agent
 python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip --upload
@@ -165,7 +165,7 @@ python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip --veri
 ### Generate file only (upload manually)
 
 ```bash
-python scripts/submit.py --baseline
+python scripts/submit.py --aggressive
 python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip
 ```
 
@@ -192,7 +192,7 @@ chmod 600 ~/.config/kaggle/kaggle.json
 ## Repository Structure
 
 ```
-agents/          # Agent implementations (baseline.py, rl_agent.py)
+agents/          # Agent implementations (aggressive.py, rl_agent.py)
 configs/         # YAML experiment configs
 envs/            # Gymnasium wrapper (observation + action encoding)
 evaluation/      # Core evaluation utilities
@@ -221,9 +221,9 @@ Use it directly in a script:
 
 ```python
 from evaluation.evaluate import run_games, benchmark
-from agents.baseline import agent as baseline
+from agents.aggressive import agent as aggressive
 
 benchmark(my_agent, agent_name="my_agent", n_games=20)
 # or
-results = run_games(my_agent, baseline, n_games=50, verbose=True)
+results = run_games(my_agent, aggressive, n_games=50, verbose=True)
 ```

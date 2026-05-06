@@ -4,7 +4,7 @@ Train an RL agent for Orbit Wars.
 
 Examples
 --------
-# Default run (500k steps, PPO vs baseline)
+# Default run (500k steps, PPO vs aggressive)
 python scripts/train.py
 
 # Override config file

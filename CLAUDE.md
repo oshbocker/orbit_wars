@@ -5,17 +5,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Goal
 
 Kaggle Orbit Wars competition.
-**Primary purpose: learn reinforcement learning and win competition.** The deterministic rule-based agent is a benchmark only; the main effort is one or more agents using modern RL (PPO, self-play, MARL). The agents should be capable of training in Kaggle (GPU), Google Colab (GPU), or locally (no GPU). The evaluation should be capable of running in Kaggle or locally (no GPU).
+**Primary purpose: learn reinforcement learning and win competition.** The aggressive rule-based agent is the current benchmark; the main effort is one or more agents using modern RL (PPO, self-play, MARL). The agents should be capable of training in Kaggle (GPU), Google Colab (GPU), or locally (no GPU). The evaluation should be capable of running in Kaggle or locally (no GPU).
 
 ## Repository Structure
 
 ```
 orbit_wars/
 ├── agents/                  # Agent implementations
-│   ├── baseline.py          # Deterministic rule-based agent (benchmark)
+│   ├── aggressive.py        # Production-rush rule-based agent (benchmark)
 │   └── rl_agent.py          # SB3 model wrapper + submission export
 ├── configs/                 # YAML experiment configs
-│   ├── ppo_default.yaml     # Default PPO vs baseline (500k steps)
+│   ├── ppo_default.yaml     # Default PPO vs aggressive (500k steps)
 │   └── ppo_selfplay.yaml    # Self-play fine-tuning (2M steps)
 ├── envs/                    # Gymnasium wrappers
 │   └── orbit_wars_env.py    # Single-agent env, obs/action encoding
@@ -45,7 +45,7 @@ orbit_wars/
 # Install dependencies
 pip install -r requirements.txt
 
-# Train (default config: PPO vs baseline, 500k steps)
+# Train (default config: PPO vs aggressive, 500k steps)
 python scripts/train.py
 
 # Train with a different config
@@ -57,20 +57,20 @@ python scripts/train.py --set training.total_timesteps=1000000 env.n_envs=8 trai
 # Resume from a checkpoint
 python scripts/train.py --resume outputs/checkpoints/ppo_default_20260501_120000/best_model.zip
 
-# Evaluate: trained model vs baseline and random
+# Evaluate: trained model vs aggressive and random
 python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip
 
 # Evaluate with a custom number of games
 python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip --games 50
 
-# Full matrix: two models + baseline + random
+# Full matrix: two models + aggressive + random
 python scripts/evaluate.py \
     --model outputs/checkpoints/run_a/best_model.zip:rl_v1 \
     --model outputs/checkpoints/run_b/best_model.zip:rl_v2 \
-    --baseline --random --games 30
+    --aggressive --random --games 30
 
-# Generate a submission (baseline)
-python scripts/submit.py --baseline
+# Generate a submission (aggressive)
+python scripts/submit.py --aggressive
 
 # Generate a submission (RL model) and verify it runs
 python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip --verify
@@ -78,9 +78,13 @@ python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip --veri
 
 ## Environment Setup
 
+**Locally, always use `uv` to run Python scripts** (e.g. `uv run python scripts/train.py`). Do not use bare `python` or `python3`.
+
 ```bash
-pip install -r requirements.txt
-# or on Colab/Kaggle:
+# Local (uv manages the virtualenv):
+uv run python scripts/train.py
+
+# On Colab/Kaggle (no uv):
 pip install --upgrade "kaggle-environments>=1.28.0" "stable-baselines3[extra]>=2.3" gymnasium pyyaml
 ```
 
@@ -198,8 +202,8 @@ def agent(obs, config=None) -> list:
 
 ## RL Development Roadmap
 
-1. **Baseline** (done): deterministic rule-based agent in `agents/baseline.py` — **Kaggle score: 600**
-2. **PPO vs baseline**: `python scripts/train.py --config configs/ppo_default.yaml`
+1. **Aggressive** (done): production-rush rule-based agent in `agents/aggressive.py`
+2. **PPO vs aggressive**: `python scripts/train.py --config configs/ppo_default.yaml`
 3. **Self-play**: `python scripts/train.py --config configs/ppo_selfplay.yaml`
 4. **Improve gradually**:
 

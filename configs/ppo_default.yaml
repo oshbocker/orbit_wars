@@ -2,7 +2,7 @@
 # Override any value via CLI: --set training.total_timesteps=1000000
 
 env:
-  opponent: baseline          # random | baseline | self  (self = load latest checkpoint)
+  opponent: aggressive        # random | aggressive | self  (self = load latest checkpoint)
   reward_shaping: true
   n_envs: 4                   # parallel training envs
 
@@ -26,7 +26,7 @@ training:
 eval:
   freq: 10_000                # eval every N timesteps
   n_episodes: 20
-  opponent: baseline          # always eval vs baseline regardless of training opponent
+  opponent: aggressive        # always eval vs aggressive regardless of training opponent
 
 output:
   checkpoint_dir: outputs/checkpoints

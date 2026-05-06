@@ -4,7 +4,7 @@ Evaluate Orbit Wars agents head-to-head.
 
 Examples
 --------
-# Evaluate a trained model vs baseline and random (auto-included)
+# Evaluate a trained model vs aggressive and random (auto-included)
 python scripts/evaluate.py --model outputs/checkpoints/ppo_default_20260501/best_model.zip
 
 # Compare two models head-to-head
@@ -13,14 +13,14 @@ python scripts/evaluate.py \\
     --vs     outputs/checkpoints/run_b/best_model.zip \\
     --games 50
 
-# Evaluate the deterministic baseline vs random
-python scripts/evaluate.py --baseline --games 30
+# Evaluate the aggressive agent vs random
+python scripts/evaluate.py --aggressive --games 30
 
-# Full matrix: two RL models + baseline + random
+# Full matrix: two RL models + aggressive + random
 python scripts/evaluate.py \\
     --model outputs/checkpoints/run_a/best_model.zip:rl_v1 \\
     --model outputs/checkpoints/run_b/best_model.zip:rl_v2 \\
-    --baseline --random \\
+    --aggressive --random \\
     --games 20
 """
 
@@ -66,14 +66,19 @@ def main():
         help="If set, evaluate --model only against this opponent (not a full matrix)",
     )
     parser.add_argument(
-        "--baseline",
+        "--aggressive",
         action="store_true",
-        help="Include the deterministic baseline agent",
+        help="Include the aggressive (production-rush) agent",
     )
     parser.add_argument(
         "--random",
         action="store_true",
         help="Include the random agent",
+    )
+    parser.add_argument(
+        "--strategic",
+        action="store_true",
+        help="Include the strategic (tree-search) agent",
     )
     parser.add_argument(
         "--games", "-n",
@@ -95,27 +100,31 @@ def main():
         from envs.orbit_wars_env import _random_opponent
         agents["random"] = _random_opponent
 
-    if args.baseline:
-        from agents.baseline import agent as baseline_agent
-        agents["baseline"] = baseline_agent
+    if args.aggressive:
+        from agents.aggressive import agent as aggressive_agent
+        agents["aggressive"] = aggressive_agent
+
+    if args.strategic:
+        from agents.strategic import agent as strategic_agent
+        agents["strategic"] = strategic_agent
 
     for spec in (args.model or []):
         label, ag = _load_agent(spec)
         agents[label] = ag
 
     if not agents:
-        # Default: baseline vs random
-        from agents.baseline import agent as baseline_agent
+        # Default: aggressive vs random
+        from agents.aggressive import agent as aggressive_agent
         from envs.orbit_wars_env import _random_opponent
-        agents = {"baseline": baseline_agent, "random": _random_opponent}
-        print("No agents specified — running default: baseline vs random\n")
-    elif args.model and not args.random and not args.baseline and not args.vs:
-        # RL model(s) given without explicit opponents — auto-add baseline + random
-        from agents.baseline import agent as baseline_agent
+        agents = {"aggressive": aggressive_agent, "random": _random_opponent}
+        print("No agents specified — running default: aggressive vs random\n")
+    elif args.model and not args.random and not args.aggressive and not args.vs:
+        # RL model(s) given without explicit opponents — auto-add aggressive + random
+        from agents.aggressive import agent as aggressive_agent
         from envs.orbit_wars_env import _random_opponent
-        agents["baseline"] = baseline_agent
+        agents["aggressive"] = aggressive_agent
         agents["random"] = _random_opponent
-        print("No opponents specified — auto-adding baseline and random\n")
+        print("No opponents specified — auto-adding aggressive and random\n")
 
     if args.vs:
         # Single opponent mode: evaluate every agent in --model against --vs

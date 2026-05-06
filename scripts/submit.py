@@ -4,14 +4,14 @@ Generate a self-contained Kaggle submission file, and optionally upload it.
 
 Examples
 --------
-# Generate baseline submission (rule-based)
-python scripts/submit.py --baseline
+# Generate aggressive submission (rule-based)
+python scripts/submit.py --aggressive
 
 # Generate RL submission with embedded model weights
 python scripts/submit.py --model outputs/checkpoints/ppo_default_20260501/best_model.zip
 
 # Generate and upload to Kaggle in one step
-python scripts/submit.py --baseline --upload
+python scripts/submit.py --aggressive --upload
 python scripts/submit.py --model outputs/checkpoints/run_a/best_model.zip --upload -m "PPO v2 self-play"
 
 # Generate, verify locally, then upload
@@ -48,26 +48,21 @@ def main():
         help="Path to trained model .zip (RL submission)",
     )
     source.add_argument(
-        "--baseline",
+        "--aggressive",
         action="store_true",
-        help="Generate a baseline (rule-based) submission",
+        help="Generate an aggressive (production-rush) submission",
     )
     source.add_argument(
         "--strategic",
         action="store_true",
-        help="Generate a strategic (advanced rule-based) submission",
-    )
-    source.add_argument(
-        "--vanguard",
-        action="store_true",
-        help="Generate a vanguard (improved strategic) submission",
+        help="Generate a strategic (tree-search) submission",
     )
 
     parser.add_argument(
         "--output", "-o",
         default=None,
         metavar="PATH",
-        help="Output file path (default: outputs/submissions/submission_baseline.py or submission_rl.py)",
+        help="Output file path (default: outputs/submissions/submission_aggressive.py or submission_rl.py)",
     )
     parser.add_argument(
         "--verify",
@@ -89,18 +84,14 @@ def main():
 
     from agents.rl_agent import export_submission
 
-    if args.baseline:
-        out = args.output or "outputs/submissions/submission_baseline.py"
-        path = export_submission(None, output_path=out, mode="baseline")
-        default_message = "Baseline rule-based agent"
+    if args.aggressive:
+        out = args.output or "outputs/submissions/submission_aggressive.py"
+        path = export_submission(None, output_path=out, mode="aggressive")
+        default_message = "Aggressive production-rush agent"
     elif args.strategic:
         out = args.output or "outputs/submissions/submission_strategic.py"
         path = export_submission(None, output_path=out, mode="strategic")
-        default_message = "Strategic rule-based agent"
-    elif args.vanguard:
-        out = args.output or "outputs/submissions/submission_vanguard.py"
-        path = export_submission(None, output_path=out, mode="vanguard")
-        default_message = "Vanguard rule-based agent"
+        default_message = "Strategic tree-search agent"
     else:
         out = args.output or "outputs/submissions/submission_rl.py"
         path = export_submission(args.model, output_path=out, mode="rl")

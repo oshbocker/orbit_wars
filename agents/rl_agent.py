@@ -53,9 +53,9 @@ def export_submission(
 
     Parameters
     ----------
-    model_path : path to .zip weights, or None when mode='baseline'
+    model_path : path to .zip weights, or None when mode='aggressive'
     output_path : where to write the file
-    mode : 'baseline' | 'rl'
+    mode : 'aggressive' | 'rl'
 
     Returns
     -------
@@ -64,19 +64,17 @@ def export_submission(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if mode == "baseline":
-        code = _baseline_submission_code()
+    if mode == "aggressive":
+        code = _aggressive_submission_code()
     elif mode == "strategic":
         code = _strategic_submission_code()
-    elif mode == "vanguard":
-        code = _vanguard_submission_code()
     elif mode == "rl":
         if model_path is None:
             raise ValueError("model_path required for mode='rl'")
         weights_b64 = _encode_weights(Path(model_path))
         code = _rl_submission_code(weights_b64)
     else:
-        raise ValueError(f"mode must be 'baseline', 'strategic', 'vanguard', or 'rl', got {mode!r}")
+        raise ValueError(f"mode must be 'aggressive', 'strategic', or 'rl', got {mode!r}")
 
     output_path.write_text(code)
     size_kb = output_path.stat().st_size // 1024
@@ -91,11 +89,10 @@ def _encode_weights(path: Path) -> str:
         return base64.b64encode(f.read()).decode("ascii")
 
 
-def _baseline_submission_code() -> str:
-    """Read agents/baseline.py and wrap it as a submission."""
+def _aggressive_submission_code() -> str:
+    """Read agents/aggressive.py and wrap it as a submission."""
     here = Path(__file__).parent
-    source = (here / "baseline.py").read_text()
-    # The file already defines agent(); just return it as-is.
+    source = (here / "aggressive.py").read_text()
     return source
 
 
@@ -103,13 +100,6 @@ def _strategic_submission_code() -> str:
     """Read agents/strategic.py and wrap it as a submission."""
     here = Path(__file__).parent
     source = (here / "strategic.py").read_text()
-    return source
-
-
-def _vanguard_submission_code() -> str:
-    """Read agents/vanguard.py and wrap it as a submission."""
-    here = Path(__file__).parent
-    source = (here / "vanguard.py").read_text()
     return source
 
 

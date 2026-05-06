@@ -61,17 +61,17 @@ def resolve_opponent(opponent_str: str, checkpoint_dir: str | Path | None = None
     """
     Convert the string from config['env']['opponent'] to a callable.
 
-    'random'   → built-in random agent
-    'baseline' → deterministic rule-based agent
-    'self'     → latest checkpoint in checkpoint_dir (falls back to baseline)
+    'random'     → built-in random agent
+    'aggressive' → aggressive rule-based agent
+    'self'       → latest checkpoint in checkpoint_dir (falls back to aggressive)
     """
     if opponent_str == "random":
         from envs.orbit_wars_env import _random_opponent
         return _random_opponent
 
-    if opponent_str == "baseline":
-        from agents.baseline import agent as baseline_agent
-        return baseline_agent
+    if opponent_str == "aggressive":
+        from agents.aggressive import agent as aggressive_agent
+        return aggressive_agent
 
     if opponent_str == "self":
         if checkpoint_dir is not None:
@@ -80,12 +80,12 @@ def resolve_opponent(opponent_str: str, checkpoint_dir: str | Path | None = None
                 print(f"Self-play: loading opponent from {latest}")
                 from agents.rl_agent import RLAgent
                 return RLAgent(latest, device="cpu")
-        # Fall back to baseline if no checkpoint yet
-        print("Self-play: no checkpoint found, falling back to baseline opponent.")
-        from agents.baseline import agent as baseline_agent
-        return baseline_agent
+        # Fall back to aggressive if no checkpoint yet
+        print("Self-play: no checkpoint found, falling back to aggressive opponent.")
+        from agents.aggressive import agent as aggressive_agent
+        return aggressive_agent
 
-    raise ValueError(f"Unknown opponent: {opponent_str!r}. Use 'random', 'baseline', or 'self'.")
+    raise ValueError(f"Unknown opponent: {opponent_str!r}. Use 'random', 'aggressive', or 'self'.")
 
 
 def _find_latest_checkpoint(checkpoint_dir: Path):
@@ -183,7 +183,7 @@ def train(config: dict, resume_from: str | Path | None = None) -> Any:
         model = PPO(**model_kwargs)
 
     # ── callbacks ──────────────────────────────────────────────────────────
-    eval_opponent_str = eval_cfg.get("opponent", "baseline")
+    eval_opponent_str = eval_cfg.get("opponent", "aggressive")
     eval_opponent = resolve_opponent(eval_opponent_str)
     eval_env = Monitor(OrbitWarsEnv(opponent=eval_opponent, reward_shaping=False))
 
