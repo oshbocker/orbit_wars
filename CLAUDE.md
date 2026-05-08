@@ -11,31 +11,42 @@ Kaggle Orbit Wars competition.
 
 ```
 orbit_wars/
+├── src/                     # Transformer PPO pipeline (primary RL effort)
+│   ├── __init__.py
+│   ├── config.py            # TrainConfig dataclasses (env, model, ppo, reward)
+│   ├── game_types.py        # PlanetState, FleetState, GameState, parse_observation()
+│   ├── features.py          # Feature encoding, fleet transit, SourceDecision
+│   ├── policy.py            # TransformerPolicy (~493K params default)
+│   ├── ppo.py               # Factored PPO (target + fraction), clipped update
+│   ├── opponents.py         # CompetitiveOpponent, RandomOpponent, SelfPlayOpponent
+│   ├── env.py               # Kaggle env wrapper (2-player, side alternation)
+│   └── train.py             # Training loop with sequential per-planet decisions
 ├── agents/                  # Agent implementations
 │   ├── competitive.py       # Net-difference rule-based agent (benchmark)
 │   ├── hybrid.py            # Mission-based + timeline agent
 │   └── rl_agent.py          # SB3 model wrapper + submission export
 ├── configs/                 # YAML experiment configs
-│   ├── ppo_default.yaml     # Default PPO vs competitive (500k steps)
-│   └── ppo_selfplay.yaml    # Self-play fine-tuning (2M steps)
-├── envs/                    # Gymnasium wrappers
+│   ├── transformer_ppo.yaml # Transformer PPO default config
+│   ├── ppo_default.yaml     # SB3 PPO vs competitive (500k steps, legacy)
+│   └── ppo_selfplay.yaml    # SB3 self-play fine-tuning (legacy)
+├── envs/                    # Gymnasium wrappers (legacy SB3 pipeline)
 │   └── orbit_wars_env.py    # Single-agent env, obs/action encoding
 ├── evaluation/              # Evaluation utilities
 │   └── evaluate.py          # run_games, head_to_head, benchmark
 ├── notebooks/               # Exploratory Jupyter notebooks
 │   ├── explore.ipynb        # Main development notebook (Kaggle/Colab ready)
 │   ├── orbit_wars_rl.ipynb  # Previous iteration (reference)
-│   ├── train_colab.ipynb    # Google Colab training notebook
+│   ├── train_colab.ipynb    # Google Colab training notebook (uses src.train)
 │   └── orbit-wars-reinforcement-learning-tutorial.ipynb  # Kaggle RL tutorial
 ├── outputs/                 # .gitignored — all generated files go here
-│   ├── checkpoints/         # Model .zip files (best_model.zip, ckpt_*.zip)
+│   ├── checkpoints/         # Model .pt files (ckpt_last.pt, ckpt_NNNNNN.pt)
 │   ├── logs/                # TensorBoard event files, eval results
 │   └── submissions/         # Generated submission.py files
-├── scripts/                 # CLI entry points
+├── scripts/                 # CLI entry points (legacy SB3 pipeline)
 │   ├── train.py             # Train an agent
 │   ├── evaluate.py          # Head-to-head evaluation
 │   └── submit.py            # Generate Kaggle submission file
-├── training/                # Core training logic (imported by scripts/train.py)
+├── training/                # Core training logic (legacy SB3, imported by scripts/train.py)
 │   └── train.py             # train(), load_config(), resolve_opponent()
 ├── pyproject.toml
 ├── requirements.txt
@@ -44,39 +55,51 @@ orbit_wars/
 
 ## Common Commands
 
-```bash
-# Install dependencies
-pip install -r requirements.txt
+### Transformer PPO (primary pipeline — `src/`)
 
+```bash
+# Train with default config (PPO vs competitive, 2000 updates)
+uv run python -m src.train --config configs/transformer_ppo.yaml
+
+# Quick smoke test (5 updates, ~1s on CPU)
+uv run python -m src.train --config /path/to/smoke_config.yaml
+
+# Train on Colab/Kaggle (no uv)
+python -m src.train --config configs/transformer_ppo.yaml
+```
+
+### Legacy SB3 Pipeline (scripts/)
+
+```bash
 # Train (default config: PPO vs competitive, 500k steps)
-python scripts/train.py
+uv run python scripts/train.py
 
 # Train with a different config
-python scripts/train.py --config configs/ppo_selfplay.yaml
+uv run python scripts/train.py --config configs/ppo_selfplay.yaml
 
 # Override specific values inline
-python scripts/train.py --set training.total_timesteps=1000000 env.n_envs=8 training.device=cuda
+uv run python scripts/train.py --set training.total_timesteps=1000000 env.n_envs=8 training.device=cuda
 
 # Resume from a checkpoint
-python scripts/train.py --resume outputs/checkpoints/ppo_default_20260501_120000/best_model.zip
+uv run python scripts/train.py --resume outputs/checkpoints/ppo_default_20260501_120000/best_model.zip
 
 # Evaluate: trained model vs competitive and random
-python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip
+uv run python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip
 
 # Evaluate with a custom number of games
-python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip --games 50
+uv run python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip --games 50
 
 # Full matrix: two models + competitive + random
-python scripts/evaluate.py \
+uv run python scripts/evaluate.py \
     --model outputs/checkpoints/run_a/best_model.zip:rl_v1 \
     --model outputs/checkpoints/run_b/best_model.zip:rl_v2 \
     --competitive --random --games 30
 
 # Generate a submission (competitive)
-python scripts/submit.py --competitive
+uv run python scripts/submit.py --competitive
 
 # Generate a submission (RL model) and verify it runs
-python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip --verify
+uv run python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip --verify
 ```
 
 ## Environment Setup
@@ -180,7 +203,57 @@ def agent(obs, config=None) -> list:
 
 **Timing**: `actTimeout=1s` per step; `remainingOverageTime=60s` total banked overage.
 
-## Env Wrapper Design (`envs/orbit_wars_env.py`)
+## Transformer PPO Design (`src/`)
+
+### Architecture
+
+Per-planet sequential decisions: for each turn, iterate over owned planets (most ships first). For each source planet, a transformer processes all valid targets and outputs a factored action (target selection + ship fraction).
+
+**Feature encoding** (`src/features.py`):
+- `SourceDecision` dataclass holds all inputs for one source planet decision
+- Fleet transit computation: for each in-flight fleet, ray-circle intersection determines destination planet; aggregated as `(total_ships, weighted_avg_eta)` per planet for enemy and friendly separately
+- Transit state is updated sequentially as decisions are made (later planets see earlier launches)
+
+| Component | Raw features | After embedding |
+|-----------|-------------|-----------------|
+| Global state | 9 scalars (step, own_ships, enemy_ships×3, own_prod, enemy_prod×3) | embed_dim |
+| Source planet | (x,y) + 7 scalars (radius, prod, ships, enemy_transit, enemy_eta, own_transit, own_eta) | embed_dim |
+| KNN (×3) | (x,y) + 4 scalars (radius, prod, ships, orbiting) each, mean-pooled | embed_dim |
+| Target planet (×T) | (x,y) + 11 scalars (neutral, friendly, enemy, dist, ships, prod, enemy_transit, enemy_eta, own_transit, own_eta, orbiting) | embed_dim |
+
+**Token layout**: `[CLS, NoOp, Target₁, ..., Target_T, PAD...]`
+- CLS: learnable parameter → value head
+- NoOp: learnable parameter → "send nothing" option
+- Targets: `TokenProjection(concat(global_emb, source_knn_emb, target_emb))`
+
+**Policy** (`src/policy.py`, ~493K params default):
+- Shared PositionEncoder MLP(2 → pos_hidden → embed_dim) for all (x,y) inputs
+- SourceEncoder, KNNEncoder (mean-pooled), TargetEncoder MLPs
+- 2-layer pre-LayerNorm transformer (4 heads, ff_dim=256)
+- Output: target_logits [B, 1+T], fraction_logits [B, T, 5], value [B]
+
+**Factored action** (`src/ppo.py`):
+- Target: Categorical over NoOp + T targets (masked)
+- Fraction: 5-way Categorical [0.2, 0.4, 0.6, 0.8, 1.0] per target (zeroed for NoOp)
+- `log_prob = log_prob_target + log_prob_fraction`
+
+**Reward**: sparse terminal ±1 by default; optional dense shaping (Δships × 0.001 + Δproduction × 0.005) via `reward.sparse: false` in config.
+
+### Config (`configs/transformer_ppo.yaml`)
+
+Key config sections: `env` (max_targets, k_neighbors, ship_fractions), `model` (embed_dim, n_heads, n_layers, ff_dim), `ppo` (rollout_steps, num_envs, total_updates, lr, etc.), `reward` (sparse/dense).
+
+### Checkpoint format
+
+```
+outputs/checkpoints/<run_name>/
+    ckpt_last.pt       ← latest checkpoint
+    ckpt_NNNNNN.pt     ← periodic saves (every checkpoint_every updates)
+```
+
+Each `.pt` file contains `{"update": int, "policy": state_dict, "optimizer": state_dict}`.
+
+## Legacy Env Wrapper Design (`envs/orbit_wars_env.py`)
 
 **Observation** — `Box(683,)` float32:
 - `[0:3]` global: `step/500`, `angular_velocity/0.05`, `n_comets/4`
@@ -207,31 +280,26 @@ def agent(obs, config=None) -> list:
 
 1. **Competitive** (done): net-difference rule-based agent in `agents/competitive.py`
 2. **Hybrid** (done): mission-based + timeline agent in `agents/hybrid.py`
-3. **PPO vs competitive**: `python scripts/train.py --config configs/ppo_default.yaml`
-4. **Self-play**: `python scripts/train.py --config configs/ppo_selfplay.yaml`
+3. **Transformer PPO vs competitive** (done): `uv run python -m src.train --config configs/transformer_ppo.yaml`
+4. **Self-play**: set `opponent: self` in config
 5. **Improve gradually**:
 
 | Technique | How |
 |-----------|-----|
-| Larger network | `--set training.net_arch=[512,512]` |
-| Action masking | Add `MaskablePPO` from `sb3-contrib` |
-| Better reward shaping | Edit `OrbitWarsEnv._shape_reward()` |
+| Larger network | Increase `model.embed_dim`, `model.n_layers`, `model.ff_dim` in YAML |
+| More targets | Increase `env.max_targets` (default 30) |
+| Dense reward | Set `reward.sparse: false` in config |
 | Population-based training | Train a league of agents, sample opponents |
-| Recurrent policy | LSTM/GRU to handle partial observability |
+| Better features | Extend `src/features.py` (e.g. comet tracking, orbit prediction for targets) |
 
 ## Config System
 
+### Transformer PPO configs (`src/`)
+
+Configs are plain YAML with nested sections: `env`, `model`, `ppo`, `reward`.
+Loaded via `src.config.load_train_config()`. Override fields programmatically (no CLI `--set` for `src/`).
+
+### Legacy SB3 configs (`scripts/`)
+
 Configs are plain YAML. Override any value with `--set key.subkey=value` on the CLI.
 Values are parsed by `yaml.safe_load` so you can pass lists: `--set training.net_arch=[512,512]`.
-
-Checkpoint directory structure:
-```
-outputs/checkpoints/<run_name>_<timestamp>/
-    best_model.zip     ← saved by EvalCallback when eval score improves
-    ckpt_*.zip         ← periodic saves every 50k steps
-    final_model.zip    ← saved at end of training
-outputs/logs/<run_name>_<timestamp>/
-    evaluations.npz    ← eval history (load with np.load)
-    events.*           ← TensorBoard logs
-```
-View training in TensorBoard: `tensorboard --logdir outputs/logs`

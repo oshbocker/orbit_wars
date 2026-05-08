@@ -134,10 +134,13 @@ def ppo_update(
     epochs: int,
     minibatch_size: int,
     device: torch.device,
+    demo_buffer: object | None = None,
+    imitation_coef: float = 0.0,
 ) -> dict[str, float]:
     N = batch.global_features.shape[0]
     if N == 0:
-        return {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
+        return {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0,
+                "imitation_loss": 0.0}
 
     # Move to device
     gf = batch.global_features.to(device)
@@ -155,8 +158,11 @@ def ppo_update(
     advantages = batch.advantages.to(device)
     advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
 
+    use_imitation = demo_buffer is not None and imitation_coef > 0.0
+
     minibatch_size = min(N, max(1, minibatch_size))
-    metrics = {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
+    metrics = {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0,
+               "imitation_loss": 0.0}
     updates = 0
 
     for _ in range(epochs):
@@ -183,6 +189,15 @@ def ppo_update(
 
             loss = policy_loss + vf_coef * value_loss - ent_coef * entropy_mean
 
+            # Imitation loss blending
+            im_loss_val = 0.0
+            if use_imitation:
+                from .imitation import compute_bc_loss
+                demo_batch = demo_buffer.sample_batch(minibatch_size, device)
+                im_loss = compute_bc_loss(policy, demo_batch)
+                loss = loss + imitation_coef * im_loss
+                im_loss_val = float(im_loss.detach().cpu())
+
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
@@ -192,6 +207,7 @@ def ppo_update(
             metrics["policy_loss"] += float(policy_loss.detach().cpu())
             metrics["value_loss"] += float(value_loss.detach().cpu())
             metrics["entropy"] += float(entropy_mean.detach().cpu())
+            metrics["imitation_loss"] += im_loss_val
             updates += 1
 
     return {k: v / max(updates, 1) for k, v in metrics.items()}

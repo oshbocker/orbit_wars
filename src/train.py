@@ -24,7 +24,8 @@ from .features import (
     fleet_speed,
 )
 from .game_types import GameState, parse_observation
-from .opponents import SelfPlayOpponent, build_opponent
+from .logging import TrainLogger, run_periodic_eval
+from .opponents import DistilledOpponent, SelfPlayOpponent, build_opponent
 from .policy import TransformerPolicy
 from .ppo import TransitionBatch, ppo_update, sample_actions
 
@@ -289,7 +290,7 @@ def save_checkpoint(
     policy: TransformerPolicy,
     optimizer: torch.optim.Optimizer,
     cfg: TrainConfig,
-) -> None:
+) -> Path:
     run_dir = save_dir / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     state = {
@@ -299,6 +300,7 @@ def save_checkpoint(
     }
     torch.save(state, run_dir / "ckpt_last.pt")
     torch.save(state, run_dir / f"ckpt_{update:06d}.pt")
+    return run_dir / "ckpt_last.pt"
 
 
 def main() -> None:
@@ -316,7 +318,50 @@ def main() -> None:
     print(f"  model params: {n_params:,}")
     del test_policy
 
-    opponent = build_opponent(cfg.opponent, cfg=cfg, device=device)
+    # Logger
+    logger = TrainLogger(cfg.log_dir, cfg.run_name)
+
+    # Policy
+    policy = TransformerPolicy(cfg.model, cfg.env).to(device)
+    save_dir = Path(cfg.save_dir)
+
+    # ── Imitation learning phases ──────────────────────────────────────────
+    demo_buffer = None
+    bc_checkpoint_path: Path | None = None
+
+    if cfg.imitation.enabled:
+        from .imitation import bc_pretrain, collect_demonstrations
+
+        # Phase 1: Collect demonstrations
+        print(f"\n=== Phase 1: Collecting {cfg.imitation.bc_games} demo games ===")
+        demo_buffer = collect_demonstrations(
+            n_games=cfg.imitation.bc_games,
+            cfg=cfg,
+            opponent_name=cfg.imitation.bc_demo_opponent,
+        )
+        print(f"  Buffer size: {len(demo_buffer)}")
+
+        # Phase 2: BC pretrain
+        print(f"\n=== Phase 2: BC pretraining ({cfg.imitation.bc_epochs} epochs) ===")
+        bc_pretrain(policy, demo_buffer, cfg.imitation, device, logger)
+
+        # Save BC-pretrained checkpoint
+        bc_checkpoint_path = save_checkpoint(
+            save_dir, cfg.run_name, 0, policy,
+            torch.optim.Adam(policy.parameters(), lr=cfg.ppo.lr), cfg,
+        )
+        print(f"  BC checkpoint saved: {bc_checkpoint_path}")
+
+    # ── Build opponent ─────────────────────────────────────────────────────
+    if cfg.imitation.enabled and cfg.imitation.distilled_opponent and bc_checkpoint_path is not None:
+        print("  Using distilled opponent (BC-pretrained)")
+        opponent = build_opponent(
+            "distilled", cfg=cfg, device=device,
+            checkpoint_path=bc_checkpoint_path,
+        )
+    else:
+        opponent = build_opponent(cfg.opponent, cfg=cfg, device=device)
+
     envs = [OrbitWarsEnv(cfg, opponent, env_index=idx) for idx in range(cfg.ppo.num_envs)]
 
     next_seed = cfg.seed
@@ -325,17 +370,36 @@ def main() -> None:
         raw_obs_per_env.append(env.reset(seed=next_seed))
         next_seed += 1
 
-    policy = TransformerPolicy(cfg.model, cfg.env).to(device)
     if isinstance(opponent, SelfPlayOpponent):
         opponent.sync_from(policy)
 
     optimizer = torch.optim.Adam(policy.parameters(), lr=cfg.ppo.lr)
-    save_dir = Path(cfg.save_dir)
-    log_dir = Path(cfg.log_dir)
 
+    # ── Training loop ──────────────────────────────────────────────────────
+    print(f"\n=== Phase 3: PPO training ({cfg.ppo.total_updates} updates) ===")
     t_start = time.time()
+    transitioned_to_selfplay = False
+
     for update in range(1, cfg.ppo.total_updates + 1):
         t_update = time.time()
+
+        # Compute imitation coefficient (linear decay)
+        imitation_coef = 0.0
+        if cfg.imitation.enabled and demo_buffer is not None:
+            decay_frac = update / max(cfg.imitation.coef_decay_updates, 1)
+            imitation_coef = cfg.imitation.coef_start * max(0.0, 1.0 - decay_frac)
+
+        # Transition to self-play when imitation coefficient reaches 0
+        if (cfg.imitation.enabled and cfg.opponent == "self"
+                and imitation_coef == 0.0 and not transitioned_to_selfplay):
+            print(f"\n  -> Transitioning to self-play at update {update}")
+            sp_opponent = SelfPlayOpponent(cfg, device=device,
+                                           deterministic=cfg.self_play_deterministic)
+            sp_opponent.sync_from(policy)
+            for env in envs:
+                env.opponent = sp_opponent
+            opponent = sp_opponent
+            transitioned_to_selfplay = True
 
         batch, raw_obs_per_env, next_seed, stats = collect_rollout(
             envs, raw_obs_per_env, policy, cfg, device, next_seed,
@@ -350,26 +414,44 @@ def main() -> None:
             epochs=cfg.ppo.epochs,
             minibatch_size=cfg.ppo.minibatch_size,
             device=device,
+            demo_buffer=demo_buffer,
+            imitation_coef=imitation_coef,
         )
 
         if isinstance(opponent, SelfPlayOpponent) and update % cfg.self_play_update_interval == 0:
             opponent.sync_from(policy)
 
+        # Merge all metrics for logging
+        all_metrics = {**stats, **metrics, "imitation_coef": imitation_coef}
+        logger.log_update(update, all_metrics)
+
         if update % cfg.log_every == 0:
             elapsed = time.time() - t_start
             update_time = time.time() - t_update
+            im_str = f"  im_coef={imitation_coef:.3f}" if cfg.imitation.enabled else ""
             print(
                 f"update={update:4d}  reward={stats['episode_reward_mean']:+.3f}  "
                 f"eps={int(stats['episodes_finished'])}  samples={int(stats['samples'])}  "
                 f"loss={metrics['loss']:.4f}  ploss={metrics['policy_loss']:.4f}  "
                 f"vloss={metrics['value_loss']:.4f}  ent={metrics['entropy']:.3f}  "
-                f"dt={update_time:.1f}s  total={elapsed:.0f}s"
+                f"dt={update_time:.1f}s  total={elapsed:.0f}s{im_str}"
             )
+
+        # Periodic evaluation
+        if cfg.eval.eval_every > 0 and update % cfg.eval.eval_every == 0:
+            print(f"\n  Running eval ({cfg.eval.eval_games} games)...")
+            eval_results = run_periodic_eval(policy, cfg, device)
+            logger.log_eval(update, eval_results)
+            for r in eval_results:
+                print(f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
+                      f"T={r.tie_rate:.0%} (n={r.n_games})")
+            print()
 
         if update % cfg.checkpoint_every == 0 or update == cfg.ppo.total_updates:
             save_checkpoint(save_dir, cfg.run_name, update, policy, optimizer, cfg)
             print(f"  -> saved checkpoint at update {update}")
 
+    logger.close()
     print(f"\nTraining complete. Total time: {time.time() - t_start:.0f}s")
 
 

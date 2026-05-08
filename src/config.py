@@ -52,6 +52,26 @@ class RewardConfig:
 
 
 @dataclass(slots=True)
+class EvalConfig:
+    eval_every: int = 100
+    eval_games: int = 10
+    eval_opponents: list[str] = field(default_factory=lambda: ["competitive", "random"])
+
+
+@dataclass(slots=True)
+class ImitationConfig:
+    enabled: bool = False
+    bc_games: int = 50
+    bc_demo_opponent: str = "random"
+    bc_epochs: int = 20
+    bc_lr: float = 1e-3
+    bc_batch_size: int = 256
+    coef_start: float = 0.5
+    coef_decay_updates: int = 500
+    distilled_opponent: bool = True
+
+
+@dataclass(slots=True)
 class TrainConfig:
     seed: int = 42
     run_name: str = "transformer_ppo"
@@ -68,6 +88,8 @@ class TrainConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     ppo: PPOConfig = field(default_factory=PPOConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
+    eval: EvalConfig = field(default_factory=EvalConfig)
+    imitation: ImitationConfig = field(default_factory=ImitationConfig)
 
 
 def load_train_config(path: str | Path) -> TrainConfig:
@@ -80,11 +102,13 @@ def load_train_config(path: str | Path) -> TrainConfig:
 
 def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
     cfg = TrainConfig()
-    _update_dataclass(cfg, data, skip={"env", "model", "ppo", "reward"})
+    _update_dataclass(cfg, data, skip={"env", "model", "ppo", "reward", "eval", "imitation"})
     _update_dataclass(cfg.env, data.get("env", {}))
     _update_dataclass(cfg.model, data.get("model", {}))
     _update_dataclass(cfg.ppo, data.get("ppo", {}))
     _update_dataclass(cfg.reward, data.get("reward", {}))
+    _update_dataclass(cfg.eval, data.get("eval", {}))
+    _update_dataclass(cfg.imitation, data.get("imitation", {}))
     return cfg
 
 
