@@ -55,7 +55,7 @@ The `scripts/evaluate.py` script runs head-to-head matches using the Kaggle envi
 ### Competitive vs random (quick sanity check)
 
 ```bash
-python scripts/evaluate.py
+uv run python scripts/evaluate.py
 ```
 
 ### Evaluate a trained RL model
@@ -63,13 +63,13 @@ python scripts/evaluate.py
 When only `--model` is given, competitive and random are added automatically:
 
 ```bash
-python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip
+uv run python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip
 ```
 
 ### Compare two trained models
 
 ```bash
-python scripts/evaluate.py \
+puv run ython scripts/evaluate.py \
     --model outputs/checkpoints/run_a/best_model.zip:rl_v1 \
     --model outputs/checkpoints/run_b/best_model.zip:rl_v2 \
     --games 30
@@ -78,7 +78,7 @@ python scripts/evaluate.py \
 ### Full matrix (RL models + competitive + random)
 
 ```bash
-python scripts/evaluate.py \
+uv run python scripts/evaluate.py \
     --model outputs/checkpoints/run_a/best_model.zip:rl_v1 \
     --model outputs/checkpoints/run_b/best_model.zip:rl_v2 \
     --competitive --random \
@@ -88,7 +88,7 @@ python scripts/evaluate.py \
 ### Two-model head-to-head only
 
 ```bash
-python scripts/evaluate.py \
+uv run python scripts/evaluate.py \
     --model outputs/checkpoints/run_a/best_model.zip \
     --vs    outputs/checkpoints/run_b/best_model.zip \
     --games 50
@@ -207,6 +207,39 @@ After training on Colab, download the checkpoint from Google Drive and evaluate 
    print_results('rl_p0', 'rl_p1', run_games(agent, agent, n_games=20, verbose=True))
    "
    ```
+
+4. Play a single game with RL against hybrid and save game_replay.html
+```
+uv run python -c "
+import torch
+from kaggle_environments import make
+from src.config import load_train_config
+from src.policy import TransformerPolicy
+from src.logging import make_eval_agent
+from agents.hybrid import agent as hybrid_agent
+
+cfg = load_train_config('configs/transformer_dagger.yaml')
+device = torch.device('cpu')
+policy = TransformerPolicy(cfg.model, cfg.env).to(device)
+ckpt = torch.load('outputs/checkpoints/transformer_dagger/ckpt_last.pt',
+                     map_location=device, weights_only=True)
+policy.load_state_dict(ckpt['policy'])
+policy.eval()
+
+rl_agent = make_eval_agent(policy, cfg, device)
+
+env = make('orbit_wars', debug=False)
+env.run([rl_agent, hybrid_agent])
+
+html = env.render(mode='html', width=800, height=600)
+with open('game_replay.html', 'w') as f:
+    f.write(html)
+
+reward = env.steps[-1][0].reward
+result = 'WIN' if reward and reward > 0 else 'LOSS' if reward and reward < 0 else 'TIE'
+print(f'{result} (reward={reward}, {len(env.steps)} steps)')
+print('Saved game_replay.html')"
+```
 
 The config file must match what was used for training (model architecture, `max_targets`, `ship_fractions`, etc.).
 
