@@ -1,0 +1,377 @@
+from __future__ import annotations
+
+import argparse
+import math
+import random
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import torch
+
+from .config import TrainConfig, load_train_config
+from .env import OrbitWarsEnv
+from .features import (
+    GLOBAL_DIM,
+    KNN_SCALAR_DIM,
+    SOURCE_SCALAR_DIM,
+    TARGET_SCALAR_DIM,
+    FleetTransitState,
+    SourceDecision,
+    compute_fleet_transit,
+    encode_source_decision,
+    fleet_speed,
+)
+from .game_types import GameState, parse_observation
+from .opponents import SelfPlayOpponent, build_opponent
+from .policy import TransformerPolicy
+from .ppo import TransitionBatch, ppo_update, sample_actions
+
+
+@dataclass(slots=True)
+class StepGroup:
+    """All planet decisions from one env step share the same reward."""
+    indices: list[int]
+    reward: float
+    done: bool
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train transformer PPO agent")
+    parser.add_argument("--config", type=str, default="configs/transformer_ppo.yaml")
+    return parser.parse_args()
+
+
+def resolve_device(name: str) -> torch.device:
+    if name == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(name)
+
+
+def seed_everything(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def _forward_single(
+    policy: TransformerPolicy,
+    decision: SourceDecision,
+    device: torch.device,
+) -> tuple:
+    """Forward pass for a single source planet decision. Returns (outputs, sampled)."""
+    outputs = policy(
+        torch.from_numpy(decision.global_features).unsqueeze(0).to(device),
+        torch.from_numpy(decision.source_scalars).unsqueeze(0).to(device),
+        torch.from_numpy(decision.source_position).unsqueeze(0).to(device),
+        torch.from_numpy(decision.knn_scalars).unsqueeze(0).to(device),
+        torch.from_numpy(decision.knn_positions).unsqueeze(0).to(device),
+        torch.from_numpy(decision.target_scalars).unsqueeze(0).to(device),
+        torch.from_numpy(decision.target_positions).unsqueeze(0).to(device),
+        torch.from_numpy(decision.target_mask).unsqueeze(0).to(device),
+    )
+    sampled = sample_actions(outputs, deterministic=False)
+    return outputs, sampled
+
+
+def collect_rollout(
+    envs: list[OrbitWarsEnv],
+    raw_obs_per_env: list,
+    policy: TransformerPolicy,
+    cfg: TrainConfig,
+    device: torch.device,
+    next_seed: int,
+) -> tuple[TransitionBatch, list, int, dict[str, float]]:
+    """Collect rollout with sequential per-planet decisions."""
+    T = cfg.env.max_targets
+    K = cfg.env.k_neighbors
+
+    # Transition storage
+    all_global: list[np.ndarray] = []
+    all_src_scalars: list[np.ndarray] = []
+    all_src_pos: list[np.ndarray] = []
+    all_knn_scalars: list[np.ndarray] = []
+    all_knn_pos: list[np.ndarray] = []
+    all_tgt_scalars: list[np.ndarray] = []
+    all_tgt_pos: list[np.ndarray] = []
+    all_tgt_mask: list[np.ndarray] = []
+    all_target_idx: list[int] = []
+    all_frac_bin: list[int] = []
+    all_log_prob: list[float] = []
+    all_values: list[float] = []
+
+    groups_per_env: list[list[StepGroup]] = [[] for _ in envs]
+    episode_rewards: list[float] = []
+    running_rewards = [0.0 for _ in envs]
+
+    for _step_i in range(cfg.ppo.rollout_steps):
+        next_obs_list = []
+
+        for env_idx, env in enumerate(envs):
+            obs = raw_obs_per_env[env_idx]
+            state = parse_observation(obs)
+            my_planets = sorted(
+                [p for p in state.planets if p.owner == state.player],
+                key=lambda p: -p.ships,
+            )
+
+            transit = compute_fleet_transit(state)
+            moves: list[list[float | int]] = []
+            group_indices: list[int] = []
+
+            for src in my_planets:
+                decision = encode_source_decision(src, state, transit, cfg.env)
+
+                with torch.inference_mode():
+                    outputs, sampled = _forward_single(policy, decision, device)
+
+                # Store transition features
+                idx = len(all_global)
+                all_global.append(decision.global_features)
+                all_src_scalars.append(decision.source_scalars)
+                all_src_pos.append(decision.source_position)
+                all_knn_scalars.append(decision.knn_scalars)
+                all_knn_pos.append(decision.knn_positions)
+                all_tgt_scalars.append(decision.target_scalars)
+                all_tgt_pos.append(decision.target_positions)
+                all_tgt_mask.append(decision.target_mask)
+
+                tgt_idx = int(sampled.target_index.item())
+                frac_bin = int(sampled.fraction_bin.item())
+                all_target_idx.append(tgt_idx)
+                all_frac_bin.append(frac_bin)
+                all_log_prob.append(float(sampled.log_prob.item()))
+                all_values.append(float(outputs.value.item()))
+                group_indices.append(idx)
+
+                # Execute action if not NoOp
+                if tgt_idx > 0:
+                    target_offset = tgt_idx - 1
+                    if target_offset < len(decision.target_planet_ids):
+                        fraction = cfg.env.ship_fractions[frac_bin]
+                        ships = int(src.ships * fraction)
+                        if ships > 0:
+                            target_id = decision.target_planet_ids[target_offset]
+                            angle = decision.target_angles[target_offset]
+                            moves.append([src.id, float(angle), ships])
+
+                            # Update transit for subsequent planet decisions
+                            tgt_planet = state.planets_by_id.get(target_id)
+                            if tgt_planet:
+                                speed = fleet_speed(ships)
+                                dist = math.hypot(src.x - tgt_planet.x, src.y - tgt_planet.y)
+                                eta = dist / max(speed, 0.1)
+                                transit.add_fleet(target_id, float(ships), eta, is_friendly=True)
+                            src.ships = max(0, src.ships - ships)
+
+            # Step environment
+            result = env.step(moves)
+            running_rewards[env_idx] += result.reward
+            groups_per_env[env_idx].append(
+                StepGroup(indices=group_indices, reward=result.reward, done=result.done)
+            )
+
+            if result.done:
+                episode_rewards.append(running_rewards[env_idx])
+                running_rewards[env_idx] = 0.0
+                next_seed += 1
+                new_obs = env.reset(seed=next_seed)
+                next_obs_list.append(new_obs)
+            else:
+                next_obs_list.append(result.obs)
+
+        raw_obs_per_env = next_obs_list
+
+    # Compute returns and advantages
+    N = len(all_global)
+    returns = [0.0] * N
+    advantages = [0.0] * N
+
+    # Bootstrap final values
+    next_values = _bootstrap_values(policy, raw_obs_per_env, cfg, device)
+
+    for env_idx, groups in enumerate(groups_per_env):
+        future_return = next_values[env_idx]
+        for group in reversed(groups):
+            future_return = group.reward + cfg.ppo.gamma * future_return * (1.0 - float(group.done))
+            for idx in group.indices:
+                returns[idx] = future_return
+                advantages[idx] = future_return - all_values[idx]
+
+    # Build batch
+    if N == 0:
+        batch = _empty_batch(cfg)
+    else:
+        batch = TransitionBatch(
+            global_features=torch.from_numpy(np.array(all_global, dtype=np.float32)),
+            source_scalars=torch.from_numpy(np.array(all_src_scalars, dtype=np.float32)),
+            source_positions=torch.from_numpy(np.array(all_src_pos, dtype=np.float32)),
+            knn_scalars=torch.from_numpy(np.array(all_knn_scalars, dtype=np.float32)),
+            knn_positions=torch.from_numpy(np.array(all_knn_pos, dtype=np.float32)),
+            target_scalars=torch.from_numpy(np.array(all_tgt_scalars, dtype=np.float32)),
+            target_positions=torch.from_numpy(np.array(all_tgt_pos, dtype=np.float32)),
+            target_mask=torch.from_numpy(np.array(all_tgt_mask, dtype=bool)),
+            target_index=torch.tensor(all_target_idx, dtype=torch.long),
+            fraction_bin=torch.tensor(all_frac_bin, dtype=torch.long),
+            log_prob=torch.tensor(all_log_prob, dtype=torch.float32),
+            returns=torch.tensor(returns, dtype=torch.float32),
+            advantages=torch.tensor(advantages, dtype=torch.float32),
+        )
+
+    stats = {
+        "episode_reward_mean": float(np.mean(episode_rewards)) if episode_rewards else 0.0,
+        "episodes_finished": float(len(episode_rewards)),
+        "samples": float(N),
+    }
+    return batch, raw_obs_per_env, next_seed, stats
+
+
+def _bootstrap_values(
+    policy: TransformerPolicy,
+    raw_obs_list: list,
+    cfg: TrainConfig,
+    device: torch.device,
+) -> list[float]:
+    """Compute value estimates for the last observation of each env."""
+    values = []
+    for obs in raw_obs_list:
+        state = parse_observation(obs)
+        my_planets = [p for p in state.planets if p.owner == state.player]
+        if not my_planets:
+            values.append(0.0)
+            continue
+        transit = compute_fleet_transit(state)
+        # Use the planet with most ships for value estimate
+        src = max(my_planets, key=lambda p: p.ships)
+        decision = encode_source_decision(src, state, transit, cfg.env)
+        with torch.inference_mode():
+            outputs = policy(
+                torch.from_numpy(decision.global_features).unsqueeze(0).to(device),
+                torch.from_numpy(decision.source_scalars).unsqueeze(0).to(device),
+                torch.from_numpy(decision.source_position).unsqueeze(0).to(device),
+                torch.from_numpy(decision.knn_scalars).unsqueeze(0).to(device),
+                torch.from_numpy(decision.knn_positions).unsqueeze(0).to(device),
+                torch.from_numpy(decision.target_scalars).unsqueeze(0).to(device),
+                torch.from_numpy(decision.target_positions).unsqueeze(0).to(device),
+                torch.from_numpy(decision.target_mask).unsqueeze(0).to(device),
+            )
+        values.append(float(outputs.value.item()))
+    return values
+
+
+def _empty_batch(cfg: TrainConfig) -> TransitionBatch:
+    T = cfg.env.max_targets
+    K = cfg.env.k_neighbors
+    return TransitionBatch(
+        global_features=torch.zeros(0, GLOBAL_DIM),
+        source_scalars=torch.zeros(0, SOURCE_SCALAR_DIM),
+        source_positions=torch.zeros(0, 2),
+        knn_scalars=torch.zeros(0, K, KNN_SCALAR_DIM),
+        knn_positions=torch.zeros(0, K, 2),
+        target_scalars=torch.zeros(0, T, TARGET_SCALAR_DIM),
+        target_positions=torch.zeros(0, T, 2),
+        target_mask=torch.zeros(0, T + 2, dtype=torch.bool),
+        target_index=torch.zeros(0, dtype=torch.long),
+        fraction_bin=torch.zeros(0, dtype=torch.long),
+        log_prob=torch.zeros(0),
+        returns=torch.zeros(0),
+        advantages=torch.zeros(0),
+    )
+
+
+def save_checkpoint(
+    save_dir: Path,
+    run_name: str,
+    update: int,
+    policy: TransformerPolicy,
+    optimizer: torch.optim.Optimizer,
+    cfg: TrainConfig,
+) -> None:
+    run_dir = save_dir / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    state = {
+        "update": update,
+        "policy": policy.state_dict(),
+        "optimizer": optimizer.state_dict(),
+    }
+    torch.save(state, run_dir / "ckpt_last.pt")
+    torch.save(state, run_dir / f"ckpt_{update:06d}.pt")
+
+
+def main() -> None:
+    args = parse_args()
+    cfg = load_train_config(args.config)
+    seed_everything(cfg.seed)
+    device = resolve_device(cfg.device)
+    print(f"Config: {cfg.run_name}, device={device}, updates={cfg.ppo.total_updates}")
+    print(f"  envs={cfg.ppo.num_envs}, rollout_steps={cfg.ppo.rollout_steps}, "
+          f"opponent={cfg.opponent}")
+
+    # Count parameters
+    test_policy = TransformerPolicy(cfg.model, cfg.env)
+    n_params = sum(p.numel() for p in test_policy.parameters())
+    print(f"  model params: {n_params:,}")
+    del test_policy
+
+    opponent = build_opponent(cfg.opponent, cfg=cfg, device=device)
+    envs = [OrbitWarsEnv(cfg, opponent, env_index=idx) for idx in range(cfg.ppo.num_envs)]
+
+    next_seed = cfg.seed
+    raw_obs_per_env = []
+    for env in envs:
+        raw_obs_per_env.append(env.reset(seed=next_seed))
+        next_seed += 1
+
+    policy = TransformerPolicy(cfg.model, cfg.env).to(device)
+    if isinstance(opponent, SelfPlayOpponent):
+        opponent.sync_from(policy)
+
+    optimizer = torch.optim.Adam(policy.parameters(), lr=cfg.ppo.lr)
+    save_dir = Path(cfg.save_dir)
+    log_dir = Path(cfg.log_dir)
+
+    t_start = time.time()
+    for update in range(1, cfg.ppo.total_updates + 1):
+        t_update = time.time()
+
+        batch, raw_obs_per_env, next_seed, stats = collect_rollout(
+            envs, raw_obs_per_env, policy, cfg, device, next_seed,
+        )
+
+        metrics = ppo_update(
+            policy, optimizer, batch,
+            clip_coef=cfg.ppo.clip_coef,
+            ent_coef=cfg.ppo.ent_coef,
+            vf_coef=cfg.ppo.vf_coef,
+            max_grad_norm=cfg.ppo.max_grad_norm,
+            epochs=cfg.ppo.epochs,
+            minibatch_size=cfg.ppo.minibatch_size,
+            device=device,
+        )
+
+        if isinstance(opponent, SelfPlayOpponent) and update % cfg.self_play_update_interval == 0:
+            opponent.sync_from(policy)
+
+        if update % cfg.log_every == 0:
+            elapsed = time.time() - t_start
+            update_time = time.time() - t_update
+            print(
+                f"update={update:4d}  reward={stats['episode_reward_mean']:+.3f}  "
+                f"eps={int(stats['episodes_finished'])}  samples={int(stats['samples'])}  "
+                f"loss={metrics['loss']:.4f}  ploss={metrics['policy_loss']:.4f}  "
+                f"vloss={metrics['value_loss']:.4f}  ent={metrics['entropy']:.3f}  "
+                f"dt={update_time:.1f}s  total={elapsed:.0f}s"
+            )
+
+        if update % cfg.checkpoint_every == 0 or update == cfg.ppo.total_updates:
+            save_checkpoint(save_dir, cfg.run_name, update, policy, optimizer, cfg)
+            print(f"  -> saved checkpoint at update {update}")
+
+    print(f"\nTraining complete. Total time: {time.time() - t_start:.0f}s")
+
+
+if __name__ == "__main__":
+    main()
