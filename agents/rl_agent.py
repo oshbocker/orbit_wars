@@ -53,9 +53,9 @@ def export_submission(
 
     Parameters
     ----------
-    model_path : path to .zip weights, or None when mode='aggressive'
+    model_path : path to .zip weights, or None when mode is a rule-based agent
     output_path : where to write the file
-    mode : 'aggressive' | 'rl'
+    mode : 'competitive' | 'hybrid' | 'rl'
 
     Returns
     -------
@@ -64,23 +64,17 @@ def export_submission(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if mode == "aggressive":
-        code = _aggressive_submission_code()
-    elif mode == "strategic":
-        code = _strategic_submission_code()
-    elif mode == "lookahead":
-        code = _lookahead_submission_code()
+    if mode == "competitive":
+        code = _competitive_submission_code()
     elif mode == "hybrid":
         code = _hybrid_submission_code()
-    elif mode == "competitive":
-        code = _competitive_submission_code()
     elif mode == "rl":
         if model_path is None:
             raise ValueError("model_path required for mode='rl'")
         weights_b64 = _encode_weights(Path(model_path))
         code = _rl_submission_code(weights_b64)
     else:
-        raise ValueError(f"mode must be 'aggressive', 'strategic', 'lookahead', 'hybrid', 'competitive', or 'rl', got {mode!r}")
+        raise ValueError(f"mode must be 'competitive', 'hybrid', or 'rl', got {mode!r}")
 
     output_path.write_text(code)
     size_kb = output_path.stat().st_size // 1024
@@ -93,27 +87,6 @@ def export_submission(
 def _encode_weights(path: Path) -> str:
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode("ascii")
-
-
-def _aggressive_submission_code() -> str:
-    """Read agents/aggressive.py and wrap it as a submission."""
-    here = Path(__file__).parent
-    source = (here / "aggressive.py").read_text()
-    return source
-
-
-def _strategic_submission_code() -> str:
-    """Read agents/strategic.py and wrap it as a submission."""
-    here = Path(__file__).parent
-    source = (here / "strategic.py").read_text()
-    return source
-
-
-def _lookahead_submission_code() -> str:
-    """Read agents/lookahead.py and wrap it as a submission."""
-    here = Path(__file__).parent
-    source = (here / "lookahead.py").read_text()
-    return source
 
 
 def _hybrid_submission_code() -> str:

@@ -5,17 +5,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Goal
 
 Kaggle Orbit Wars competition.
-**Primary purpose: learn reinforcement learning and win competition.** The aggressive rule-based agent is the current benchmark; the main effort is one or more agents using modern RL (PPO, self-play, MARL). The agents should be capable of training in Kaggle (GPU), Google Colab (GPU), or locally (no GPU). The evaluation should be capable of running in Kaggle or locally (no GPU).
+**Primary purpose: learn reinforcement learning and win competition.** The competitive rule-based agent is the current benchmark; the main effort is one or more agents using modern RL (PPO, self-play, MARL). The agents should be capable of training in Kaggle (GPU), Google Colab (GPU), or locally (no GPU). The evaluation should be capable of running in Kaggle or locally (no GPU).
 
 ## Repository Structure
 
 ```
 orbit_wars/
 ├── agents/                  # Agent implementations
-│   ├── aggressive.py        # Production-rush rule-based agent (benchmark)
+│   ├── competitive.py       # Net-difference rule-based agent (benchmark)
+│   ├── hybrid.py            # Mission-based + timeline agent
 │   └── rl_agent.py          # SB3 model wrapper + submission export
 ├── configs/                 # YAML experiment configs
-│   ├── ppo_default.yaml     # Default PPO vs aggressive (500k steps)
+│   ├── ppo_default.yaml     # Default PPO vs competitive (500k steps)
 │   └── ppo_selfplay.yaml    # Self-play fine-tuning (2M steps)
 ├── envs/                    # Gymnasium wrappers
 │   └── orbit_wars_env.py    # Single-agent env, obs/action encoding
@@ -24,7 +25,8 @@ orbit_wars/
 ├── notebooks/               # Exploratory Jupyter notebooks
 │   ├── explore.ipynb        # Main development notebook (Kaggle/Colab ready)
 │   ├── orbit_wars_rl.ipynb  # Previous iteration (reference)
-│   └── getting-started.ipynb # Kaggle tutorial (reference, 51 MB)
+│   ├── train_colab.ipynb    # Google Colab training notebook
+│   └── orbit-wars-reinforcement-learning-tutorial.ipynb  # Kaggle RL tutorial
 ├── outputs/                 # .gitignored — all generated files go here
 │   ├── checkpoints/         # Model .zip files (best_model.zip, ckpt_*.zip)
 │   ├── logs/                # TensorBoard event files, eval results
@@ -35,6 +37,7 @@ orbit_wars/
 │   └── submit.py            # Generate Kaggle submission file
 ├── training/                # Core training logic (imported by scripts/train.py)
 │   └── train.py             # train(), load_config(), resolve_opponent()
+├── pyproject.toml
 ├── requirements.txt
 └── .gitignore
 ```
@@ -45,7 +48,7 @@ orbit_wars/
 # Install dependencies
 pip install -r requirements.txt
 
-# Train (default config: PPO vs aggressive, 500k steps)
+# Train (default config: PPO vs competitive, 500k steps)
 python scripts/train.py
 
 # Train with a different config
@@ -57,20 +60,20 @@ python scripts/train.py --set training.total_timesteps=1000000 env.n_envs=8 trai
 # Resume from a checkpoint
 python scripts/train.py --resume outputs/checkpoints/ppo_default_20260501_120000/best_model.zip
 
-# Evaluate: trained model vs aggressive and random
+# Evaluate: trained model vs competitive and random
 python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip
 
 # Evaluate with a custom number of games
 python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip --games 50
 
-# Full matrix: two models + aggressive + random
+# Full matrix: two models + competitive + random
 python scripts/evaluate.py \
     --model outputs/checkpoints/run_a/best_model.zip:rl_v1 \
     --model outputs/checkpoints/run_b/best_model.zip:rl_v2 \
-    --aggressive --random --games 30
+    --competitive --random --games 30
 
-# Generate a submission (aggressive)
-python scripts/submit.py --aggressive
+# Generate a submission (competitive)
+python scripts/submit.py --competitive
 
 # Generate a submission (RL model) and verify it runs
 python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip --verify
@@ -202,10 +205,11 @@ def agent(obs, config=None) -> list:
 
 ## RL Development Roadmap
 
-1. **Aggressive** (done): production-rush rule-based agent in `agents/aggressive.py`
-2. **PPO vs aggressive**: `python scripts/train.py --config configs/ppo_default.yaml`
-3. **Self-play**: `python scripts/train.py --config configs/ppo_selfplay.yaml`
-4. **Improve gradually**:
+1. **Competitive** (done): net-difference rule-based agent in `agents/competitive.py`
+2. **Hybrid** (done): mission-based + timeline agent in `agents/hybrid.py`
+3. **PPO vs competitive**: `python scripts/train.py --config configs/ppo_default.yaml`
+4. **Self-play**: `python scripts/train.py --config configs/ppo_selfplay.yaml`
+5. **Improve gradually**:
 
 | Technique | How |
 |-----------|-----|

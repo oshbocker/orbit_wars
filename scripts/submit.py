@@ -4,14 +4,14 @@ Generate a self-contained Kaggle submission file, and optionally upload it.
 
 Examples
 --------
-# Generate aggressive submission (rule-based)
-python scripts/submit.py --aggressive
+# Generate competitive submission (rule-based)
+python scripts/submit.py --competitive
 
 # Generate RL submission with embedded model weights
 python scripts/submit.py --model outputs/checkpoints/ppo_default_20260501/best_model.zip
 
 # Generate and upload to Kaggle in one step
-python scripts/submit.py --aggressive --upload
+python scripts/submit.py --competitive --upload
 python scripts/submit.py --model outputs/checkpoints/run_a/best_model.zip --upload -m "PPO v2 self-play"
 
 # Generate, verify locally, then upload
@@ -42,42 +42,27 @@ def main():
 
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument(
-        "--model", "-m",
+        "--model",
         default=None,
         metavar="PATH",
         help="Path to trained model .zip (RL submission)",
-    )
-    source.add_argument(
-        "--aggressive",
-        action="store_true",
-        help="Generate an aggressive (production-rush) submission",
-    )
-    source.add_argument(
-        "--strategic",
-        action="store_true",
-        help="Generate a strategic (tree-search) submission",
-    )
-    source.add_argument(
-        "--lookahead",
-        action="store_true",
-        help="Generate a lookahead (forward-simulation) submission",
-    )
-    source.add_argument(
-        "--hybrid",
-        action="store_true",
-        help="Generate a hybrid (mission-based + timeline) submission",
     )
     source.add_argument(
         "--competitive",
         action="store_true",
         help="Generate a competitive (net-difference) submission",
     )
+    source.add_argument(
+        "--hybrid",
+        action="store_true",
+        help="Generate a hybrid (mission-based + timeline) submission",
+    )
 
     parser.add_argument(
         "--output", "-o",
         default=None,
         metavar="PATH",
-        help="Output file path (default: outputs/submissions/submission_aggressive.py or submission_rl.py)",
+        help="Output file path (default: outputs/submissions/submission_<type>.py)",
     )
     parser.add_argument(
         "--verify",
@@ -99,26 +84,14 @@ def main():
 
     from agents.rl_agent import export_submission
 
-    if args.aggressive:
-        out = args.output or "outputs/submissions/submission_aggressive.py"
-        path = export_submission(None, output_path=out, mode="aggressive")
-        default_message = "Aggressive production-rush agent"
-    elif args.strategic:
-        out = args.output or "outputs/submissions/submission_strategic.py"
-        path = export_submission(None, output_path=out, mode="strategic")
-        default_message = "Strategic tree-search agent"
-    elif args.lookahead:
-        out = args.output or "outputs/submissions/submission_lookahead.py"
-        path = export_submission(None, output_path=out, mode="lookahead")
-        default_message = "Lookahead forward-simulation agent"
+    if args.competitive:
+        out = args.output or "outputs/submissions/submission_competitive.py"
+        path = export_submission(None, output_path=out, mode="competitive")
+        default_message = "Competitive net-difference agent"
     elif args.hybrid:
         out = args.output or "outputs/submissions/submission_hybrid.py"
         path = export_submission(None, output_path=out, mode="hybrid")
         default_message = "Hybrid mission-based agent"
-    elif args.competitive:
-        out = args.output or "outputs/submissions/submission_competitive.py"
-        path = export_submission(None, output_path=out, mode="competitive")
-        default_message = "Competitive net-difference agent"
     else:
         out = args.output or "outputs/submissions/submission_rl.py"
         path = export_submission(args.model, output_path=out, mode="rl")
