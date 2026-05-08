@@ -13,22 +13,25 @@ Kaggle Orbit Wars competition.
 orbit_wars/
 ├── src/                     # Transformer PPO pipeline (primary RL effort)
 │   ├── __init__.py
-│   ├── config.py            # TrainConfig dataclasses (env, model, ppo, reward)
+│   ├── config.py            # TrainConfig dataclasses (env, model, ppo, reward, eval, imitation)
 │   ├── game_types.py        # PlanetState, FleetState, GameState, parse_observation()
 │   ├── features.py          # Feature encoding, fleet transit, SourceDecision
 │   ├── policy.py            # TransformerPolicy (~493K params default)
-│   ├── ppo.py               # Factored PPO (target + fraction), clipped update
-│   ├── opponents.py         # CompetitiveOpponent, RandomOpponent, SelfPlayOpponent
+│   ├── ppo.py               # Factored PPO (target + fraction), clipped update, optional imitation loss
+│   ├── opponents.py         # Competitive, Random, SelfPlay, Hybrid, Distilled opponents + _policy_act()
 │   ├── env.py               # Kaggle env wrapper (2-player, side alternation)
-│   └── train.py             # Training loop with sequential per-planet decisions
+│   ├── logging.py           # TrainLogger (TensorBoard + CSV), EvalResult, periodic eval
+│   ├── imitation.py         # DemonstrationBuffer, collect_demonstrations, BC loss, bc_pretrain
+│   └── train.py             # Training loop: BC pretrain → PPO + imitation decay → self-play
 ├── agents/                  # Agent implementations
 │   ├── competitive.py       # Net-difference rule-based agent (benchmark)
 │   ├── hybrid.py            # Mission-based + timeline agent
 │   └── rl_agent.py          # SB3 model wrapper + submission export
 ├── configs/                 # YAML experiment configs
-│   ├── transformer_ppo.yaml # Transformer PPO default config
-│   ├── ppo_default.yaml     # SB3 PPO vs competitive (500k steps, legacy)
-│   └── ppo_selfplay.yaml    # SB3 self-play fine-tuning (legacy)
+│   ├── transformer_ppo.yaml   # Transformer PPO default config (2000 updates, competitive opponent)
+│   ├── transformer_dagger.yaml# DAgger: BC pretrain from hybrid + PPO with imitation decay (3000 updates)
+│   ├── ppo_default.yaml       # SB3 PPO vs competitive (500k steps, legacy)
+│   └── ppo_selfplay.yaml      # SB3 self-play fine-tuning (legacy)
 ├── envs/                    # Gymnasium wrappers (legacy SB3 pipeline)
 │   └── orbit_wars_env.py    # Single-agent env, obs/action encoding
 ├── evaluation/              # Evaluation utilities
@@ -40,7 +43,7 @@ orbit_wars/
 │   └── orbit-wars-reinforcement-learning-tutorial.ipynb  # Kaggle RL tutorial
 ├── outputs/                 # .gitignored — all generated files go here
 │   ├── checkpoints/         # Model .pt files (ckpt_last.pt, ckpt_NNNNNN.pt)
-│   ├── logs/                # TensorBoard event files, eval results
+│   ├── logs/                # TensorBoard event files, CSV metrics, eval results
 │   └── submissions/         # Generated submission.py files
 ├── scripts/                 # CLI entry points (legacy SB3 pipeline)
 │   ├── train.py             # Train an agent
@@ -61,11 +64,42 @@ orbit_wars/
 # Train with default config (PPO vs competitive, 2000 updates)
 uv run python -m src.train --config configs/transformer_ppo.yaml
 
-# Quick smoke test (5 updates, ~1s on CPU)
-uv run python -m src.train --config /path/to/smoke_config.yaml
+# DAgger: BC pretrain from hybrid demos + PPO with imitation decay (3000 updates)
+uv run python -m src.train --config configs/transformer_dagger.yaml
 
 # Train on Colab/Kaggle (no uv)
-python -m src.train --config configs/transformer_ppo.yaml
+python -m src.train --config configs/transformer_dagger.yaml
+```
+
+### Evaluate a trained transformer checkpoint locally
+
+```bash
+uv run python -c "
+import torch
+from src.config import load_train_config
+from src.policy import TransformerPolicy
+from src.logging import make_eval_agent
+from evaluation.evaluate import run_games, print_results
+
+cfg = load_train_config('configs/transformer_dagger.yaml')
+device = torch.device('cpu')
+policy = TransformerPolicy(cfg.model, cfg.env).to(device)
+ckpt = torch.load('outputs/checkpoints/transformer_dagger/ckpt_last.pt',
+                   map_location=device, weights_only=True)
+policy.load_state_dict(ckpt['policy'])
+policy.eval()
+
+agent = make_eval_agent(policy, cfg, device)
+
+from agents.competitive import agent as competitive
+print_results('rl', 'competitive', run_games(agent, competitive, n_games=20, verbose=True))
+"
+```
+
+### Monitor training
+
+```bash
+uv run tensorboard --logdir outputs/logs
 ```
 
 ### Legacy SB3 Pipeline (scripts/)
@@ -111,8 +145,25 @@ uv run python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip
 uv run python scripts/train.py
 
 # On Colab/Kaggle (no uv):
-pip install --upgrade "kaggle-environments>=1.28.0" "stable-baselines3[extra]>=2.3" gymnasium pyyaml
+pip install --upgrade "kaggle-environments>=1.28.0" "stable-baselines3[extra]>=2.3" gymnasium pyyaml tensorboard
 ```
+
+### Google Colab Workflow
+
+`notebooks/train_colab.ipynb` runs the DAgger pipeline on Colab GPU with Google Drive persistence.
+
+**Cell order** (designed so submission happens immediately after training):
+1. Setup (mount Drive, clone repo, install deps)
+2. GPU Verification
+3. Experiment Config (loads `transformer_dagger.yaml`, applies H100 overrides)
+4. **Train** (demo collection → BC pretrain → PPO with imitation decay)
+5. **Generate Submission** (competitive + hybrid + checkpoint copy to Drive)
+6. **Evaluate** (trained model vs competitive and random, 20 games each)
+7. **TensorBoard** (last — can block downstream cell execution)
+
+**H100 Colab overrides** in the config cell: `num_envs=4`, `rollout_steps=128`, `total_updates=5000`, `eval_every=250`.
+
+**After Colab training**, download checkpoint from Drive and evaluate locally — see "Evaluate a trained transformer checkpoint locally" in Common Commands above.
 
 ## Game Overview
 
@@ -239,9 +290,71 @@ Per-planet sequential decisions: for each turn, iterate over owned planets (most
 
 **Reward**: sparse terminal ±1 by default; optional dense shaping (Δships × 0.001 + Δproduction × 0.005) via `reward.sparse: false` in config.
 
-### Config (`configs/transformer_ppo.yaml`)
+### Logging (`src/logging.py`)
 
-Key config sections: `env` (max_targets, k_neighbors, ship_fractions), `model` (embed_dim, n_heads, n_layers, ff_dim), `ppo` (rollout_steps, num_envs, total_updates, lr, etc.), `reward` (sparse/dense).
+- `TrainLogger` writes all metrics to both TensorBoard (`outputs/logs/<run_name>/`) and CSV (`metrics.csv`)
+- `log_update(update, metrics)` — per-update train metrics (loss, policy_loss, value_loss, entropy, reward, imitation_coef, etc.)
+- `log_eval(update, results)` — periodic eval win rates as `eval/{opponent}_win_rate`
+- `make_eval_agent(policy, cfg, device)` — creates a Kaggle-compatible `agent(obs, config)` callable from a policy (snapshots weights)
+- `run_periodic_eval(policy, cfg, device)` — runs eval games against all opponents in `cfg.eval.eval_opponents`, returns `list[EvalResult]`
+
+### Imitation Learning (`src/imitation.py`)
+
+**DAgger-style pipeline** for distilling the hybrid agent's strategy:
+
+```
+Phase 1: collect_demonstrations()  →  Hybrid plays n games, records (SourceDecision, target_index, fraction_bin)
+Phase 2: bc_pretrain()             →  Supervised cross-entropy on expert demos (Adam, per-epoch shuffle)
+Phase 3: PPO + imitation loss      →  ppo_update() blends PPO loss + β * BC loss; β decays linearly to 0
+Phase 4: Self-play transition      →  When β=0 and opponent="self", switch to SelfPlayOpponent
+```
+
+- `DemonstrationBuffer` — parallel lists of numpy arrays for all 8 feature fields + 2 action labels
+- `collect_demonstrations(n_games, cfg, opponent_name)` — runs hybrid agent, maps moves to action space via angular matching (≤30° tolerance → NoOp if no match); validates targets against mask to avoid inf BC loss
+- `compute_bc_loss(policy, batch)` — cross-entropy on target selection + cross-entropy on fraction (masked for NoOp); clamps logits to -1e4 min to avoid inf from masked positions
+- `_map_to_action_space(angle, ships, src_ships, decision, env_cfg)` — finds closest target by angular difference, maps ship fraction to nearest bin
+
+### Opponents (`src/opponents.py`)
+
+- `_policy_act(policy, obs, cfg, device, deterministic)` — shared helper for all policy-based opponents (~40 lines, sequential per-planet decisions with transit updates)
+- `CompetitiveOpponent` — wraps `agents.competitive.agent`
+- `KaggleRandomOpponent` — wraps Kaggle's built-in `random_agent`
+- `HybridOpponent` — wraps `agents.hybrid.agent` (slow, 50-800ms/step)
+- `SelfPlayOpponent` — maintains a separate `TransformerPolicy`; `sync_from()` copies weights from training policy
+- `DistilledOpponent` — loads a BC-pretrained `.pt` checkpoint, fast inference (~1ms/step via `_policy_act()`)
+- `build_opponent(name, cfg, device, checkpoint_path)` — factory for all opponent types
+
+### Config
+
+Key config sections: `env`, `model`, `ppo`, `reward`, `eval`, `imitation`.
+
+**`configs/transformer_ppo.yaml`** — default PPO config (2000 updates, competitive opponent, eval every 100)
+
+**`configs/transformer_dagger.yaml`** — DAgger config:
+```yaml
+imitation:
+  enabled: true
+  bc_games: 50          # demo games from hybrid agent
+  bc_demo_opponent: random  # hybrid plays against this
+  bc_epochs: 30         # supervised pretraining epochs
+  bc_lr: 0.001
+  bc_batch_size: 256
+  coef_start: 0.5       # initial imitation loss weight
+  coef_decay_updates: 1000  # linear decay to 0
+  distilled_opponent: true  # use BC-pretrained model as training opponent
+
+eval:
+  eval_every: 100
+  eval_games: 10
+  eval_opponents: [competitive, random]
+
+ppo:
+  total_updates: 3000
+  lr: 0.0001            # lower since starting from BC-pretrained weights
+
+reward:
+  sparse: false         # dense reward for faster learning
+```
 
 ### Checkpoint format
 
@@ -281,8 +394,10 @@ Each `.pt` file contains `{"update": int, "policy": state_dict, "optimizer": sta
 1. **Competitive** (done): net-difference rule-based agent in `agents/competitive.py`
 2. **Hybrid** (done): mission-based + timeline agent in `agents/hybrid.py`
 3. **Transformer PPO vs competitive** (done): `uv run python -m src.train --config configs/transformer_ppo.yaml`
-4. **Self-play**: set `opponent: self` in config
-5. **Improve gradually**:
+4. **Logging + periodic eval** (done): TensorBoard + CSV metrics, win rate tracking against baselines
+5. **DAgger / imitation learning** (done): BC pretrain from hybrid demos + PPO with decaying imitation loss: `uv run python -m src.train --config configs/transformer_dagger.yaml`
+6. **Self-play**: set `opponent: self` in config; DAgger config auto-transitions when imitation_coef reaches 0
+7. **Improve gradually**:
 
 | Technique | How |
 |-----------|-----|
@@ -296,8 +411,10 @@ Each `.pt` file contains `{"update": int, "policy": state_dict, "optimizer": sta
 
 ### Transformer PPO configs (`src/`)
 
-Configs are plain YAML with nested sections: `env`, `model`, `ppo`, `reward`.
+Configs are plain YAML with nested sections: `env`, `model`, `ppo`, `reward`, `eval`, `imitation`.
 Loaded via `src.config.load_train_config()`. Override fields programmatically (no CLI `--set` for `src/`).
+
+Dataclasses in `src/config.py`: `EnvConfig`, `ModelConfig`, `PPOConfig`, `RewardConfig`, `EvalConfig`, `ImitationConfig`, `TrainConfig`.
 
 ### Legacy SB3 configs (`scripts/`)
 

@@ -108,21 +108,33 @@ python scripts/evaluate.py \
 
 ## Train an Agent
 
+### Transformer PPO (primary pipeline)
+
 ```bash
-# Default: PPO vs competitive, 500k steps
-python scripts/train.py
+# Train with default config (PPO vs competitive, 2000 updates)
+uv run python -m src.train --config configs/transformer_ppo.yaml
 
-# Different config
-python scripts/train.py --config configs/ppo_selfplay.yaml
-
-# Override specific values
-python scripts/train.py --set training.total_timesteps=1000000 env.n_envs=8 training.device=cuda
-
-# Resume from checkpoint
-python scripts/train.py --resume outputs/checkpoints/<run>/best_model.zip
+# DAgger: BC pretrain from hybrid demos + PPO with imitation decay
+uv run python -m src.train --config configs/transformer_dagger.yaml
 ```
 
-Checkpoints are saved to `outputs/checkpoints/<run_name>_<timestamp>/`.
+Checkpoints are saved to `outputs/checkpoints/<run_name>/` as `.pt` files.
+
+### Legacy SB3 pipeline
+
+```bash
+# Default: PPO vs competitive, 500k steps
+uv run python scripts/train.py
+
+# Different config
+uv run python scripts/train.py --config configs/ppo_selfplay.yaml
+
+# Override specific values
+uv run python scripts/train.py --set training.total_timesteps=1000000 env.n_envs=8 training.device=cuda
+
+# Resume from checkpoint
+uv run python scripts/train.py --resume outputs/checkpoints/<run>/best_model.zip
+```
 
 ### Train on Google Colab (GPU)
 
@@ -134,14 +146,74 @@ Open `notebooks/train_colab.ipynb` in Colab for GPU-accelerated training with pe
 4. Edit the Config cell to set your experiment (config file + overrides)
 5. Run Training — checkpoints save to `My Drive/orbit_wars_outputs/`
 
-Results persist across Colab sessions via Google Drive. Resume training by setting `resume_from` to a checkpoint path on Drive.
+Results persist across Colab sessions via Google Drive.
 
-The notebook also supports hyperparameter sweeps (cell 5) and inline TensorBoard monitoring.
+### Run a Colab-trained model locally
+
+After training on Colab, download the checkpoint from Google Drive and evaluate locally (no GPU needed):
+
+1. Copy the checkpoint from Drive:
+   ```bash
+   mkdir -p outputs/checkpoints/transformer_dagger
+   cp ~/path/to/Google\ Drive/orbit_wars_outputs/checkpoints/transformer_dagger/ckpt_last.pt \
+      outputs/checkpoints/transformer_dagger/ckpt_last.pt
+   ```
+
+2. Evaluate against rule-based agents:
+   ```bash
+   uv run python -c "
+   import torch
+   from src.config import load_train_config
+   from src.policy import TransformerPolicy
+   from src.logging import make_eval_agent
+   from evaluation.evaluate import run_games, print_results
+
+   cfg = load_train_config('configs/transformer_dagger.yaml')
+   device = torch.device('cpu')
+   policy = TransformerPolicy(cfg.model, cfg.env).to(device)
+   ckpt = torch.load('outputs/checkpoints/transformer_dagger/ckpt_last.pt',
+                      map_location=device, weights_only=True)
+   policy.load_state_dict(ckpt['policy'])
+   policy.eval()
+
+   agent = make_eval_agent(policy, cfg, device)
+
+   from agents.competitive import agent as competitive
+   print_results('rl', 'competitive', run_games(agent, competitive, n_games=20, verbose=True))
+
+   from agents.hybrid import agent as hybrid
+   print_results('rl', 'hybrid', run_games(agent, hybrid, n_games=20, verbose=True))
+   "
+   ```
+
+3. Play against itself (self-play evaluation):
+   ```bash
+   uv run python -c "
+   import torch
+   from src.config import load_train_config
+   from src.policy import TransformerPolicy
+   from src.logging import make_eval_agent
+   from evaluation.evaluate import run_games, print_results
+
+   cfg = load_train_config('configs/transformer_dagger.yaml')
+   device = torch.device('cpu')
+   policy = TransformerPolicy(cfg.model, cfg.env).to(device)
+   ckpt = torch.load('outputs/checkpoints/transformer_dagger/ckpt_last.pt',
+                      map_location=device, weights_only=True)
+   policy.load_state_dict(ckpt['policy'])
+   policy.eval()
+
+   agent = make_eval_agent(policy, cfg, device)
+   print_results('rl_p0', 'rl_p1', run_games(agent, agent, n_games=20, verbose=True))
+   "
+   ```
+
+The config file must match what was used for training (model architecture, `max_targets`, `ship_fractions`, etc.).
 
 ### Monitor training
 
 ```bash
-tensorboard --logdir outputs/logs
+uv run tensorboard --logdir outputs/logs
 ```
 
 ## Generate and Submit to Kaggle
@@ -193,16 +265,17 @@ chmod 600 ~/.config/kaggle/kaggle.json
 ## Repository Structure
 
 ```
+src/             # Transformer PPO pipeline (primary RL effort)
 agents/          # Agent implementations (competitive.py, hybrid.py, rl_agent.py)
 configs/         # YAML experiment configs
-envs/            # Gymnasium wrapper (observation + action encoding)
+envs/            # Gymnasium wrapper for legacy SB3 pipeline
 evaluation/      # Core evaluation utilities
-notebooks/       # Jupyter notebooks for exploration
+notebooks/       # Jupyter notebooks (train_colab.ipynb for Colab GPU training)
 scripts/         # CLI entry points (train, evaluate, submit)
-training/        # Core PPO training logic
+training/        # Core PPO training logic (legacy SB3)
 outputs/         # Generated files — gitignored
-  checkpoints/   # Model .zip files
-  logs/          # TensorBoard event files
+  checkpoints/   # Model .pt / .zip files
+  logs/          # TensorBoard event files + CSV metrics
   submissions/   # Generated submission.py files
 ```
 
