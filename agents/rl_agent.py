@@ -68,13 +68,19 @@ def export_submission(
         code = _aggressive_submission_code()
     elif mode == "strategic":
         code = _strategic_submission_code()
+    elif mode == "lookahead":
+        code = _lookahead_submission_code()
+    elif mode == "hybrid":
+        code = _hybrid_submission_code()
+    elif mode == "competitive":
+        code = _competitive_submission_code()
     elif mode == "rl":
         if model_path is None:
             raise ValueError("model_path required for mode='rl'")
         weights_b64 = _encode_weights(Path(model_path))
         code = _rl_submission_code(weights_b64)
     else:
-        raise ValueError(f"mode must be 'aggressive', 'strategic', or 'rl', got {mode!r}")
+        raise ValueError(f"mode must be 'aggressive', 'strategic', 'lookahead', 'hybrid', 'competitive', or 'rl', got {mode!r}")
 
     output_path.write_text(code)
     size_kb = output_path.stat().st_size // 1024
@@ -100,6 +106,27 @@ def _strategic_submission_code() -> str:
     """Read agents/strategic.py and wrap it as a submission."""
     here = Path(__file__).parent
     source = (here / "strategic.py").read_text()
+    return source
+
+
+def _lookahead_submission_code() -> str:
+    """Read agents/lookahead.py and wrap it as a submission."""
+    here = Path(__file__).parent
+    source = (here / "lookahead.py").read_text()
+    return source
+
+
+def _hybrid_submission_code() -> str:
+    """Read agents/hybrid.py and wrap it as a submission."""
+    here = Path(__file__).parent
+    source = (here / "hybrid.py").read_text()
+    return source
+
+
+def _competitive_submission_code() -> str:
+    """Read agents/competitive.py and wrap it as a submission."""
+    here = Path(__file__).parent
+    source = (here / "competitive.py").read_text()
     return source
 
 

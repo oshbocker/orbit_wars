@@ -81,6 +81,21 @@ def main():
         help="Include the strategic (tree-search) agent",
     )
     parser.add_argument(
+        "--lookahead",
+        action="store_true",
+        help="Include the lookahead (forward-simulation) agent",
+    )
+    parser.add_argument(
+        "--competitive",
+        action="store_true",
+        help="Include the competitive (net-difference) agent",
+    )
+    parser.add_argument(
+        "--hybrid",
+        action="store_true",
+        help="Include the hybrid agent",
+    )
+    parser.add_argument(
         "--games", "-n",
         type=int,
         default=20,
@@ -107,6 +122,18 @@ def main():
     if args.strategic:
         from agents.strategic import agent as strategic_agent
         agents["strategic"] = strategic_agent
+
+    if args.lookahead:
+        from agents.lookahead import agent as lookahead_agent
+        agents["lookahead"] = lookahead_agent
+
+    if args.competitive:
+        from agents.competitive import agent as competitive_agent
+        agents["competitive"] = competitive_agent
+
+    if args.hybrid:
+        from agents.hybrid import agent as hybrid_agent
+        agents["hybrid"] = hybrid_agent
 
     for spec in (args.model or []):
         label, ag = _load_agent(spec)

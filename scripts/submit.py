@@ -57,6 +57,21 @@ def main():
         action="store_true",
         help="Generate a strategic (tree-search) submission",
     )
+    source.add_argument(
+        "--lookahead",
+        action="store_true",
+        help="Generate a lookahead (forward-simulation) submission",
+    )
+    source.add_argument(
+        "--hybrid",
+        action="store_true",
+        help="Generate a hybrid (mission-based + timeline) submission",
+    )
+    source.add_argument(
+        "--competitive",
+        action="store_true",
+        help="Generate a competitive (net-difference) submission",
+    )
 
     parser.add_argument(
         "--output", "-o",
@@ -92,6 +107,18 @@ def main():
         out = args.output or "outputs/submissions/submission_strategic.py"
         path = export_submission(None, output_path=out, mode="strategic")
         default_message = "Strategic tree-search agent"
+    elif args.lookahead:
+        out = args.output or "outputs/submissions/submission_lookahead.py"
+        path = export_submission(None, output_path=out, mode="lookahead")
+        default_message = "Lookahead forward-simulation agent"
+    elif args.hybrid:
+        out = args.output or "outputs/submissions/submission_hybrid.py"
+        path = export_submission(None, output_path=out, mode="hybrid")
+        default_message = "Hybrid mission-based agent"
+    elif args.competitive:
+        out = args.output or "outputs/submissions/submission_competitive.py"
+        path = export_submission(None, output_path=out, mode="competitive")
+        default_message = "Competitive net-difference agent"
     else:
         out = args.output or "outputs/submissions/submission_rl.py"
         path = export_submission(args.model, output_path=out, mode="rl")

@@ -1,11 +1,11 @@
 """
-Strategic tree-search agent for Orbit Wars.
+Strategic patient agent for Orbit Wars.
 
-Core strategy: patience and calculation over speed.
-  - Tree search (lookahead ~10 steps) to find optimal planet acquisition order
-  - Ship consolidation before attacking — don't send ships until you can win
-  - Three phases: early (local quadrant), mid (expand), late (assault enemy)
-  - Massive late-game assaults exploit fleet speed scaling
+Core strategy: patience and overwhelming force.
+  - Never send ships unless the source has enough to OVERWHELM the target
+  - Wait and accumulate rather than sending dribbles
+  - Accurate intercept solver for orbiting planets (accounts for spawn offset)
+  - Single large fleets > multiple small ones (speed scales with fleet size)
 """
 
 import math
@@ -16,22 +16,13 @@ SUN_SAFE_RADIUS = SUN_RADIUS + 2.0
 MAX_SHIP_SPEED = 6.0
 BOARD_SIZE = 100.0
 
-MIN_GARRISON = 2
-THREAT_GARRISON_MULT = 1.1
-OVERKILL = 1.25          # slightly more buffer since we send one big fleet
-MIN_FLEET_SIZE = 5        # higher than aggressive — want speed
-MAX_STEPS = 498
+MIN_GARRISON = 0
+THREAT_GARRISON_MULT = 1.2
+OVERKILL = 1.0              # send 40% more than needed — overwhelming force
+MIN_FLEET_SIZE = 0          # larger min to get meaningful speed
+MAX_STEPS = 500
 
-# Strategic constants
-QUADRANT_SIZE = 25.0       # local search radius from home planet
-LOOKAHEAD_STEPS = 10       # tree search depth in game steps
-MAX_SEARCH_DEPTH = 4       # max sequential acquisitions to consider
-LATE_GAME_STEP = 300       # switch to assault mode
-MID_GAME_STEP = 80         # transition from early to mid
-EXPAND_RADIUS = 60.0       # mid-game search radius
-
-
-# ── helpers (shared with aggressive) ──────────────────────────────────────
+# ── helpers ────────────────────────────────────────────────────────────────
 
 def _dist(x1, y1, x2, y2):
     return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
@@ -43,8 +34,8 @@ def _fleet_speed(ships):
     return 1.0 + (MAX_SHIP_SPEED - 1.0) * (math.log(ships) / math.log(1000)) ** 1.5
 
 
-def _travel_time(src_x, src_y, dst_x, dst_y, ships):
-    d = _dist(src_x, src_y, dst_x, dst_y)
+def _travel_time(x1, y1, x2, y2, ships):
+    d = _dist(x1, y1, x2, y2)
     speed = _fleet_speed(ships)
     if speed <= 0:
         return 9999.0
@@ -208,7 +199,7 @@ def _detect_orbiting(planets, initial_planets, angular_velocity):
             p.angular_velocity = angular_velocity
 
 
-def _planet_pos_at(planet, future_step, current_step):
+def _planet_pos_at(planet, future_step):
     """Predict planet position at a future step."""
     if not planet.is_orbiting:
         return planet.x, planet.y
@@ -219,24 +210,130 @@ def _planet_pos_at(planet, future_step, current_step):
 
 
 def _aim_at_moving(src, target, step, ships):
-    """Iterative intercept solver for orbiting targets.
+    """Numerical intercept solver for orbiting targets.
+
+    Solves the exact equation: find time t such that the fleet, launched now,
+    arrives at the target planet's position at time (step + t) in exactly t turns.
+
+    Uses bisection on f(t) = flight_time_to_target_pos(t) - t, which is guaranteed
+    to have a root (fleet starts too far away, eventually catches up).
 
     Returns (angle, estimated_travel_time) or None if unreachable.
     """
     if not target.is_orbiting:
         angle, _ = _safe_angle(src.x, src.y, target.x, target.y)
-        tt = _travel_time(src.x, src.y, target.x, target.y, ships)
+        spawn_x = src.x + src.radius * math.cos(angle)
+        spawn_y = src.y + src.radius * math.sin(angle)
+        tt = _travel_time(spawn_x, spawn_y, target.x, target.y, ships)
         return angle, tt
 
-    tx, ty = target.x, target.y
-    tt = _travel_time(src.x, src.y, tx, ty, ships)
+    speed = _fleet_speed(ships)
+    R = target.orbital_radius
+    omega = target.angular_velocity
 
-    for _ in range(3):
-        arrival = step + tt
-        tx, ty = _planet_pos_at(target, arrival, step)
-        tt = _travel_time(src.x, src.y, tx, ty, ships)
+    def _intercept_error(t):
+        """f(t) = flight_time - t. Zero crossing = exact intercept."""
+        # Target position at step + t
+        a = target.initial_angle + omega * (step + t)
+        tx = SUN_X + R * math.cos(a)
+        ty = SUN_Y + R * math.sin(a)
+        # Angle from source center to predicted position
+        theta = math.atan2(ty - src.y, tx - src.x)
+        # Fleet spawns at edge of source planet
+        sx = src.x + src.radius * math.cos(theta)
+        sy = src.y + src.radius * math.sin(theta)
+        # Flight time at constant speed
+        d = _dist(sx, sy, tx, ty)
+        return d / speed - t
 
+    # Phase 1: Coarse scan to find first bracket where f crosses zero
+    # f(small_t) > 0 (fleet hasn't arrived), f(large_t) < 0 (fleet overshot)
+    max_t = 80.0
+    dt = 1.0
+    prev_t = 0.5
+    prev_err = _intercept_error(prev_t)
+    bracket = None
+
+    t = prev_t + dt
+    while t <= max_t:
+        err = _intercept_error(t)
+        if prev_err >= 0 and err <= 0:
+            bracket = (prev_t, t)
+            break
+        prev_t = t
+        prev_err = err
+        t += dt
+
+    if bracket is None:
+        # No intercept found within max_t turns — aim at current position
+        angle, _ = _safe_angle(src.x, src.y, target.x, target.y)
+        spawn_x = src.x + src.radius * math.cos(angle)
+        spawn_y = src.y + src.radius * math.sin(angle)
+        tt = _travel_time(spawn_x, spawn_y, target.x, target.y, ships)
+        return angle, tt
+
+    # Phase 2: Bisection to find exact intercept time
+    lo, hi = bracket
+    for _ in range(25):  # converges to ~1e-7 precision
+        mid = (lo + hi) / 2.0
+        if _intercept_error(mid) > 0:
+            lo = mid
+        else:
+            hi = mid
+
+    t_intercept = (lo + hi) / 2.0
+
+    # Compute the aim point at intercept time
+    a = target.initial_angle + omega * (step + t_intercept)
+    tx = SUN_X + R * math.cos(a)
+    ty = SUN_Y + R * math.sin(a)
+
+    # Check if path to intercept point passes through sun
+    angle = math.atan2(ty - src.y, tx - src.x)
+    spawn_x = src.x + src.radius * math.cos(angle)
+    spawn_y = src.y + src.radius * math.sin(angle)
+
+    if not _passes_through_sun(spawn_x, spawn_y, tx, ty):
+        tt = _dist(spawn_x, spawn_y, tx, ty) / speed
+        return angle, tt
+
+    # Sun blocks this intercept — search for the next one (planet comes around)
+    prev_t = bracket[1]
+    prev_err = _intercept_error(prev_t)
+    t = prev_t + dt
+    while t <= max_t:
+        err = _intercept_error(t)
+        if prev_err >= 0 and err <= 0:
+            # Found another bracket — bisect it
+            lo, hi = prev_t, t
+            for _ in range(25):
+                mid = (lo + hi) / 2.0
+                if _intercept_error(mid) > 0:
+                    lo = mid
+                else:
+                    hi = mid
+            t_intercept = (lo + hi) / 2.0
+            a = target.initial_angle + omega * (step + t_intercept)
+            tx = SUN_X + R * math.cos(a)
+            ty = SUN_Y + R * math.sin(a)
+            angle = math.atan2(ty - src.y, tx - src.x)
+            spawn_x = src.x + src.radius * math.cos(angle)
+            spawn_y = src.y + src.radius * math.sin(angle)
+            if not _passes_through_sun(spawn_x, spawn_y, tx, ty):
+                tt = _dist(spawn_x, spawn_y, tx, ty) / speed
+                return angle, tt
+        prev_t = t
+        prev_err = err
+        t += dt
+
+    # All intercepts blocked by sun — use sun-avoidance detour to first intercept
+    a = target.initial_angle + omega * (step + (bracket[0] + bracket[1]) / 2.0)
+    tx = SUN_X + R * math.cos(a)
+    ty = SUN_Y + R * math.sin(a)
     angle, _ = _safe_angle(src.x, src.y, tx, ty)
+    spawn_x = src.x + src.radius * math.cos(angle)
+    spawn_y = src.y + src.radius * math.sin(angle)
+    tt = _dist(spawn_x, spawn_y, tx, ty) / speed
     return angle, tt
 
 
@@ -348,296 +445,43 @@ def _estimate_in_flight(fleets, planets, player):
 
 
 def _ships_needed(target, travel_turns):
-    """Ships needed to capture a target, with overkill buffer."""
+    """Ships needed to capture a target, with overkill buffer.
+
+    For neutral planets (owner == -1), no production during travel.
+    """
     prod_during = target.production * travel_turns if target.owner >= 0 else 0
     raw = target.ships + prod_during + 1
     return max(MIN_FLEET_SIZE, int(math.ceil(raw * OVERKILL)))
 
 
-# ── strategic functions ────────────────────────────────────────────────────
+# ── scoring ────────────────────────────────────────────────────────────────
 
-def _identify_home_planet(my_planets):
-    """Return the planet with the highest production (tiebreak: most ships)."""
-    if not my_planets:
-        return None
-    return max(my_planets, key=lambda p: (p.production, p.ships))
+def _score_target(src, target, step, ships_to_send):
+    """Score a target by ROI: production^2 / (cost * time).
 
-
-def _planets_in_region(planets, cx, cy, radius, player):
-    """Return non-owned planets within radius of (cx, cy)."""
-    result = []
-    for p in planets:
-        if p.owner == player:
-            continue
-        if _dist(p.x, p.y, cx, cy) <= radius:
-            result.append(p)
-    return result
-
-
-def _detect_phase(step, my_planets, all_planets, player):
-    """Determine the current game phase."""
-    if step >= LATE_GAME_STEP:
-        return "late"
-    if step >= MID_GAME_STEP:
-        return "mid"
-    return "early"
-
-
-class _SimState:
-    """Lightweight simulation state for tree search."""
-    __slots__ = ("owned_ids", "ships_available", "total_production",
-                 "time_elapsed", "acquisitions", "score")
-
-    def __init__(self, owned_ids, ships_available, total_production,
-                 time_elapsed, acquisitions):
-        self.owned_ids = set(owned_ids)
-        self.ships_available = ships_available
-        self.total_production = total_production
-        self.time_elapsed = time_elapsed
-        self.acquisitions = list(acquisitions)
-        remaining = max(0, LOOKAHEAD_STEPS - time_elapsed)
-        self.score = total_production * remaining + ships_available
-
-
-def _tree_search_acquisitions(my_planets, candidates, step, planets_by_id):
-    """DFS over planet acquisition sequences to maximize production.
-
-    Returns [(target_id, ships_needed, estimated_launch_step), ...] or [].
+    Higher is better.
     """
-    if not my_planets or not candidates:
-        return []
-
-    # Initial state
-    owned_ids = {p.id for p in my_planets}
-    total_ships = sum(p.ships for p in my_planets)
-    total_prod = sum(p.production for p in my_planets)
-
-    initial = _SimState(owned_ids, total_ships, total_prod, 0, [])
-    best_state = initial
-
-    candidate_ids = [c.id for c in candidates]
-
-    def _dfs(state, depth):
-        nonlocal best_state
-        if state.score > best_state.score:
-            best_state = state
-        if depth >= MAX_SEARCH_DEPTH or state.time_elapsed >= LOOKAHEAD_STEPS:
-            return
-
-        for cid in candidate_ids:
-            if cid in state.owned_ids:
-                continue
-            target = planets_by_id.get(cid)
-            if target is None:
-                continue
-
-            # Find closest owned planet to this target
-            best_dist = float("inf")
-            best_src = None
-            for oid in state.owned_ids:
-                src = planets_by_id.get(oid)
-                if src is None:
-                    continue
-                d = _dist(src.x, src.y, target.x, target.y)
-                if d < best_dist:
-                    best_dist = d
-                    best_src = src
-
-            if best_src is None:
-                continue
-
-            # Estimate ships needed and travel time
-            est_ships = max(MIN_FLEET_SIZE, int(state.ships_available * 0.5))
-            tt = _travel_time(best_src.x, best_src.y, target.x, target.y, est_ships)
-            needed = _ships_needed(target, tt)
-
-            # How long must we wait to accumulate enough ships?
-            if state.ships_available >= needed:
-                wait = 0
-            elif state.total_production > 0:
-                deficit = needed - state.ships_available
-                wait = math.ceil(deficit / state.total_production)
-            else:
-                continue  # can't afford it
-
-            total_time = state.time_elapsed + wait + tt
-            if total_time > LOOKAHEAD_STEPS:
-                continue  # too slow
-
-            # Simulate acquisition
-            new_ships = state.ships_available + state.total_production * wait - needed
-            # Ships accumulate during travel too (from remaining planets)
-            new_ships += state.total_production * tt
-            new_prod = state.total_production + target.production
-            new_owned = state.owned_ids | {cid}
-            new_acq = state.acquisitions + [(cid, needed, step + state.time_elapsed + wait)]
-
-            new_state = _SimState(new_owned, new_ships, new_prod, total_time, new_acq)
-            _dfs(new_state, depth + 1)
-
-    _dfs(initial, 0)
-
-    return best_state.acquisitions
-
-
-def _find_staging_planet(my_planets, target):
-    """Find the closest owned planet to the target."""
-    if not my_planets:
-        return None
-    return min(my_planets, key=lambda p: _dist(p.x, p.y, target.x, target.y))
-
-
-def _consolidation_moves(my_planets, staging, needed, threats, already_sent):
-    """Generate moves to consolidate ships to a staging planet.
-
-    Returns list of [from_planet_id, angle, ships] moves.
-    """
-    moves = []
-    for p in my_planets:
-        if p.id == staging.id:
-            continue
-        if p.id in already_sent:
-            continue
-        garrison = _garrison_for(p, threats)
-        avail = p.ships - garrison
-        if avail < MIN_FLEET_SIZE:
-            continue
-        angle, _ = _safe_angle(p.x, p.y, staging.x, staging.y)
-        moves.append([p.id, angle, avail])
-        already_sent.add(p.id)
-    return moves
-
-
-def _should_attack(staging, target, needed, in_flight_to_target, step):
-    """Decide if we should launch an attack from staging to target."""
-    garrison = MIN_GARRISON
-    avail = staging.ships - garrison
-    already = in_flight_to_target
-    total = avail + already
-    return total >= needed and avail >= MIN_FLEET_SIZE
-
-
-def _late_game_moves(my_planets, enemy_planets, step, player, threats,
-                     already_sent, fleets, planets, in_flight):
-    """Generate late-game assault moves: target weakest enemy planets."""
-    moves = []
-    if not enemy_planets:
-        return moves
-
-    # Sort enemies by weakness (fewest ships, then lowest production)
-    enemies_sorted = sorted(enemy_planets, key=lambda p: (p.ships, -p.production))
-
-    for target in enemies_sorted:
-        staging = _find_staging_planet(my_planets, target)
-        if staging is None:
-            break
-
-        result = _aim_at_moving(staging, target, step, max(MIN_FLEET_SIZE, staging.ships))
-        if result is None:
-            continue
-        _, tt = result
-
-        needed = _ships_needed(target, tt)
-        already = in_flight.get(target.id, 0)
-        if already >= needed:
-            continue
-
-        remaining_needed = needed - already
-        garrison = _garrison_for(staging, threats)
-        avail = staging.ships - garrison
-
-        if avail >= remaining_needed:
-            # Launch the attack
-            angle, _ = result
-            send = remaining_needed
-            moves.append([staging.id, angle, send])
-            already_sent.add(staging.id)
-        else:
-            # Consolidate toward this staging planet
-            consol = _consolidation_moves(my_planets, staging, remaining_needed,
-                                          threats, already_sent)
-            moves.extend(consol)
-            # After consolidation, check if staging now has enough
-            # (consolidation moves are in-flight, so we wait)
-            break  # focus on one target at a time
-
-    return moves
-
-
-def _fallback_roi_attack(my_planets, all_planets, step, player, threats,
-                         already_sent, fleets, in_flight):
-    """Aggressive-style ROI attack as a safety net."""
-    moves = []
-    available = {}
-    for p in my_planets:
-        garrison = _garrison_for(p, threats)
-        available[p.id] = max(0, p.ships - garrison)
-
-    targets = [p for p in all_planets if p.owner != player]
-
-    scored = []
-    for t in targets:
-        best_src = None
-        best_d = float("inf")
-        for s in my_planets:
-            if available[s.id] < MIN_FLEET_SIZE or s.id in already_sent:
-                continue
-            d = _dist(s.x, s.y, t.x, t.y)
-            if d < best_d:
-                best_d = d
-                best_src = s
-
-        if best_src is None:
-            continue
-
-        est_ships = max(MIN_FLEET_SIZE, available[best_src.id] // 2)
-        tt = _travel_time(best_src.x, best_src.y, t.x, t.y, est_ships)
-        cost = _ships_needed(t, tt)
-        already = in_flight.get(t.id, 0)
-        remaining = max(1, cost - already)
-
-        roi = (t.production ** 2) / (remaining * max(tt, 1.0))
-        scored.append((roi, t, remaining, already, best_src))
-
-    scored.sort(key=lambda x: -x[0])
-
-    for roi, target, needed, already, best_src in scored:
-        if needed <= 0:
-            continue
-
-        sources = sorted(my_planets,
-                         key=lambda s: _dist(s.x, s.y, target.x, target.y))
-
-        ships_still_needed = needed
-        for src in sources:
-            if available.get(src.id, 0) < MIN_FLEET_SIZE or src.id in already_sent:
-                continue
-            if ships_still_needed <= 0:
-                break
-
-            send = min(available[src.id], ships_still_needed)
-            if send < MIN_FLEET_SIZE:
-                continue
-
-            result = _aim_at_moving(src, target, step, send)
-            if result is None:
-                continue
-            angle, _ = result
-
-            moves.append([src.id, angle, send])
-            available[src.id] -= send
-            already_sent.add(src.id)
-            ships_still_needed -= send
-
-    return moves
+    result = _aim_at_moving(src, target, step, ships_to_send)
+    if result is None:
+        return -1.0, 0.0, 0
+    _, tt = result
+    needed = _ships_needed(target, tt)
+    if needed <= 0:
+        return -1.0, tt, needed
+    # Prefer high-production planets and closer ones (lower travel time)
+    if ships_to_send >= needed:
+        roi = target.production**2 / max(tt, 1.0)
+    else:
+        roi = 0
+    return roi, tt, needed
 
 
 # ── main agent function (MUST be last callable) ───────────────────────────
 
 def agent(obs, config=None):
     """
-    Strategic tree-search agent for Orbit Wars.
-    Uses lookahead planning, ship consolidation, and phased play.
+    Strategic patient agent for Orbit Wars.
+    Waits until it has enough ships to overwhelm a target, then sends one big fleet.
     Returns list of [from_planet_id, angle_radians, num_ships] moves.
     """
     # ── parse observation ──────────────────────────────────────────────
@@ -665,81 +509,85 @@ def agent(obs, config=None):
     # ── in-flight tracking ─────────────────────────────────────────────
     in_flight = _estimate_in_flight(fleets, planets, player)
 
-    # ── phase detection ────────────────────────────────────────────────
-    phase = _detect_phase(step, my_planets, planets, player)
+    # ── compute available ships per planet ─────────────────────────────
+    available = {}
+    for p in my_planets:
+        garrison = _garrison_for(p, threats)
+        available[p.id] = max(0, p.ships - garrison)
 
-    already_sent = set()  # track which planets we've issued orders from
+    # ── production advantage check ────────────────────────────────────
+    my_production = sum(p.production for p in my_planets)
+    enemy_planets = [p for p in planets if p.owner >= 0 and p.owner != player]
+    enemy_production = sum(p.production for p in enemy_planets)
+
+    # If we have a big production advantage, only target enemy planets
+    if my_production >= enemy_production * 1.5 and enemy_planets:
+        targets = enemy_planets
+    else:
+        targets = [p for p in planets if p.owner != player]
+
     moves = []
+    used_sources = set()
 
-    # ── early & mid game: tree search + consolidate + attack ───────────
-    if phase in ("early", "mid"):
-        home = _identify_home_planet(my_planets)
-        if home is None:
-            return []
+    # ── for each of my planets, find the best target it can overwhelm ──
+    # Sort my planets by available ships (descending) so the strongest attack first
+    my_planets_sorted = sorted(my_planets, key=lambda p: -available[p.id])
 
-        # Determine search center and radius
-        if phase == "early":
-            cx, cy = home.x, home.y
-            search_radius = QUADRANT_SIZE
-        else:
-            # Mid game: use centroid of owned planets
-            cx = sum(p.x for p in my_planets) / len(my_planets)
-            cy = sum(p.y for p in my_planets) / len(my_planets)
-            search_radius = EXPAND_RADIUS
+    for src in my_planets_sorted:
+        if src.id in used_sources:
+            continue
+        avail = available[src.id]
+        if avail < MIN_FLEET_SIZE:
+            continue
 
-        # Find candidate planets for acquisition
-        candidates = _planets_in_region(planets, cx, cy, search_radius, player)
+        # Score all targets from this source
+        best_target = None
+        best_roi = -1.0
+        best_tt = 0.0
+        best_needed = 0
 
-        # Run tree search
-        plan = _tree_search_acquisitions(my_planets, candidates, step, planets_by_id)
+        for target in targets:
+            # Skip targets that already have enough ships in-flight
+            already = in_flight.get(target.id, 0)
+            if already > 0:
+                # Check if in-flight is already enough
+                # Rough estimate: if we've already sent enough, skip
+                rough_tt = _travel_time(src.x, src.y, target.x, target.y, avail)
+                rough_needed = _ships_needed(target, rough_tt)
+                if already >= rough_needed:
+                    continue
 
-        if plan:
-            # Execute the first acquisition in the plan
-            target_id, needed, launch_step = plan[0]
-            target = planets_by_id.get(target_id)
-            if target is not None:
-                staging = _find_staging_planet(my_planets, target)
-                if staging is not None:
-                    already_to_target = in_flight.get(target_id, 0)
-                    remaining_needed = max(1, needed - already_to_target)
+            roi, tt, needed = _score_target(src, target, step, avail)
+            if roi < 0:
+                continue
 
-                    if _should_attack(staging, target, remaining_needed,
-                                      already_to_target, step):
-                        # Launch attack
-                        garrison = _garrison_for(staging, threats)
-                        avail = staging.ships - garrison
-                        send = min(avail, remaining_needed)
-                        if send >= MIN_FLEET_SIZE:
-                            result = _aim_at_moving(staging, target, step, send)
-                            if result is not None:
-                                angle, _ = result
-                                moves.append([staging.id, angle, send])
-                                already_sent.add(staging.id)
-                    else:
-                        # Consolidate ships toward staging planet
-                        consol = _consolidation_moves(
-                            my_planets, staging, remaining_needed,
-                            threats, already_sent)
-                        moves.extend(consol)
+            # Subtract ships already in-flight toward this target
+            already = in_flight.get(target.id, 0)
+            effective_needed = max(MIN_FLEET_SIZE, needed - already)
 
-        # If tree search produced no moves, try fallback
-        if not moves:
-            moves = _fallback_roi_attack(
-                my_planets, planets, step, player, threats,
-                already_sent, fleets, in_flight)
+            # KEY LOGIC: Only consider this target if we have enough ships NOW
+            if avail < effective_needed:
+                continue
 
-    # ── late game: assault enemy planets ───────────────────────────────
-    elif phase == "late":
-        enemy_planets = [p for p in planets if p.owner >= 0 and p.owner != player]
-        moves = _late_game_moves(
-            my_planets, enemy_planets, step, player, threats,
-            already_sent, fleets, planets, in_flight)
+            if roi > best_roi:
+                best_roi = roi
+                best_target = target
+                best_tt = tt
+                best_needed = effective_needed
 
-        # If late game produced no moves, fallback
-        if not moves:
-            moves = _fallback_roi_attack(
-                my_planets, planets, step, player, threats,
-                already_sent, fleets, in_flight)
+        # If we found a target we can overwhelm, send the fleet
+        if best_target is not None:
+            # Send 90% of available ships — bigger fleets are faster and
+            # more decisive. Never send less than what's needed.
+            send = max(best_needed, int(avail * 0.9))
+            result = _aim_at_moving(src, best_target, step, send)
+            if result is not None:
+                angle, _ = result
+                moves.append([src.id, angle, send])
+                used_sources.add(src.id)
+                available[src.id] -= send
+                # Update in-flight tracking for subsequent source decisions
+                in_flight[best_target.id] = in_flight.get(best_target.id, 0) + send
 
     return moves
 
