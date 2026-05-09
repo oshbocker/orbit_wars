@@ -41,7 +41,7 @@ REINFORCE_BONUS = 1.35
 CRASH_EXPLOIT_BONUS = 1.25
 COMET_PENALTY = 0.85
 LEADER_BONUS = 1.2
-EXPOSED_ENEMY_BONUS = 0.75
+EXPOSED_ENEMY_BONUS = 0.25
 
 # Ship margins (aggressively tight — key efficiency advantage)
 NEUTRAL_MARGIN_BASE = 1
@@ -946,7 +946,7 @@ def _target_value(target, arrival_turns, mission, world):
         # Counter-attack bonus: enemy planet has active fleets in transit
         ships_in_transit = world.weakened_enemies.get(target.id, 0)
         if ships_in_transit > target.ships * 0.3:
-            value *= 1.0 + min(0.5, ships_in_transit / max(1, target.ships + ships_in_transit) * 0.7)
+            value *= 1.0 + min(0.25, ships_in_transit / max(1, target.ships + ships_in_transit) * 0.4)
 
     # Mission-specific
     if mission == "snipe":
