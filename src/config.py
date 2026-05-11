@@ -55,7 +55,7 @@ class RewardConfig:
 class EvalConfig:
     eval_every: int = 100
     eval_games: int = 10
-    eval_opponents: list[str] = field(default_factory=lambda: ["competitive", "random"])
+    eval_opponents: list[str] = field(default_factory=lambda: ["apex", "random"])
 
 
 @dataclass(slots=True)
@@ -80,7 +80,7 @@ class TrainConfig:
     log_dir: str = "outputs/logs"
     checkpoint_every: int = 50
     log_every: int = 1
-    opponent: str = "competitive"
+    opponent: str = "apex"
     self_play_update_interval: int = 50
     self_play_deterministic: bool = False
     alternate_player_sides: bool = True

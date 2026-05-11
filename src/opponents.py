@@ -88,11 +88,11 @@ def _policy_act(
     return moves
 
 
-class CompetitiveOpponent:
+class ApexOpponent:
     def __init__(self) -> None:
-        from agents.competitive import agent as _competitive_agent
+        from agents.apex import agent as _apex_agent
 
-        self._agent = _competitive_agent
+        self._agent = _apex_agent
 
     def act(self, observation: Any) -> list[list[float | int]]:
         result = self._agent(observation)
@@ -173,8 +173,8 @@ def build_opponent(
     *,
     checkpoint_path: str | Path | None = None,
 ) -> OpponentPolicy:
-    if name == "competitive":
-        return CompetitiveOpponent()
+    if name == "apex":
+        return ApexOpponent()
     if name == "random":
         return KaggleRandomOpponent()
     if name == "hybrid":

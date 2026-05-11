@@ -110,9 +110,9 @@ def run_periodic_eval(
 
 
 def _get_eval_opponent(name: str) -> Any:
-    if name == "competitive":
-        from agents.competitive import agent as competitive_agent
-        return competitive_agent
+    if name == "apex":
+        from agents.apex import agent as apex_agent
+        return apex_agent
     if name == "random":
         from kaggle_environments.envs.orbit_wars.orbit_wars import random_agent
         return random_agent

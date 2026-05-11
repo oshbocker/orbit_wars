@@ -62,16 +62,16 @@ def resolve_opponent(opponent_str: str, checkpoint_dir: str | Path | None = None
     Convert the string from config['env']['opponent'] to a callable.
 
     'random'      → built-in random agent
-    'competitive' → competitive rule-based agent
-    'self'        → latest checkpoint in checkpoint_dir (falls back to competitive)
+    'apex'        → apex rule-based agent
+    'self'        → latest checkpoint in checkpoint_dir (falls back to apex)
     """
     if opponent_str == "random":
         from envs.orbit_wars_env import _random_opponent
         return _random_opponent
 
-    if opponent_str == "competitive":
-        from agents.competitive import agent as competitive_agent
-        return competitive_agent
+    if opponent_str == "apex":
+        from agents.apex import agent as apex_agent
+        return apex_agent
 
     if opponent_str == "self":
         if checkpoint_dir is not None:
@@ -80,12 +80,12 @@ def resolve_opponent(opponent_str: str, checkpoint_dir: str | Path | None = None
                 print(f"Self-play: loading opponent from {latest}")
                 from agents.rl_agent import RLAgent
                 return RLAgent(latest, device="cpu")
-        # Fall back to competitive if no checkpoint yet
-        print("Self-play: no checkpoint found, falling back to competitive opponent.")
-        from agents.competitive import agent as competitive_agent
-        return competitive_agent
+        # Fall back to apex if no checkpoint yet
+        print("Self-play: no checkpoint found, falling back to apex opponent.")
+        from agents.apex import agent as apex_agent
+        return apex_agent
 
-    raise ValueError(f"Unknown opponent: {opponent_str!r}. Use 'random', 'competitive', or 'self'.")
+    raise ValueError(f"Unknown opponent: {opponent_str!r}. Use 'random', 'apex', or 'self'.")
 
 
 def _find_latest_checkpoint(checkpoint_dir: Path):
@@ -183,7 +183,7 @@ def train(config: dict, resume_from: str | Path | None = None) -> Any:
         model = PPO(**model_kwargs)
 
     # ── callbacks ──────────────────────────────────────────────────────────
-    eval_opponent_str = eval_cfg.get("opponent", "competitive")
+    eval_opponent_str = eval_cfg.get("opponent", "apex")
     eval_opponent = resolve_opponent(eval_opponent_str)
     eval_env = Monitor(OrbitWarsEnv(opponent=eval_opponent, reward_shaping=False))
 

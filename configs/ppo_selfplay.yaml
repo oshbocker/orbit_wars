@@ -2,7 +2,7 @@
 # so the agent always trains against a copy of itself.
 #
 # Recommended workflow:
-#   1. python scripts/train.py --config configs/ppo_default.yaml  (warm up vs competitive)
+#   1. python scripts/train.py --config configs/ppo_default.yaml  (warm up vs apex)
 #   2. python scripts/train.py --config configs/ppo_selfplay.yaml --set training.total_timesteps=2000000
 
 env:
@@ -28,7 +28,7 @@ training:
 eval:
   freq: 25_000
   n_episodes: 20
-  opponent: competitive
+  opponent: apex
 
 output:
   checkpoint_dir: outputs/checkpoints

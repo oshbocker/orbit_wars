@@ -1,3 +1,3 @@
-from .competitive import agent as competitive_agent
+from .apex import agent as apex_agent
 
-__all__ = ["competitive_agent"]
+__all__ = ["apex_agent"]

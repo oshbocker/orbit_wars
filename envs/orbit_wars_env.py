@@ -69,7 +69,7 @@ class OrbitWarsEnv(gym.Env):
 
     Parameters
     ----------
-    opponent : callable or "random" or "competitive"
+    opponent : callable or "random" or "apex"
         Agent function called each step to produce opponent moves.
     reward_shaping : bool
         Whether to add dense intermediate rewards on top of terminal ±1.
@@ -90,13 +90,13 @@ class OrbitWarsEnv(gym.Env):
         # Resolve string opponents
         if opponent == "random":
             self._opponent_fn = _random_opponent
-        elif opponent == "competitive":
-            from agents.competitive import agent as competitive_agent
-            self._opponent_fn = competitive_agent
+        elif opponent == "apex":
+            from agents.apex import agent as apex_agent
+            self._opponent_fn = apex_agent
         elif callable(opponent):
             self._opponent_fn = opponent
         else:
-            raise ValueError(f"opponent must be callable, 'random', or 'competitive'; got {opponent!r}")
+            raise ValueError(f"opponent must be callable, 'random', or 'apex'; got {opponent!r}")
 
         self.reward_shaping = reward_shaping
         self._seed = seed

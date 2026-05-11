@@ -5,7 +5,7 @@ save_dir: outputs/checkpoints
 log_dir: outputs/logs
 checkpoint_every: 50
 log_every: 1
-opponent: competitive
+opponent: apex
 self_play_update_interval: 50
 self_play_deterministic: false
 alternate_player_sides: true
@@ -44,4 +44,4 @@ reward:
 eval:
   eval_every: 100
   eval_games: 10
-  eval_opponents: [competitive, random]
+  eval_opponents: [apex, random]

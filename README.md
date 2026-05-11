@@ -52,7 +52,7 @@ Python 3.10+ required. GPU is optional — CPU works fine for development.
 
 The `scripts/evaluate.py` script runs head-to-head matches using the Kaggle environment locally. No GPU or Kaggle account needed.
 
-### Competitive vs random (quick sanity check)
+### Apex vs random (quick sanity check)
 
 ```bash
 uv run python scripts/evaluate.py
@@ -60,7 +60,7 @@ uv run python scripts/evaluate.py
 
 ### Evaluate a trained RL model
 
-When only `--model` is given, competitive and random are added automatically:
+When only `--model` is given, apex and random are added automatically:
 
 ```bash
 uv run python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip
@@ -75,13 +75,13 @@ puv run ython scripts/evaluate.py \
     --games 30
 ```
 
-### Full matrix (RL models + competitive + random)
+### Full matrix (RL models + apex + random)
 
 ```bash
 uv run python scripts/evaluate.py \
     --model outputs/checkpoints/run_a/best_model.zip:rl_v1 \
     --model outputs/checkpoints/run_b/best_model.zip:rl_v2 \
-    --competitive --random \
+    --apex --random \
     --games 20
 ```
 
@@ -100,7 +100,7 @@ uv run python scripts/evaluate.py \
 |------|-------------|
 | `--model PATH[:LABEL]` | Add a trained RL model; repeat for multiple |
 | `--vs PATH[:LABEL]` | Evaluate `--model` only against this single opponent |
-| `--competitive` | Include the competitive (net-difference) agent |
+| `--apex` | Include the apex rule-based agent |
 | `--hybrid` | Include the hybrid (mission-based) agent |
 | `--random` | Include the random agent |
 | `--games N` | Games per matchup (default: 20) |
@@ -111,7 +111,7 @@ uv run python scripts/evaluate.py \
 ### Transformer PPO (primary pipeline)
 
 ```bash
-# Train with default config (PPO vs competitive, 2000 updates)
+# Train with default config (PPO vs apex, 2000 updates)
 uv run python -m src.train --config configs/transformer_ppo.yaml
 
 # DAgger: BC pretrain from hybrid demos + PPO with imitation decay
@@ -123,7 +123,7 @@ Checkpoints are saved to `outputs/checkpoints/<run_name>/` as `.pt` files.
 ### Legacy SB3 pipeline
 
 ```bash
-# Default: PPO vs competitive, 500k steps
+# Default: PPO vs apex, 500k steps
 uv run python scripts/train.py
 
 # Different config
@@ -178,8 +178,8 @@ After training on Colab, download the checkpoint from Google Drive and evaluate 
 
    agent = make_eval_agent(policy, cfg, device)
 
-   from agents.competitive import agent as competitive
-   print_results('rl', 'competitive', run_games(agent, competitive, n_games=20, verbose=True))
+   from agents.apex import agent as apex
+   print_results('rl', 'apex', run_games(agent, apex, n_games=20, verbose=True))
 
    from agents.hybrid import agent as hybrid
    print_results('rl', 'hybrid', run_games(agent, hybrid, n_games=20, verbose=True))
@@ -254,8 +254,8 @@ uv run tensorboard --logdir outputs/logs
 ### One-step: generate + upload
 
 ```bash
-# Competitive agent
-python scripts/submit.py --competitive --upload
+# Apex agent
+python scripts/submit.py --apex --upload
 
 # Trained RL agent
 python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip --upload
@@ -271,7 +271,7 @@ python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip --veri
 ### Generate file only (upload manually)
 
 ```bash
-python scripts/submit.py --competitive
+python scripts/submit.py --apex
 python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip
 ```
 
@@ -299,7 +299,7 @@ chmod 600 ~/.config/kaggle/kaggle.json
 
 ```
 src/             # Transformer PPO pipeline (primary RL effort)
-agents/          # Agent implementations (competitive.py, hybrid.py, rl_agent.py)
+agents/          # Agent implementations (apex.py, hybrid.py, rl_agent.py)
 configs/         # YAML experiment configs
 envs/            # Gymnasium wrapper for legacy SB3 pipeline
 evaluation/      # Core evaluation utilities
@@ -328,9 +328,9 @@ Use it directly in a script:
 
 ```python
 from evaluation.evaluate import run_games, benchmark
-from agents.competitive import agent as competitive
+from agents.apex import agent as apex
 
 benchmark(my_agent, agent_name="my_agent", n_games=20)
 # or
-results = run_games(my_agent, competitive, n_games=50, verbose=True)
+results = run_games(my_agent, apex, n_games=50, verbose=True)
 ```

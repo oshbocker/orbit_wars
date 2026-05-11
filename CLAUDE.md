@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Goal
 
 Kaggle Orbit Wars competition.
-**Primary purpose: learn reinforcement learning and win competition.** The competitive rule-based agent is the current benchmark; the main effort is one or more agents using modern RL (PPO, self-play, MARL). The agents should be capable of training in Kaggle (GPU), Google Colab (GPU), or locally (no GPU). The evaluation should be capable of running in Kaggle or locally (no GPU).
+**Primary purpose: learn reinforcement learning and win competition.** The apex rule-based agent is the current benchmark; the main effort is one or more agents using modern RL (PPO, self-play, MARL). The agents should be capable of training in Kaggle (GPU), Google Colab (GPU), or locally (no GPU). The evaluation should be capable of running in Kaggle or locally (no GPU).
 
 ## Repository Structure
 
@@ -18,19 +18,19 @@ orbit_wars/
 │   ├── features.py          # Feature encoding, fleet transit, SourceDecision
 │   ├── policy.py            # TransformerPolicy (~493K params default)
 │   ├── ppo.py               # Factored PPO (target + fraction), clipped update, optional imitation loss
-│   ├── opponents.py         # Competitive, Random, SelfPlay, Hybrid, Distilled opponents + _policy_act()
+│   ├── opponents.py         # Apex, Random, SelfPlay, Hybrid, Distilled opponents + _policy_act()
 │   ├── env.py               # Kaggle env wrapper (2-player, side alternation)
 │   ├── logging.py           # TrainLogger (TensorBoard + CSV), EvalResult, periodic eval
 │   ├── imitation.py         # DemonstrationBuffer, collect_demonstrations, BC loss, bc_pretrain
 │   └── train.py             # Training loop: BC pretrain → PPO + imitation decay → self-play
 ├── agents/                  # Agent implementations
-│   ├── competitive.py       # Net-difference rule-based agent (benchmark)
+│   ├── apex.py              # Apex rule-based agent (benchmark)
 │   ├── hybrid.py            # Mission-based + timeline agent
 │   └── rl_agent.py          # SB3 model wrapper + submission export
 ├── configs/                 # YAML experiment configs
-│   ├── transformer_ppo.yaml   # Transformer PPO default config (2000 updates, competitive opponent)
+│   ├── transformer_ppo.yaml   # Transformer PPO default config (2000 updates, apex opponent)
 │   ├── transformer_dagger.yaml# DAgger: BC pretrain from hybrid + PPO with imitation decay (3000 updates)
-│   ├── ppo_default.yaml       # SB3 PPO vs competitive (500k steps, legacy)
+│   ├── ppo_default.yaml       # SB3 PPO vs apex (500k steps, legacy)
 │   └── ppo_selfplay.yaml      # SB3 self-play fine-tuning (legacy)
 ├── envs/                    # Gymnasium wrappers (legacy SB3 pipeline)
 │   └── orbit_wars_env.py    # Single-agent env, obs/action encoding
@@ -61,7 +61,7 @@ orbit_wars/
 ### Transformer PPO (primary pipeline — `src/`)
 
 ```bash
-# Train with default config (PPO vs competitive, 2000 updates)
+# Train with default config (PPO vs apex, 2000 updates)
 uv run python -m src.train --config configs/transformer_ppo.yaml
 
 # DAgger: BC pretrain from hybrid demos + PPO with imitation decay (3000 updates)
@@ -91,8 +91,8 @@ policy.eval()
 
 agent = make_eval_agent(policy, cfg, device)
 
-from agents.competitive import agent as competitive
-print_results('rl', 'competitive', run_games(agent, competitive, n_games=20, verbose=True))
+from agents.apex import agent as apex
+print_results('rl', 'apex', run_games(agent, apex, n_games=20, verbose=True))
 "
 ```
 
@@ -105,7 +105,7 @@ uv run tensorboard --logdir outputs/logs
 ### Legacy SB3 Pipeline (scripts/)
 
 ```bash
-# Train (default config: PPO vs competitive, 500k steps)
+# Train (default config: PPO vs apex, 500k steps)
 uv run python scripts/train.py
 
 # Train with a different config
@@ -117,20 +117,20 @@ uv run python scripts/train.py --set training.total_timesteps=1000000 env.n_envs
 # Resume from a checkpoint
 uv run python scripts/train.py --resume outputs/checkpoints/ppo_default_20260501_120000/best_model.zip
 
-# Evaluate: trained model vs competitive and random
+# Evaluate: trained model vs apex and random
 uv run python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip
 
 # Evaluate with a custom number of games
 uv run python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip --games 50
 
-# Full matrix: two models + competitive + random
+# Full matrix: two models + apex + random
 uv run python scripts/evaluate.py \
     --model outputs/checkpoints/run_a/best_model.zip:rl_v1 \
     --model outputs/checkpoints/run_b/best_model.zip:rl_v2 \
-    --competitive --random --games 30
+    --apex --random --games 30
 
-# Generate a submission (competitive)
-uv run python scripts/submit.py --competitive
+# Generate a submission (apex)
+uv run python scripts/submit.py --apex
 
 # Generate a submission (RL model) and verify it runs
 uv run python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip --verify
@@ -157,8 +157,8 @@ pip install --upgrade "kaggle-environments>=1.28.0" "stable-baselines3[extra]>=2
 2. GPU Verification
 3. Experiment Config (loads `transformer_dagger.yaml`, applies H100 overrides)
 4. **Train** (demo collection → BC pretrain → PPO with imitation decay)
-5. **Generate Submission** (competitive + hybrid + checkpoint copy to Drive)
-6. **Evaluate** (trained model vs competitive and random, 20 games each)
+5. **Generate Submission** (apex + hybrid + checkpoint copy to Drive)
+6. **Evaluate** (trained model vs apex and random, 20 games each)
 7. **TensorBoard** (last — can block downstream cell execution)
 
 **H100 Colab overrides** in the config cell: `num_envs=4`, `rollout_steps=128`, `total_updates=5000`, `eval_every=250`.
@@ -317,7 +317,7 @@ Phase 4: Self-play transition      →  When β=0 and opponent="self", switch to
 ### Opponents (`src/opponents.py`)
 
 - `_policy_act(policy, obs, cfg, device, deterministic)` — shared helper for all policy-based opponents (~40 lines, sequential per-planet decisions with transit updates)
-- `CompetitiveOpponent` — wraps `agents.competitive.agent`
+- `ApexOpponent` — wraps `agents.apex.agent`
 - `KaggleRandomOpponent` — wraps Kaggle's built-in `random_agent`
 - `HybridOpponent` — wraps `agents.hybrid.agent` (slow, 50-800ms/step)
 - `SelfPlayOpponent` — maintains a separate `TransformerPolicy`; `sync_from()` copies weights from training policy
@@ -328,7 +328,7 @@ Phase 4: Self-play transition      →  When β=0 and opponent="self", switch to
 
 Key config sections: `env`, `model`, `ppo`, `reward`, `eval`, `imitation`.
 
-**`configs/transformer_ppo.yaml`** — default PPO config (2000 updates, competitive opponent, eval every 100)
+**`configs/transformer_ppo.yaml`** — default PPO config (2000 updates, apex opponent, eval every 100)
 
 **`configs/transformer_dagger.yaml`** — DAgger config:
 ```yaml
@@ -346,7 +346,7 @@ imitation:
 eval:
   eval_every: 100
   eval_games: 10
-  eval_opponents: [competitive, random]
+  eval_opponents: [apex, random]
 
 ppo:
   total_updates: 3000
@@ -391,9 +391,9 @@ Each `.pt` file contains `{"update": int, "policy": state_dict, "optimizer": sta
 
 ## RL Development Roadmap
 
-1. **Competitive** (done): net-difference rule-based agent in `agents/competitive.py`
+1. **Apex** (done): rule-based agent in `agents/apex.py`
 2. **Hybrid** (done): mission-based + timeline agent in `agents/hybrid.py`
-3. **Transformer PPO vs competitive** (done): `uv run python -m src.train --config configs/transformer_ppo.yaml`
+3. **Transformer PPO vs apex** (done): `uv run python -m src.train --config configs/transformer_ppo.yaml`
 4. **Logging + periodic eval** (done): TensorBoard + CSV metrics, win rate tracking against baselines
 5. **DAgger / imitation learning** (done): BC pretrain from hybrid demos + PPO with decaying imitation loss: `uv run python -m src.train --config configs/transformer_dagger.yaml`
 6. **Self-play**: set `opponent: self` in config; DAgger config auto-transitions when imitation_coef reaches 0

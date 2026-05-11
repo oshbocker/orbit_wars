@@ -55,7 +55,7 @@ def export_submission(
     ----------
     model_path : path to .zip weights, or None when mode is a rule-based agent
     output_path : where to write the file
-    mode : 'competitive' | 'hybrid' | 'rl'
+    mode : 'apex' | 'hybrid' | 'rl'
 
     Returns
     -------
@@ -64,8 +64,8 @@ def export_submission(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if mode == "competitive":
-        code = _competitive_submission_code()
+    if mode == "apex":
+        code = _apex_submission_code()
     elif mode == "hybrid":
         code = _hybrid_submission_code()
     elif mode == "rl":
@@ -74,7 +74,7 @@ def export_submission(
         weights_b64 = _encode_weights(Path(model_path))
         code = _rl_submission_code(weights_b64)
     else:
-        raise ValueError(f"mode must be 'competitive', 'hybrid', or 'rl', got {mode!r}")
+        raise ValueError(f"mode must be 'apex', 'hybrid', or 'rl', got {mode!r}")
 
     output_path.write_text(code)
     size_kb = output_path.stat().st_size // 1024
@@ -96,10 +96,10 @@ def _hybrid_submission_code() -> str:
     return source
 
 
-def _competitive_submission_code() -> str:
-    """Read agents/competitive.py and wrap it as a submission."""
+def _apex_submission_code() -> str:
+    """Read agents/apex.py and wrap it as a submission."""
     here = Path(__file__).parent
-    source = (here / "competitive.py").read_text()
+    source = (here / "apex.py").read_text()
     return source
 
 

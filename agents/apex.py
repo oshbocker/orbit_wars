@@ -118,6 +118,16 @@ def _seg_hits_sun(x1, y1, x2, y2, safety=SUN_SAFE):
     return _point_to_seg_dist(SUN_X, SUN_Y, x1, y1, x2, y2) < SUN_R + safety
 
 
+def _path_hits_planet(lx, ly, ex, ey, planets, src_id, tgt_id):
+    """Check if fleet path hits any planet other than source and target."""
+    for p in planets:
+        if p.id == src_id or p.id == tgt_id:
+            continue
+        if _point_to_seg_dist(p.x, p.y, lx, ly, ex, ey) < p.radius:
+            return True
+    return False
+
+
 def _launch_pt(sx, sy, sr, angle):
     c = sr + LAUNCH_OFFSET
     return sx + math.cos(angle) * c, sy + math.sin(angle) * c
@@ -752,6 +762,16 @@ class World:
         tgt = self.by_id[tgt_id]
         result = _aim_with_prediction(src, tgt, ships, self.initial_by_id,
                                        self.ang_vel, self.comets, self.comet_ids)
+        # Check if path crosses any intermediate planet
+        if result is not None:
+            angle, turns, tx, ty = result
+            lx, ly = _launch_pt(src.x, src.y, src.radius, angle)
+            speed = _fleet_speed(max(1, int(ships)))
+            d = speed * turns
+            ex = lx + math.cos(angle) * d
+            ey = ly + math.sin(angle) * d
+            if _path_hits_planet(lx, ly, ex, ey, self.planets, src_id, tgt_id):
+                result = None
         self._aim_cache[key] = result
         return result
 
@@ -1477,11 +1497,19 @@ def _opening_expand(world, deadline=None):
     def _atk_left(pid):
         return max(0, budget.get(pid, 0) - spent[pid])
 
-    def _add_move(pid, angle, ships):
+    def _add_move(pid, angle, ships, tgt_id=None):
         send = min(int(ships), _inv_left(pid))
         if send < 1:
             return 0
-        moves.append([pid, float(angle), int(send)])
+        # Re-aim for orbiting targets when actual send differs from planned
+        if tgt_id is not None and send != int(ships):
+            tgt = world.by_id.get(tgt_id)
+            if tgt and not _is_static(tgt, world.initial_by_id):
+                shot = world.aim(pid, tgt_id, send)
+                if shot is None:
+                    return 0
+                angle = shot[0]
+        moves.append([pid, float(angle), int(send), tgt_id])
         spent[pid] += send
         return send
 
@@ -1683,7 +1711,7 @@ def _opening_expand(world, deadline=None):
             angle, turns, _, need, send = plan
             if send < need:
                 continue
-            actual = _add_move(src_id, angle, send)
+            actual = _add_move(src_id, angle, send, tgt_id)
             if actual >= need:
                 commitments[tgt_id].append((turns, world.player, int(actual)))
 
@@ -1701,7 +1729,7 @@ def _opening_expand(world, deadline=None):
             angle, turns, _, need, send = plan
             if send < need:
                 continue
-            actual = _add_move(src_id, angle, send)
+            actual = _add_move(src_id, angle, send, tgt_id)
             if actual >= need:
                 commitments[tgt_id].append((turns, world.player, int(actual)))
 
@@ -1753,7 +1781,7 @@ def _opening_expand(world, deadline=None):
                 continue
             committed = []
             for src_id, angle, turns, send in reaimed:
-                actual = _add_move(src_id, angle, send)
+                actual = _add_move(src_id, angle, send, tgt_id)
                 if actual > 0:
                     committed.append((turns, world.player, int(actual)))
             if sum(c[2] for c in committed) >= actual_need:
@@ -1813,21 +1841,30 @@ def _opening_expand(world, deadline=None):
             angle, turns, _, need, send = plan
             if send < need:
                 continue
-            actual = _add_move(src.id, angle, send)
+            actual = _add_move(src.id, angle, send, target.id)
             if actual >= need:
                 commitments[target.id].append(
                     (turns, world.player, int(actual)))
 
-    # Finalize: clamp to actual planet ships
+    # Finalize: clamp to actual planet ships, re-aim orbiting targets
     final = []
     used = defaultdict(int)
-    for src_id, angle, ships in moves:
+    for src_id, angle, ships, tgt_id in moves:
         p = world.by_id[src_id]
         max_ok = int(p.ships) - used[src_id]
         send = min(int(ships), max_ok)
-        if send >= 1:
-            final.append([src_id, float(angle), int(send)])
-            used[src_id] += send
+        if send < 1:
+            continue
+        # Re-aim for orbiting targets if clamped
+        if send != int(ships) and tgt_id is not None:
+            tgt = world.by_id.get(tgt_id)
+            if tgt and not _is_static(tgt, world.initial_by_id):
+                shot = world.aim(src_id, tgt_id, send)
+                if shot is None:
+                    continue
+                angle = shot[0]
+        final.append([src_id, float(angle), int(send)])
+        used[src_id] += send
     return final
 
 
@@ -1886,11 +1923,19 @@ def _plan_moves(world, deadline=None):
     def _atk_left(pid):
         return max(0, budget.get(pid, 0) - spent[pid])
 
-    def _add_move(pid, angle, ships):
+    def _add_move(pid, angle, ships, tgt_id=None):
         send = min(int(ships), _inv_left(pid))
         if send < 1:
             return 0
-        moves.append([pid, float(angle), int(send)])
+        # Re-aim for orbiting targets when actual send differs from planned
+        if tgt_id is not None and send != int(ships):
+            tgt = world.by_id.get(tgt_id)
+            if tgt and not _is_static(tgt, world.initial_by_id):
+                shot = world.aim(pid, tgt_id, send)
+                if shot is None:
+                    return 0
+                angle = shot[0]
+        moves.append([pid, float(angle), int(send), tgt_id])
         spent[pid] += send
         return send
 
@@ -2178,6 +2223,33 @@ def _plan_moves(world, deadline=None):
                 score *= 0.97  # slight penalty for coordination risk
                 swarm_missions.append((score, tgt_id, joint_turn, need, [a, b]))
 
+        # 3-source swarms: for well-defended targets that 2-source can't handle
+        if len(top) >= 3:
+            for i in range(len(top)):
+                for j in range(i + 1, len(top)):
+                    for k in range(j + 1, len(top)):
+                        a, b, c = top[i], top[j], top[k]
+                        srcs = {a[1], b[1], c[1]}
+                        if len(srcs) < 3:
+                            continue  # need distinct sources
+                        etas = [a[3], b[3], c[3]]
+                        if max(etas) - min(etas) > SWARM_ETA_TOL:
+                            continue
+                        joint_turn = max(etas)
+                        total_cap = a[5] + b[5] + c[5]
+                        need = world.ships_to_own(tgt_id, joint_turn, commitments, upper=total_cap)
+                        if need <= 0 or total_cap < need:
+                            continue
+                        # Must actually need 3 sources (no 2 suffice)
+                        if a[5] + b[5] >= need or a[5] + c[5] >= need or b[5] + c[5] >= need:
+                            continue
+                        value = _target_value(target, joint_turn, "swarm", world)
+                        if value <= 0:
+                            continue
+                        score = value / (need + joint_turn * 0.55 + 1.0)
+                        score *= 0.94  # coordination risk penalty for 3-source
+                        swarm_missions.append((score, tgt_id, joint_turn, need, [a, b, c]))
+
     # ── Phase 5: Execute missions by priority ────────────────────────────
     all_missions = []
     for m in rescue_missions:
@@ -2212,7 +2284,7 @@ def _plan_moves(world, deadline=None):
             angle, turns, _, need, send = plan
             if send < need:
                 continue
-            actual = _add_move(src_id, angle, send)
+            actual = _add_move(src_id, angle, send, tgt_id)
             if actual >= need:
                 commitments[tgt_id].append((turns, world.player, int(actual)))
             continue
@@ -2241,7 +2313,7 @@ def _plan_moves(world, deadline=None):
             angle, turns, _, need, send = plan
             if send < need:
                 continue
-            actual = _add_move(src_id, angle, send)
+            actual = _add_move(src_id, angle, send, tgt_id)
             if actual >= need:
                 commitments[tgt_id].append((turns, world.player, int(actual)))
 
@@ -2259,7 +2331,7 @@ def _plan_moves(world, deadline=None):
             angle, turns, _, need, send = plan
             if send < need:
                 continue
-            actual = _add_move(src_id, angle, send)
+            actual = _add_move(src_id, angle, send, tgt_id)
             if actual >= need:
                 commitments[tgt_id].append((turns, world.player, int(actual)))
 
@@ -2318,7 +2390,7 @@ def _plan_moves(world, deadline=None):
 
             committed = []
             for src_id, angle, turns, send in reaimed:
-                actual = _add_move(src_id, angle, send)
+                actual = _add_move(src_id, angle, send, tgt_id)
                 if actual > 0:
                     committed.append((turns, world.player, int(actual)))
             if sum(c[2] for c in committed) >= actual_need:
@@ -2385,7 +2457,7 @@ def _plan_moves(world, deadline=None):
             angle, turns, _, need, send = plan
             if send < need:
                 continue
-            actual = _add_move(src.id, angle, send)
+            actual = _add_move(src.id, angle, send, target.id)
             if actual >= need:
                 commitments[target.id].append((turns, world.player, int(actual)))
 
@@ -2431,7 +2503,7 @@ def _plan_moves(world, deadline=None):
 
             if best_capture is not None:
                 _, tgt_id, angle, turns, send = best_capture
-                actual = _add_move(p.id, angle, send)
+                actual = _add_move(p.id, angle, send, tgt_id)
                 if actual >= 1:
                     commitments[tgt_id].append((turns, world.player, int(actual)))
                 continue
@@ -2450,7 +2522,7 @@ def _plan_moves(world, deadline=None):
             retreat = min(safe, key=lambda a: (front_d.get(a.id, 1e9), _dist(p.x, p.y, a.x, a.y)))
             shot = world.aim(p.id, retreat.id, avail)
             if shot is not None:
-                _add_move(p.id, shot[0], avail)
+                _add_move(p.id, shot[0], avail, retreat.id)
 
     # ── Phase 8: Stage rear planets forward ──────────────────────────────
     if not world.is_late and _time_left() > OPTIONAL_PHASE_MIN_TIME and len(world.my_planets) > 1:
@@ -2489,18 +2561,27 @@ def _plan_moves(world, deadline=None):
                         continue
                     if shot[1] > 40:
                         continue
-                    _add_move(rear.id, shot[0], send)
+                    _add_move(rear.id, shot[0], send, front.id)
 
-    # Finalize: clamp to actual planet ships
+    # Finalize: clamp to actual planet ships, re-aim orbiting targets
     final = []
     used = defaultdict(int)
-    for src_id, angle, ships in moves:
+    for src_id, angle, ships, tgt_id in moves:
         p = world.by_id[src_id]
         max_ok = int(p.ships) - used[src_id]
         send = min(int(ships), max_ok)
-        if send >= 1:
-            final.append([src_id, float(angle), int(send)])
-            used[src_id] += send
+        if send < 1:
+            continue
+        # Re-aim for orbiting targets if clamped
+        if send != int(ships) and tgt_id is not None:
+            tgt = world.by_id.get(tgt_id)
+            if tgt and not _is_static(tgt, world.initial_by_id):
+                shot = world.aim(src_id, tgt_id, send)
+                if shot is None:
+                    continue
+                angle = shot[0]
+        final.append([src_id, float(angle), int(send)])
+        used[src_id] += send
     return final
 
 

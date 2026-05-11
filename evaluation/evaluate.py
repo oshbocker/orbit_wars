@@ -92,14 +92,14 @@ def head_to_head(
 
 
 def benchmark(agent: Callable, agent_name: str = "agent", n_games: int = 20) -> None:
-    """Convenience: run agent vs random and competitive, print a summary table."""
-    from agents.competitive import agent as competitive_agent
+    """Convenience: run agent vs random and apex, print a summary table."""
+    from agents.apex import agent as apex_agent
     from envs.orbit_wars_env import _random_opponent
 
     print(f"\n{'='*60}")
     print(f"  Benchmark: {agent_name}")
     print(f"{'='*60}")
-    for opp_name, opp in [("random", _random_opponent), ("competitive", competitive_agent)]:
+    for opp_name, opp in [("random", _random_opponent), ("apex", apex_agent)]:
         r = run_games(agent, opp, n_games=n_games)
         print_results(agent_name, opp_name, r)
     print()

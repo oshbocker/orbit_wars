@@ -4,7 +4,7 @@ Evaluate Orbit Wars agents head-to-head.
 
 Examples
 --------
-# Evaluate a trained model vs competitive and random (auto-included)
+# Evaluate a trained model vs apex and random (auto-included)
 python scripts/evaluate.py --model outputs/checkpoints/ppo_default_20260501/best_model.zip
 
 # Compare two models head-to-head
@@ -13,14 +13,14 @@ python scripts/evaluate.py \\
     --vs     outputs/checkpoints/run_b/best_model.zip \\
     --games 50
 
-# Evaluate the competitive agent vs random
-python scripts/evaluate.py --competitive --games 30
+# Evaluate the apex agent vs random
+python scripts/evaluate.py --apex --games 30
 
-# Full matrix: two RL models + competitive + random
+# Full matrix: two RL models + apex + random
 python scripts/evaluate.py \\
     --model outputs/checkpoints/run_a/best_model.zip:rl_v1 \\
     --model outputs/checkpoints/run_b/best_model.zip:rl_v2 \\
-    --competitive --random \\
+    --apex --random \\
     --games 20
 """
 
@@ -66,9 +66,9 @@ def main():
         help="If set, evaluate --model only against this opponent (not a full matrix)",
     )
     parser.add_argument(
-        "--competitive",
+        "--apex",
         action="store_true",
-        help="Include the competitive (net-difference) agent",
+        help="Include the apex rule-based agent",
     )
     parser.add_argument(
         "--hybrid",
@@ -100,9 +100,9 @@ def main():
         from envs.orbit_wars_env import _random_opponent
         agents["random"] = _random_opponent
 
-    if args.competitive:
-        from agents.competitive import agent as competitive_agent
-        agents["competitive"] = competitive_agent
+    if args.apex:
+        from agents.apex import agent as apex_agent
+        agents["apex"] = apex_agent
 
     if args.hybrid:
         from agents.hybrid import agent as hybrid_agent
@@ -113,18 +113,18 @@ def main():
         agents[label] = ag
 
     if not agents:
-        # Default: competitive vs random
-        from agents.competitive import agent as competitive_agent
+        # Default: apex vs random
+        from agents.apex import agent as apex_agent
         from envs.orbit_wars_env import _random_opponent
-        agents = {"competitive": competitive_agent, "random": _random_opponent}
-        print("No agents specified — running default: competitive vs random\n")
-    elif args.model and not args.random and not args.competitive and not args.vs:
-        # RL model(s) given without explicit opponents — auto-add competitive + random
-        from agents.competitive import agent as competitive_agent
+        agents = {"apex": apex_agent, "random": _random_opponent}
+        print("No agents specified — running default: apex vs random\n")
+    elif args.model and not args.random and not args.apex and not args.vs:
+        # RL model(s) given without explicit opponents — auto-add apex + random
+        from agents.apex import agent as apex_agent
         from envs.orbit_wars_env import _random_opponent
-        agents["competitive"] = competitive_agent
+        agents["apex"] = apex_agent
         agents["random"] = _random_opponent
-        print("No opponents specified — auto-adding competitive and random\n")
+        print("No opponents specified — auto-adding apex and random\n")
 
     if args.vs:
         # Single opponent mode: evaluate every agent in --model against --vs

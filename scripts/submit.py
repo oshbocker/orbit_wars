@@ -4,14 +4,14 @@ Generate a self-contained Kaggle submission file, and optionally upload it.
 
 Examples
 --------
-# Generate competitive submission (rule-based)
-python scripts/submit.py --competitive
+# Generate apex submission (rule-based)
+python scripts/submit.py --apex
 
 # Generate RL submission with embedded model weights
 python scripts/submit.py --model outputs/checkpoints/ppo_default_20260501/best_model.zip
 
 # Generate and upload to Kaggle in one step
-python scripts/submit.py --competitive --upload
+python scripts/submit.py --apex --upload
 python scripts/submit.py --model outputs/checkpoints/run_a/best_model.zip --upload -m "PPO v2 self-play"
 
 # Generate, verify locally, then upload
@@ -48,9 +48,9 @@ def main():
         help="Path to trained model .zip (RL submission)",
     )
     source.add_argument(
-        "--competitive",
+        "--apex",
         action="store_true",
-        help="Generate a competitive (net-difference) submission",
+        help="Generate an apex rule-based submission",
     )
     source.add_argument(
         "--hybrid",
@@ -84,10 +84,10 @@ def main():
 
     from agents.rl_agent import export_submission
 
-    if args.competitive:
-        out = args.output or "outputs/submissions/submission_competitive.py"
-        path = export_submission(None, output_path=out, mode="competitive")
-        default_message = "Competitive net-difference agent"
+    if args.apex:
+        out = args.output or "outputs/submissions/submission_apex.py"
+        path = export_submission(None, output_path=out, mode="apex")
+        default_message = "Apex rule-based agent"
     elif args.hybrid:
         out = args.output or "outputs/submissions/submission_hybrid.py"
         path = export_submission(None, output_path=out, mode="hybrid")
