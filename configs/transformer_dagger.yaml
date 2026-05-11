@@ -37,15 +37,15 @@ ppo:
   max_grad_norm: 0.5
 
 reward:
-  sparse: false
-  dense_ship_coef: 0.001
-  dense_prod_coef: 0.005
+  reward_mode: dense_relative
+  dense_ship_coef: 0.002
 
 imitation:
   enabled: true
-  bc_games: 50
+  bc_expert: apex
+  bc_games: 100
   bc_demo_opponent: random
-  bc_epochs: 30
+  bc_epochs: 50
   bc_lr: 0.001
   bc_batch_size: 256
   coef_start: 0.5

@@ -136,16 +136,27 @@ def _angle_diff(a: float, b: float) -> float:
     return (d + math.pi) % (2 * math.pi) - math.pi
 
 
+def _resolve_expert(name: str):
+    """Import and return the expert agent function by name."""
+    if name == "apex":
+        from agents.apex import agent
+        return agent
+    if name == "hybrid":
+        from agents.hybrid import agent
+        return agent
+    raise ValueError(f"Unknown BC expert: {name!r} (expected 'apex' or 'hybrid')")
+
+
 def collect_demonstrations(
     n_games: int,
     cfg: TrainConfig,
     opponent_name: str = "random",
 ) -> DemonstrationBuffer:
-    """Run hybrid agent for n_games and record (state, action) pairs.
+    """Run expert agent for n_games and record (state, action) pairs.
 
-    The hybrid agent plays as player 0 against the specified opponent.
+    The expert plays as player 0 against the specified opponent.
     """
-    from agents.hybrid import agent as hybrid_agent
+    expert_agent = _resolve_expert(cfg.imitation.bc_expert)
     from .opponents import build_opponent
 
     buffer = DemonstrationBuffer()
@@ -165,7 +176,7 @@ def collect_demonstrations(
             obs_p1 = states[1].observation if hasattr(states[1], "observation") else states[1]["observation"]
 
             # Get hybrid agent's moves for player 0
-            expert_moves = hybrid_agent(obs_p0)
+            expert_moves = expert_agent(obs_p0)
             if not expert_moves:
                 expert_moves = []
 
@@ -236,7 +247,8 @@ def collect_demonstrations(
         if (game_i + 1) % max(1, n_games // 5) == 0:
             print(f"  demo game {game_i + 1}/{n_games}  buffer={len(buffer)}")
 
-    print(f"  Demo collection: {len(buffer)} samples, {mapped} mapped, {unmapped} unmapped/noop")
+    print(f"  Demo collection ({cfg.imitation.bc_expert}): {len(buffer)} samples, "
+          f"{mapped} mapped, {unmapped} unmapped/noop")
     return buffer
 
 

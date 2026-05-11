@@ -46,8 +46,8 @@ class PPOConfig:
 
 @dataclass(slots=True)
 class RewardConfig:
-    sparse: bool = True
-    dense_ship_coef: float = 0.001
+    reward_mode: str = "sparse"  # "sparse", "dense_absolute", "dense_relative"
+    dense_ship_coef: float = 0.002
     dense_prod_coef: float = 0.005
 
 
@@ -61,6 +61,7 @@ class EvalConfig:
 @dataclass(slots=True)
 class ImitationConfig:
     enabled: bool = False
+    bc_expert: str = "apex"
     bc_games: int = 50
     bc_demo_opponent: str = "random"
     bc_epochs: int = 20
@@ -84,6 +85,10 @@ class TrainConfig:
     self_play_update_interval: int = 50
     self_play_deterministic: bool = False
     alternate_player_sides: bool = True
+    four_player_prob: float = 0.0
+    rule_based_prob_start: float = 1.0
+    rule_based_prob_end: float = 0.2
+    rule_based_decay_updates: int = 2000
     env: EnvConfig = field(default_factory=EnvConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     ppo: PPOConfig = field(default_factory=PPOConfig)
@@ -106,7 +111,17 @@ def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
     _update_dataclass(cfg.env, data.get("env", {}))
     _update_dataclass(cfg.model, data.get("model", {}))
     _update_dataclass(cfg.ppo, data.get("ppo", {}))
-    _update_dataclass(cfg.reward, data.get("reward", {}))
+
+    # Backward compat: map old sparse: true/false to reward_mode
+    reward_data = dict(data.get("reward", {}))
+    if "sparse" in reward_data and "reward_mode" not in reward_data:
+        sparse_val = reward_data.pop("sparse")
+        if isinstance(sparse_val, str):
+            sparse_val = sparse_val.strip().lower() in {"1", "true", "yes", "on"}
+        reward_data["reward_mode"] = "sparse" if sparse_val else "dense_absolute"
+    reward_data.pop("sparse", None)  # remove stale key either way
+    _update_dataclass(cfg.reward, reward_data)
+
     _update_dataclass(cfg.eval, data.get("eval", {}))
     _update_dataclass(cfg.imitation, data.get("imitation", {}))
     return cfg

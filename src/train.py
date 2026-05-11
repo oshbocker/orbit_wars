@@ -25,7 +25,7 @@ from .features import (
 )
 from .game_types import GameState, parse_observation
 from .logging import TrainLogger, run_periodic_eval
-from .opponents import DistilledOpponent, SelfPlayOpponent, build_opponent
+from .opponents import DistilledOpponent, OpponentPolicy, SelfPlayOpponent, build_opponent
 from .policy import TransformerPolicy
 from .ppo import TransitionBatch, ppo_update, sample_actions
 
@@ -78,6 +78,46 @@ def _forward_single(
     return outputs, sampled
 
 
+class MixedScheduler:
+    """Schedules 2p/4p games with a mix of rule-based and self-play opponents."""
+
+    def __init__(
+        self,
+        cfg: TrainConfig,
+        rule_based: OpponentPolicy,
+        self_play: SelfPlayOpponent,
+    ) -> None:
+        self.cfg = cfg
+        self.rule_based = rule_based
+        self.self_play = self_play
+        self._update = 0
+
+    def set_update(self, update: int) -> None:
+        self._update = update
+
+    def _rule_based_prob(self) -> float:
+        decay = self.cfg.rule_based_decay_updates
+        if decay <= 0:
+            return self.cfg.rule_based_prob_end
+        frac = min(1.0, self._update / decay)
+        return self.cfg.rule_based_prob_start + frac * (
+            self.cfg.rule_based_prob_end - self.cfg.rule_based_prob_start
+        )
+
+    def sample_episode(self) -> tuple[int, list[OpponentPolicy]]:
+        """Return (num_players, opponents) for a new episode."""
+        is_4p = random.random() < self.cfg.four_player_prob
+        n_opp = 3 if is_4p else 1
+        rb_prob = self._rule_based_prob()
+        opponents = []
+        for _ in range(n_opp):
+            if random.random() < rb_prob:
+                opponents.append(self.rule_based)
+            else:
+                opponents.append(self.self_play)
+        return (4 if is_4p else 2), opponents
+
+
 def collect_rollout(
     envs: list[OrbitWarsEnv],
     raw_obs_per_env: list,
@@ -85,6 +125,7 @@ def collect_rollout(
     cfg: TrainConfig,
     device: torch.device,
     next_seed: int,
+    scheduler: MixedScheduler | None = None,
 ) -> tuple[TransitionBatch, list, int, dict[str, float]]:
     """Collect rollout with sequential per-planet decisions."""
     T = cfg.env.max_targets
@@ -179,7 +220,11 @@ def collect_rollout(
                 episode_rewards.append(running_rewards[env_idx])
                 running_rewards[env_idx] = 0.0
                 next_seed += 1
-                new_obs = env.reset(seed=next_seed)
+                if scheduler is not None:
+                    num_p, opps = scheduler.sample_episode()
+                    new_obs = env.reset(seed=next_seed, num_players=num_p, opponents=opps)
+                else:
+                    new_obs = env.reset(seed=next_seed)
                 next_obs_list.append(new_obs)
             else:
                 next_obs_list.append(result.obs)
@@ -333,7 +378,8 @@ def main() -> None:
         from .imitation import bc_pretrain, collect_demonstrations
 
         # Phase 1: Collect demonstrations
-        print(f"\n=== Phase 1: Collecting {cfg.imitation.bc_games} demo games ===")
+        print(f"\n=== Phase 1: Collecting {cfg.imitation.bc_games} demo games "
+              f"(expert={cfg.imitation.bc_expert}) ===")
         demo_buffer = collect_demonstrations(
             n_games=cfg.imitation.bc_games,
             cfg=cfg,
@@ -352,36 +398,53 @@ def main() -> None:
         )
         print(f"  BC checkpoint saved: {bc_checkpoint_path}")
 
-    # ── Build opponent ─────────────────────────────────────────────────────
+    # ── Build opponents ─────────────────────────────────────────────────────
     if cfg.imitation.enabled and cfg.imitation.distilled_opponent and bc_checkpoint_path is not None:
         print("  Using distilled opponent (BC-pretrained)")
-        opponent = build_opponent(
+        rule_based_opponent = build_opponent(
             "distilled", cfg=cfg, device=device,
             checkpoint_path=bc_checkpoint_path,
         )
     else:
-        opponent = build_opponent(cfg.opponent, cfg=cfg, device=device)
+        rule_based_opponent = build_opponent(cfg.opponent, cfg=cfg, device=device)
 
-    envs = [OrbitWarsEnv(cfg, opponent, env_index=idx) for idx in range(cfg.ppo.num_envs)]
+    # Self-play opponent (always created; scheduler decides when to use it)
+    sp_opponent = SelfPlayOpponent(cfg, device=device,
+                                   deterministic=cfg.self_play_deterministic)
+    sp_opponent.sync_from(policy)
+
+    # Mixed scheduler for 2p/4p + rule-based/self-play mixing
+    use_scheduler = cfg.four_player_prob > 0.0 or cfg.rule_based_prob_start < 1.0
+    scheduler: MixedScheduler | None = None
+    if use_scheduler:
+        scheduler = MixedScheduler(cfg, rule_based_opponent, sp_opponent)
+        print(f"  MixedScheduler: 4p_prob={cfg.four_player_prob}, "
+              f"rule_based={cfg.rule_based_prob_start:.1f}→{cfg.rule_based_prob_end:.1f} "
+              f"over {cfg.rule_based_decay_updates} updates")
+
+    envs = [OrbitWarsEnv(cfg, rule_based_opponent, env_index=idx) for idx in range(cfg.ppo.num_envs)]
 
     next_seed = cfg.seed
     raw_obs_per_env = []
     for env in envs:
-        raw_obs_per_env.append(env.reset(seed=next_seed))
+        if scheduler is not None:
+            num_p, opps = scheduler.sample_episode()
+            raw_obs_per_env.append(env.reset(seed=next_seed, num_players=num_p, opponents=opps))
+        else:
+            raw_obs_per_env.append(env.reset(seed=next_seed))
         next_seed += 1
-
-    if isinstance(opponent, SelfPlayOpponent):
-        opponent.sync_from(policy)
 
     optimizer = torch.optim.Adam(policy.parameters(), lr=cfg.ppo.lr)
 
     # ── Training loop ──────────────────────────────────────────────────────
     print(f"\n=== Phase 3: PPO training ({cfg.ppo.total_updates} updates) ===")
     t_start = time.time()
-    transitioned_to_selfplay = False
 
     for update in range(1, cfg.ppo.total_updates + 1):
         t_update = time.time()
+
+        if scheduler is not None:
+            scheduler.set_update(update)
 
         # Compute imitation coefficient (linear decay)
         imitation_coef = 0.0
@@ -389,20 +452,9 @@ def main() -> None:
             decay_frac = update / max(cfg.imitation.coef_decay_updates, 1)
             imitation_coef = cfg.imitation.coef_start * max(0.0, 1.0 - decay_frac)
 
-        # Transition to self-play when imitation coefficient reaches 0
-        if (cfg.imitation.enabled and cfg.opponent == "self"
-                and imitation_coef == 0.0 and not transitioned_to_selfplay):
-            print(f"\n  -> Transitioning to self-play at update {update}")
-            sp_opponent = SelfPlayOpponent(cfg, device=device,
-                                           deterministic=cfg.self_play_deterministic)
-            sp_opponent.sync_from(policy)
-            for env in envs:
-                env.opponent = sp_opponent
-            opponent = sp_opponent
-            transitioned_to_selfplay = True
-
         batch, raw_obs_per_env, next_seed, stats = collect_rollout(
             envs, raw_obs_per_env, policy, cfg, device, next_seed,
+            scheduler=scheduler,
         )
 
         metrics = ppo_update(
@@ -418,8 +470,9 @@ def main() -> None:
             imitation_coef=imitation_coef,
         )
 
-        if isinstance(opponent, SelfPlayOpponent) and update % cfg.self_play_update_interval == 0:
-            opponent.sync_from(policy)
+        # Sync self-play opponent periodically
+        if update % cfg.self_play_update_interval == 0:
+            sp_opponent.sync_from(policy)
 
         # Merge all metrics for logging
         all_metrics = {**stats, **metrics, "imitation_coef": imitation_coef}

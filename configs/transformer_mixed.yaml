@@ -1,14 +1,18 @@
 seed: 42
-run_name: transformer_ppo
+run_name: transformer_mixed
 device: auto
 save_dir: outputs/checkpoints
 log_dir: outputs/logs
-checkpoint_every: 50
+checkpoint_every: 100
 log_every: 1
 opponent: apex
 self_play_update_interval: 50
 self_play_deterministic: false
 alternate_player_sides: true
+four_player_prob: 0.3
+rule_based_prob_start: 1.0
+rule_based_prob_end: 0.2
+rule_based_decay_updates: 2000
 
 env:
   max_targets: 30
@@ -25,7 +29,7 @@ model:
 ppo:
   rollout_steps: 64
   num_envs: 2
-  total_updates: 2000
+  total_updates: 5000
   epochs: 4
   minibatch_size: 256
   gamma: 0.99
@@ -33,11 +37,24 @@ ppo:
   clip_coef: 0.2
   ent_coef: 0.01
   vf_coef: 0.5
-  lr: 0.0003
+  lr: 0.0001
   max_grad_norm: 0.5
 
 reward:
-  reward_mode: sparse
+  reward_mode: dense_relative
+  dense_ship_coef: 0.002
+
+imitation:
+  enabled: true
+  bc_expert: apex
+  bc_games: 100
+  bc_demo_opponent: random
+  bc_epochs: 50
+  bc_lr: 0.001
+  bc_batch_size: 256
+  coef_start: 0.5
+  coef_decay_updates: 1000
+  distilled_opponent: true
 
 eval:
   eval_every: 100

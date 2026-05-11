@@ -19,17 +19,18 @@ orbit_wars/
 │   ├── policy.py            # TransformerPolicy (~493K params default)
 │   ├── ppo.py               # Factored PPO (target + fraction), clipped update, optional imitation loss
 │   ├── opponents.py         # Apex, Random, SelfPlay, Hybrid, Distilled opponents + _policy_act()
-│   ├── env.py               # Kaggle env wrapper (2-player, side alternation)
+│   ├── env.py               # Kaggle env wrapper (2/4-player, side alternation, mixed scheduling)
 │   ├── logging.py           # TrainLogger (TensorBoard + CSV), EvalResult, periodic eval
 │   ├── imitation.py         # DemonstrationBuffer, collect_demonstrations, BC loss, bc_pretrain
-│   └── train.py             # Training loop: BC pretrain → PPO + imitation decay → self-play
+│   └── train.py             # Training loop: BC pretrain → PPO + mixed 2p/4p self-play
 ├── agents/                  # Agent implementations
 │   ├── apex.py              # Apex rule-based agent (benchmark)
 │   ├── hybrid.py            # Mission-based + timeline agent
 │   └── rl_agent.py          # SB3 model wrapper + submission export
 ├── configs/                 # YAML experiment configs
 │   ├── transformer_ppo.yaml   # Transformer PPO default config (2000 updates, apex opponent)
-│   ├── transformer_dagger.yaml# DAgger: BC pretrain from hybrid + PPO with imitation decay (3000 updates)
+│   ├── transformer_dagger.yaml# DAgger: BC pretrain from apex + PPO with imitation decay (3000 updates)
+│   ├── transformer_mixed.yaml # Mixed: BC from apex + dense_relative reward + 2p/4p self-play (5000 updates)
 │   ├── ppo_default.yaml       # SB3 PPO vs apex (500k steps, legacy)
 │   └── ppo_selfplay.yaml      # SB3 self-play fine-tuning (legacy)
 ├── envs/                    # Gymnasium wrappers (legacy SB3 pipeline)
@@ -64,11 +65,14 @@ orbit_wars/
 # Train with default config (PPO vs apex, 2000 updates)
 uv run python -m src.train --config configs/transformer_ppo.yaml
 
-# DAgger: BC pretrain from hybrid demos + PPO with imitation decay (3000 updates)
+# DAgger: BC pretrain from apex demos + PPO with imitation decay (3000 updates)
 uv run python -m src.train --config configs/transformer_dagger.yaml
 
+# Mixed: BC from apex + dense_relative reward + 2p/4p self-play (5000 updates)
+uv run python -m src.train --config configs/transformer_mixed.yaml
+
 # Train on Colab/Kaggle (no uv)
-python -m src.train --config configs/transformer_dagger.yaml
+python -m src.train --config configs/transformer_mixed.yaml
 ```
 
 ### Evaluate a trained transformer checkpoint locally
@@ -288,7 +292,10 @@ Per-planet sequential decisions: for each turn, iterate over owned planets (most
 - Fraction: 5-way Categorical [0.2, 0.4, 0.6, 0.8, 1.0] per target (zeroed for NoOp)
 - `log_prob = log_prob_target + log_prob_fraction`
 
-**Reward**: sparse terminal ±1 by default; optional dense shaping (Δships × 0.001 + Δproduction × 0.005) via `reward.sparse: false` in config.
+**Reward**: sparse terminal ±1 by default. Three modes via `reward.reward_mode`:
+- `sparse`: terminal ±1 only (default)
+- `dense_absolute`: Δown_ships × coef + Δown_prod × prod_coef
+- `dense_relative`: Δ(own_ships − best_enemy_ships) × coef — rewards gaining advantage
 
 ### Logging (`src/logging.py`)
 
@@ -300,13 +307,13 @@ Per-planet sequential decisions: for each turn, iterate over owned planets (most
 
 ### Imitation Learning (`src/imitation.py`)
 
-**DAgger-style pipeline** for distilling the hybrid agent's strategy:
+**DAgger-style pipeline** for distilling an expert agent's strategy:
 
 ```
-Phase 1: collect_demonstrations()  →  Hybrid plays n games, records (SourceDecision, target_index, fraction_bin)
+Phase 1: collect_demonstrations()  →  Expert (apex or hybrid) plays n games, records (SourceDecision, target_index, fraction_bin)
 Phase 2: bc_pretrain()             →  Supervised cross-entropy on expert demos (Adam, per-epoch shuffle)
 Phase 3: PPO + imitation loss      →  ppo_update() blends PPO loss + β * BC loss; β decays linearly to 0
-Phase 4: Self-play transition      →  When β=0 and opponent="self", switch to SelfPlayOpponent
+Phase 4: Mixed self-play            →  MixedScheduler blends rule-based + self-play; rule_based_prob decays linearly
 ```
 
 - `DemonstrationBuffer` — parallel lists of numpy arrays for all 8 feature fields + 2 action labels
@@ -334,9 +341,10 @@ Key config sections: `env`, `model`, `ppo`, `reward`, `eval`, `imitation`.
 ```yaml
 imitation:
   enabled: true
-  bc_games: 50          # demo games from hybrid agent
-  bc_demo_opponent: random  # hybrid plays against this
-  bc_epochs: 30         # supervised pretraining epochs
+  bc_expert: apex       # expert agent for demo collection (apex or hybrid)
+  bc_games: 100         # demo games from expert agent
+  bc_demo_opponent: random  # expert plays against this
+  bc_epochs: 50         # supervised pretraining epochs
   bc_lr: 0.001
   bc_batch_size: 256
   coef_start: 0.5       # initial imitation loss weight
@@ -353,7 +361,28 @@ ppo:
   lr: 0.0001            # lower since starting from BC-pretrained weights
 
 reward:
-  sparse: false         # dense reward for faster learning
+  reward_mode: dense_relative  # rewards gaining ship advantage over enemies
+  dense_ship_coef: 0.002
+```
+
+**`configs/transformer_mixed.yaml`** — Full pipeline: BC from apex + dense_relative reward + mixed 2p/4p self-play:
+```yaml
+four_player_prob: 0.3         # 30% of episodes are 4-player
+rule_based_prob_start: 1.0    # start with all rule-based opponents
+rule_based_prob_end: 0.2      # end with mostly self-play
+rule_based_decay_updates: 2000  # linear decay over this many updates
+
+reward:
+  reward_mode: dense_relative
+  dense_ship_coef: 0.002
+
+imitation:
+  bc_expert: apex             # clone apex behavior (faster than hybrid)
+  bc_games: 100
+  bc_epochs: 50
+
+ppo:
+  total_updates: 5000
 ```
 
 ### Checkpoint format
@@ -396,14 +425,14 @@ Each `.pt` file contains `{"update": int, "policy": state_dict, "optimizer": sta
 3. **Transformer PPO vs apex** (done): `uv run python -m src.train --config configs/transformer_ppo.yaml`
 4. **Logging + periodic eval** (done): TensorBoard + CSV metrics, win rate tracking against baselines
 5. **DAgger / imitation learning** (done): BC pretrain from hybrid demos + PPO with decaying imitation loss: `uv run python -m src.train --config configs/transformer_dagger.yaml`
-6. **Self-play**: set `opponent: self` in config; DAgger config auto-transitions when imitation_coef reaches 0
+6. **Mixed self-play + 4p** (done): `MixedScheduler` blends rule-based + self-play opponents with linear decay; supports 2p and 4p games via `four_player_prob`
 7. **Improve gradually**:
 
 | Technique | How |
 |-----------|-----|
 | Larger network | Increase `model.embed_dim`, `model.n_layers`, `model.ff_dim` in YAML |
 | More targets | Increase `env.max_targets` (default 30) |
-| Dense reward | Set `reward.sparse: false` in config |
+| Dense reward | Set `reward.reward_mode: dense_relative` in config |
 | Population-based training | Train a league of agents, sample opponents |
 | Better features | Extend `src/features.py` (e.g. comet tracking, orbit prediction for targets) |
 
