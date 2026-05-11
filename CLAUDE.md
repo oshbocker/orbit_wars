@@ -46,9 +46,10 @@ orbit_wars/
 │   ├── checkpoints/         # Model .pt files (ckpt_last.pt, ckpt_NNNNNN.pt)
 │   ├── logs/                # TensorBoard event files, CSV metrics, eval results
 │   └── submissions/         # Generated submission.py files
-├── scripts/                 # CLI entry points (legacy SB3 pipeline)
-│   ├── train.py             # Train an agent
-│   ├── evaluate.py          # Head-to-head evaluation
+├── scripts/                 # CLI entry points
+│   ├── train.py             # Train an agent (legacy SB3)
+│   ├── evaluate.py          # Head-to-head evaluation (legacy SB3)
+│   ├── replay.py            # Run a game and export game_replay.html
 │   └── submit.py            # Generate Kaggle submission file
 ├── training/                # Core training logic (legacy SB3, imported by scripts/train.py)
 │   └── train.py             # train(), load_config(), resolve_opponent()
@@ -85,10 +86,10 @@ from src.policy import TransformerPolicy
 from src.logging import make_eval_agent
 from evaluation.evaluate import run_games, print_results
 
-cfg = load_train_config('configs/transformer_dagger.yaml')
+cfg = load_train_config('configs/transformer_mixed.yaml')
 device = torch.device('cpu')
 policy = TransformerPolicy(cfg.model, cfg.env).to(device)
-ckpt = torch.load('outputs/checkpoints/transformer_dagger/ckpt_last.pt',
+ckpt = torch.load('outputs/checkpoints/transformer_mixed/ckpt_last.pt',
                    map_location=device, weights_only=True)
 policy.load_state_dict(ckpt['policy'])
 policy.eval()
@@ -98,6 +99,26 @@ agent = make_eval_agent(policy, cfg, device)
 from agents.apex import agent as apex
 print_results('rl', 'apex', run_games(agent, apex, n_games=20, verbose=True))
 "
+```
+
+### Replay a game with HTML export
+
+```bash
+# Mixed checkpoint vs hybrid (default) — exports game_replay.html
+uv run python scripts/replay.py \
+    --checkpoint outputs/checkpoints/transformer_mixed/ckpt_last.pt
+
+# Dagger checkpoint vs apex with custom output
+uv run python scripts/replay.py \
+    --checkpoint outputs/checkpoints/transformer_dagger/ckpt_last.pt \
+    --config configs/transformer_dagger.yaml \
+    --opponent apex \
+    --output replay_vs_apex.html
+
+# Set seed for reproducible games, play as player 1
+uv run python scripts/replay.py \
+    --checkpoint outputs/checkpoints/transformer_mixed/ckpt_last.pt \
+    --seed 42 --side 1
 ```
 
 ### Monitor training
@@ -295,7 +316,7 @@ Per-planet sequential decisions: for each turn, iterate over owned planets (most
 **Reward**: sparse terminal ±1 by default. Three modes via `reward.reward_mode`:
 - `sparse`: terminal ±1 only (default)
 - `dense_absolute`: Δown_ships × coef + Δown_prod × prod_coef
-- `dense_relative`: Δ(own_ships − best_enemy_ships) × coef — rewards gaining advantage
+- `dense_relative`: Δ(own_ships − best_enemy_ships) × ship_coef + Δ(own_prod − best_enemy_prod) × prod_coef — rewards gaining ship and production advantage
 
 ### Logging (`src/logging.py`)
 

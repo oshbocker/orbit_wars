@@ -108,9 +108,9 @@ def _map_to_action_space(
     target_index: 0=NoOp, 1..T = target planets (offset by 1 for NoOp token)
     fraction_bin: index into env_cfg.ship_fractions
     """
-    # Find closest target by angular difference (tolerance 30 degrees)
+    # Find closest target by angular difference (tolerance 90 degrees)
     best_idx = -1
-    best_diff = math.radians(30)
+    best_diff = math.radians(90)
     for i, tgt_angle in enumerate(decision.target_angles):
         diff = abs(_angle_diff(expert_angle, tgt_angle))
         if diff < best_diff:
@@ -175,7 +175,16 @@ def collect_demonstrations(
             obs_p0 = states[0].observation if hasattr(states[0], "observation") else states[0]["observation"]
             obs_p1 = states[1].observation if hasattr(states[1], "observation") else states[1]["observation"]
 
-            # Get hybrid agent's moves for player 0
+            # Skip early-game steps (expert is intentionally passive)
+            state = parse_observation(obs_p0)
+            if state.step < cfg.imitation.bc_skip_steps:
+                opp_moves = opponent.act(obs_p1)
+                states = env.step([expert_agent(obs_p0) or [], opp_moves])
+                status_p0 = states[0].status if hasattr(states[0], "status") else states[0]["status"]
+                done = status_p0 != "ACTIVE"
+                continue
+
+            # Get expert agent's moves for player 0
             expert_moves = expert_agent(obs_p0)
             if not expert_moves:
                 expert_moves = []
@@ -188,8 +197,7 @@ def collect_demonstrations(
                 ships = int(move[2])
                 moves_by_src.setdefault(src_id, []).append((angle, ships))
 
-            # Parse state and encode features like training does
-            state = parse_observation(obs_p0)
+            # Encode features like training does (state already parsed above)
             my_planets = sorted(
                 [p for p in state.planets if p.owner == state.player],
                 key=lambda p: -p.ships,

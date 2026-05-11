@@ -43,6 +43,7 @@ ppo:
 reward:
   reward_mode: dense_relative
   dense_ship_coef: 0.002
+  dense_prod_coef: 0.005
 
 imitation:
   enabled: true
@@ -55,6 +56,7 @@ imitation:
   coef_start: 0.5
   coef_decay_updates: 1000
   distilled_opponent: true
+  bc_skip_steps: 30
 
 eval:
   eval_every: 100

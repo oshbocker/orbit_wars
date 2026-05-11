@@ -40,6 +40,7 @@ class OrbitWarsEnv:
         self._prev_own_ships = 0.0
         self._prev_own_prod = 0.0
         self._prev_ship_gap = 0.0
+        self._prev_prod_gap = 0.0
 
     def reset(
         self,
@@ -87,6 +88,10 @@ class OrbitWarsEnv:
         own = all_ships.get(state.player, 0.0)
         best_enemy = max((s for p, s in all_ships.items() if p != state.player), default=0.0)
         self._prev_ship_gap = own - best_enemy
+        all_prod = _count_all_production(state)
+        own_prod_gap = all_prod.get(state.player, 0.0)
+        best_enemy_prod = max((s for p, s in all_prod.items() if p != state.player), default=0.0)
+        self._prev_prod_gap = own_prod_gap - best_enemy_prod
 
         return self.last_obs
 
@@ -147,16 +152,25 @@ class OrbitWarsEnv:
             self._prev_own_prod = own_prod
             return delta_ships * reward_cfg.dense_ship_coef + delta_prod * reward_cfg.dense_prod_coef
 
-        # dense_relative: delta(our_ships - best_enemy_ships) * coef
+        # dense_relative: delta(our_ships - best_enemy_ships) * ship_coef
+        #               + delta(our_prod  - best_enemy_prod)  * prod_coef
         all_ships = _count_all_ships(state)
         own = all_ships.get(state.player, 0.0)
         best_enemy = max((s for p, s in all_ships.items() if p != state.player), default=0.0)
         ship_gap = own - best_enemy
-        delta_gap = ship_gap - self._prev_ship_gap
+        delta_ship_gap = ship_gap - self._prev_ship_gap
         self._prev_ship_gap = ship_gap
         # Also update absolute tracking for consistency
         self._prev_own_ships = own
-        return delta_gap * reward_cfg.dense_ship_coef
+
+        all_prod = _count_all_production(state)
+        own_prod = all_prod.get(state.player, 0.0)
+        best_enemy_prod = max((s for p, s in all_prod.items() if p != state.player), default=0.0)
+        prod_gap = own_prod - best_enemy_prod
+        delta_prod_gap = prod_gap - self._prev_prod_gap
+        self._prev_prod_gap = prod_gap
+
+        return delta_ship_gap * reward_cfg.dense_ship_coef + delta_prod_gap * reward_cfg.dense_prod_coef
 
 
 def _default_make_fn() -> Any:
@@ -210,4 +224,13 @@ def _count_all_ships(state: GameState) -> dict[int, float]:
     for f in state.fleets:
         if f.owner >= 0:
             counts[f.owner] = counts.get(f.owner, 0.0) + f.ships
+    return counts
+
+
+def _count_all_production(state: GameState) -> dict[int, float]:
+    """Total production per player (owned planets only)."""
+    counts: dict[int, float] = {}
+    for p in state.planets:
+        if p.owner >= 0:
+            counts[p.owner] = counts.get(p.owner, 0.0) + p.production
     return counts

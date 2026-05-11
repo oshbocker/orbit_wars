@@ -70,6 +70,7 @@ class ImitationConfig:
     coef_start: float = 0.5
     coef_decay_updates: int = 500
     distilled_opponent: bool = True
+    bc_skip_steps: int = 0
 
 
 @dataclass(slots=True)
