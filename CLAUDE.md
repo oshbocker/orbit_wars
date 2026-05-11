@@ -50,6 +50,7 @@ orbit_wars/
 │   ├── train.py             # Train an agent (legacy SB3)
 │   ├── evaluate.py          # Head-to-head evaluation (legacy SB3)
 │   ├── replay.py            # Run a game and export game_replay.html
+│   ├── download_checkpoint.py  # Download checkpoints from Google Drive via rclone
 │   └── submit.py            # Generate Kaggle submission file
 ├── training/                # Core training logic (legacy SB3, imported by scripts/train.py)
 │   └── train.py             # train(), load_config(), resolve_opponent()
@@ -74,6 +75,39 @@ uv run python -m src.train --config configs/transformer_mixed.yaml
 
 # Train on Colab/Kaggle (no uv)
 python -m src.train --config configs/transformer_mixed.yaml
+```
+
+### Download checkpoints from Google Drive
+
+After training on Colab, download checkpoints locally via rclone.
+
+**One-time rclone setup:**
+```bash
+# Install rclone
+sudo apt install rclone        # Debian/Ubuntu
+# or: brew install rclone      # macOS
+# or: curl https://rclone.org/install.sh | sudo bash
+
+# Configure Google Drive remote
+rclone config
+# → New remote → name: "gdrive" → type: "drive" →
+# → leave client_id/secret blank → full access →
+# → opens browser for Google OAuth login → done
+```
+
+**Download checkpoints:**
+```bash
+# Download latest transformer_mixed checkpoint
+uv run python scripts/download_checkpoint.py
+
+# Download a specific run
+uv run python scripts/download_checkpoint.py --run transformer_dagger
+
+# Download all checkpoints
+uv run python scripts/download_checkpoint.py --all
+
+# List available checkpoints on Drive
+uv run python scripts/download_checkpoint.py --list
 ```
 
 ### Evaluate a trained transformer checkpoint locally
@@ -188,7 +222,7 @@ pip install --upgrade "kaggle-environments>=1.28.0" "stable-baselines3[extra]>=2
 
 **H100 Colab overrides** in the config cell: `num_envs=4`, `rollout_steps=128`, `total_updates=5000`, `eval_every=250`.
 
-**After Colab training**, download checkpoint from Drive and evaluate locally — see "Evaluate a trained transformer checkpoint locally" in Common Commands above.
+**After Colab training**, download checkpoint from Drive with `uv run python scripts/download_checkpoint.py` (requires rclone — see "Download checkpoints from Google Drive" in Common Commands) and evaluate locally.
 
 ## Game Overview
 
@@ -316,7 +350,8 @@ Per-planet sequential decisions: for each turn, iterate over owned planets (most
 **Reward**: sparse terminal ±1 by default. Three modes via `reward.reward_mode`:
 - `sparse`: terminal ±1 only (default)
 - `dense_absolute`: Δown_ships × coef + Δown_prod × prod_coef
-- `dense_relative`: Δ(own_ships − best_enemy_ships) × ship_coef + Δ(own_prod − best_enemy_prod) × prod_coef — rewards gaining ship and production advantage
+- `dense_relative`: Δ(own_ships − best_enemy_ships) × ship_coef + Δ(own_prod − best_enemy_prod) × prod_coef × prod_mult — rewards gaining ship and production advantage
+- **Early production bonus**: prod_mult = `1 + early_prod_bonus × max(0, 1 − step/early_prod_bonus_steps)`. Default 10× at step 0, decaying linearly to 1× at step 50. Encourages early planet capture.
 
 ### Logging (`src/logging.py`)
 
@@ -363,7 +398,7 @@ Key config sections: `env`, `model`, `ppo`, `reward`, `eval`, `imitation`.
 imitation:
   enabled: true
   bc_expert: apex       # expert agent for demo collection (apex or hybrid)
-  bc_games: 100         # demo games from expert agent
+  bc_games: 200         # demo games from expert agent
   bc_demo_opponent: random  # expert plays against this
   bc_epochs: 50         # supervised pretraining epochs
   bc_lr: 0.001
@@ -371,6 +406,7 @@ imitation:
   coef_start: 0.5       # initial imitation loss weight
   coef_decay_updates: 1000  # linear decay to 0
   distilled_opponent: true  # use BC-pretrained model as training opponent
+  bc_skip_steps: 0        # include early-game behavior in demos
 
 eval:
   eval_every: 100
@@ -384,6 +420,8 @@ ppo:
 reward:
   reward_mode: dense_relative  # rewards gaining ship advantage over enemies
   dense_ship_coef: 0.002
+  early_prod_bonus: 9.0       # 10x prod reward at step 0, decays to 1x
+  early_prod_bonus_steps: 50
 ```
 
 **`configs/transformer_mixed.yaml`** — Full pipeline: BC from apex + dense_relative reward + mixed 2p/4p self-play:
@@ -396,11 +434,14 @@ rule_based_decay_updates: 2000  # linear decay over this many updates
 reward:
   reward_mode: dense_relative
   dense_ship_coef: 0.002
+  early_prod_bonus: 9.0       # 10x prod reward at step 0, decays to 1x
+  early_prod_bonus_steps: 50
 
 imitation:
   bc_expert: apex             # clone apex behavior (faster than hybrid)
-  bc_games: 100
+  bc_games: 200
   bc_epochs: 50
+  bc_skip_steps: 0            # include early-game behavior in demos
 
 ppo:
   total_updates: 5000

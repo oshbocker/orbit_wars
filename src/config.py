@@ -49,6 +49,8 @@ class RewardConfig:
     reward_mode: str = "sparse"  # "sparse", "dense_absolute", "dense_relative"
     dense_ship_coef: float = 0.002
     dense_prod_coef: float = 0.005
+    early_prod_bonus: float = 9.0  # extra multiplier at step 0 (total = 1 + bonus)
+    early_prod_bonus_steps: int = 50  # linear decay to 1x over this many steps
 
 
 @dataclass(slots=True)

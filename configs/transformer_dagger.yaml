@@ -40,11 +40,13 @@ reward:
   reward_mode: dense_relative
   dense_ship_coef: 0.002
   dense_prod_coef: 0.005
+  early_prod_bonus: 9.0
+  early_prod_bonus_steps: 50
 
 imitation:
   enabled: true
   bc_expert: apex
-  bc_games: 100
+  bc_games: 200
   bc_demo_opponent: random
   bc_epochs: 50
   bc_lr: 0.001
@@ -52,7 +54,7 @@ imitation:
   coef_start: 0.5
   coef_decay_updates: 1000
   distilled_opponent: true
-  bc_skip_steps: 30
+  bc_skip_steps: 0
 
 eval:
   eval_every: 100

@@ -144,13 +144,19 @@ class OrbitWarsEnv:
 
         state = parse_observation(self.last_obs)
 
+        # Early-game production bonus: multiplier decays linearly from (1+bonus) to 1
+        prod_mult = 1.0
+        if reward_cfg.early_prod_bonus > 0 and reward_cfg.early_prod_bonus_steps > 0:
+            t = max(0.0, 1.0 - state.step / reward_cfg.early_prod_bonus_steps)
+            prod_mult = 1.0 + reward_cfg.early_prod_bonus * t
+
         if mode == "dense_absolute":
             own_ships, own_prod = _count_own(state)
             delta_ships = own_ships - self._prev_own_ships
             delta_prod = own_prod - self._prev_own_prod
             self._prev_own_ships = own_ships
             self._prev_own_prod = own_prod
-            return delta_ships * reward_cfg.dense_ship_coef + delta_prod * reward_cfg.dense_prod_coef
+            return delta_ships * reward_cfg.dense_ship_coef + delta_prod * reward_cfg.dense_prod_coef * prod_mult
 
         # dense_relative: delta(our_ships - best_enemy_ships) * ship_coef
         #               + delta(our_prod  - best_enemy_prod)  * prod_coef
@@ -170,7 +176,7 @@ class OrbitWarsEnv:
         delta_prod_gap = prod_gap - self._prev_prod_gap
         self._prev_prod_gap = prod_gap
 
-        return delta_ship_gap * reward_cfg.dense_ship_coef + delta_prod_gap * reward_cfg.dense_prod_coef
+        return delta_ship_gap * reward_cfg.dense_ship_coef + delta_prod_gap * reward_cfg.dense_prod_coef * prod_mult
 
 
 def _default_make_fn() -> Any:
