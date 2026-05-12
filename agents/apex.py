@@ -84,6 +84,7 @@ OPENING_TURN = 80
 EARLY_TURN = 40
 LATE_REMAINING = 65
 COMET_MAX_CHASE = 20
+COMET_EVAC_HORIZON = 3
 
 # Beam search opening
 BEAM_DEPTH = 5
@@ -212,7 +213,12 @@ def _is_static(planet, initial_by_id=None):
 
 
 def _predict_pos(planet, initial_by_id, ang_vel, turns):
-    """Predict planet position after `turns` turns from now."""
+    """Predict planet position at fleet collision time `turns` movement phases from now.
+
+    Fleet collision (phase 2) happens BEFORE orbit advance (phase 3) each step.
+    A fleet taking K movement phases arrives at step S+K-1, where the planet
+    is at its pre-orbit position = K-1 orbit advances from the observed position.
+    """
     init = initial_by_id.get(planet.id)
     if init is None:
         return planet.x, planet.y
@@ -220,11 +226,16 @@ def _predict_pos(planet, initial_by_id, ang_vel, turns):
     if r + init.radius >= ORBIT_LIMIT:
         return planet.x, planet.y
     cur_ang = math.atan2(planet.y - SUN_Y, planet.x - SUN_X)
-    new_ang = cur_ang + ang_vel * turns
+    new_ang = cur_ang + ang_vel * max(0, turns - 1)
     return SUN_X + r * math.cos(new_ang), SUN_Y + r * math.sin(new_ang)
 
 
 def _predict_comet_pos(pid, comets, turns):
+    """Predict comet position at fleet collision time `turns` movement phases from now.
+
+    Same timing as _predict_pos: collision happens before orbit/comet advance,
+    so the comet is at path_index + (turns - 1) at collision time.
+    """
     for group in comets:
         pids = group.get("planet_ids", [])
         if pid not in pids:
@@ -235,7 +246,7 @@ def _predict_comet_pos(pid, comets, turns):
         if idx >= len(paths):
             return None
         path = paths[idx]
-        fi = path_index + int(turns)
+        fi = path_index + max(0, int(turns) - 1)
         if 0 <= fi < len(path):
             return path[fi][0], path[fi][1]
         return None
@@ -257,10 +268,12 @@ def _comet_life(pid, comets):
 
 def _aim_with_prediction(src, target, ships, initial_by_id, ang_vel, comets, comet_ids):
     """Iterative intercept for moving targets. Returns (angle, turns, tx, ty) or None."""
+    is_comet = target.id in comet_ids
+
     # Try direct first
     est = _estimate_arrival(src.x, src.y, src.radius, target.x, target.y, target.radius, ships)
     if est is None:
-        if _is_static(target, initial_by_id) and target.id not in comet_ids:
+        if _is_static(target, initial_by_id) and not is_comet:
             return None
         # Search for safe intercept window
         return _search_intercept(src, target, ships, initial_by_id, ang_vel, comets, comet_ids)
@@ -268,7 +281,7 @@ def _aim_with_prediction(src, target, ships, initial_by_id, ang_vel, comets, com
     tx, ty = target.x, target.y
     for _ in range(5):
         _, turns = est
-        if target.id in comet_ids:
+        if is_comet:
             pos = _predict_comet_pos(target.id, comets, turns)
         else:
             pos = _predict_pos(target, initial_by_id, ang_vel, turns)
@@ -277,10 +290,14 @@ def _aim_with_prediction(src, target, ships, initial_by_id, ang_vel, comets, com
         ntx, nty = pos
         next_est = _estimate_arrival(src.x, src.y, src.radius, ntx, nty, target.radius, ships)
         if next_est is None:
-            if _is_static(target, initial_by_id) and target.id not in comet_ids:
+            if _is_static(target, initial_by_id) and not is_comet:
                 return None
             return _search_intercept(src, target, ships, initial_by_id, ang_vel, comets, comet_ids)
         if abs(ntx - tx) < 0.3 and abs(nty - ty) < 0.3 and abs(next_est[1] - turns) <= 1:
+            # For comets, validate the intercept with step-by-step simulation
+            if is_comet and not _validate_comet_intercept(
+                    src, target, next_est[0], next_est[1], ships, comets):
+                return _search_intercept(src, target, ships, initial_by_id, ang_vel, comets, comet_ids)
             return next_est[0], next_est[1], ntx, nty
         tx, ty = ntx, nty
         est = next_est
@@ -288,6 +305,10 @@ def _aim_with_prediction(src, target, ships, initial_by_id, ang_vel, comets, com
     final = _estimate_arrival(src.x, src.y, src.radius, tx, ty, target.radius, ships)
     if final is None:
         return _search_intercept(src, target, ships, initial_by_id, ang_vel, comets, comet_ids)
+    # For comets, validate even after fallback convergence
+    if is_comet and not _validate_comet_intercept(
+            src, target, final[0], final[1], ships, comets):
+        return None
     return final[0], final[1], tx, ty
 
 
@@ -296,11 +317,12 @@ def _search_intercept(src, target, ships, initial_by_id, ang_vel, comets, comet_
     best = None
     best_score = None
     max_t = min(HORIZON, 60)
-    if target.id in comet_ids:
-        max_t = min(max_t, max(0, _comet_life(target.id, comets) - 1))
+    is_comet = target.id in comet_ids
+    if is_comet:
+        max_t = min(max_t, max(0, _comet_life(target.id, comets)))
 
     for ct in range(1, max_t + 1):
-        if target.id in comet_ids:
+        if is_comet:
             pos = _predict_comet_pos(target.id, comets, ct)
         else:
             pos = _predict_pos(target, initial_by_id, ang_vel, ct)
@@ -314,7 +336,7 @@ def _search_intercept(src, target, ships, initial_by_id, ang_vel, comets, comet_
             continue
 
         actual_t = max(turns, ct)
-        if target.id in comet_ids:
+        if is_comet:
             apos = _predict_comet_pos(target.id, comets, actual_t)
         else:
             apos = _predict_pos(target, initial_by_id, ang_vel, actual_t)
@@ -326,12 +348,53 @@ def _search_intercept(src, target, ships, initial_by_id, ang_vel, comets, comet_
         delta = abs(confirm[1] - actual_t)
         if delta > 1:
             continue
+        # Comets move ~4 units/step with radius 1.0: require exact timing match
+        # and validate the fleet path actually intersects the comet
+        if is_comet:
+            if delta > 0:
+                continue
+            if not _validate_comet_intercept(
+                    src, target, confirm[0], confirm[1], ships, comets):
+                continue
         score = (delta, confirm[1], ct)
         if best is None or score < best_score:
             best_score = score
             best = (confirm[0], confirm[1], apos[0], apos[1])
 
     return best
+
+
+def _validate_comet_intercept(src, target, angle, turns, ships, comets):
+    """Simulate fleet path step-by-step and verify it intersects the comet.
+
+    Comets move ~4 units/step so even small timing errors cause misses.
+    Check that the fleet's movement segment at each step actually passes
+    within the comet's radius of the comet's predicted position.
+    """
+    speed = _fleet_speed(max(1, int(ships)))
+    lx, ly = _launch_pt(src.x, src.y, src.radius, angle)
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+
+    for step in range(1, int(turns) + 2):  # check 1 step beyond predicted arrival
+        # Fleet position at start and end of this step's movement
+        fx0 = lx + cos_a * speed * (step - 1)
+        fy0 = ly + sin_a * speed * (step - 1)
+        fx1 = lx + cos_a * speed * step
+        fy1 = ly + sin_a * speed * step
+
+        # Comet position during this step's collision check
+        cpos = _predict_comet_pos(target.id, comets, step)
+        if cpos is None:
+            continue
+        cx, cy = cpos
+
+        # Check if fleet segment passes within comet radius
+        d = _point_to_seg_dist(cx, cy, fx0, fy0, fx1, fy1)
+        if d < target.radius:
+            return True
+
+    return False
 
 
 # ── fleet destination detection ───────────────────────────────────────────
@@ -762,15 +825,19 @@ class World:
         tgt = self.by_id[tgt_id]
         result = _aim_with_prediction(src, tgt, ships, self.initial_by_id,
                                        self.ang_vel, self.comets, self.comet_ids)
-        # Check if path crosses any intermediate planet
+        # Check if path crosses any intermediate planet or goes out of bounds
         if result is not None:
             angle, turns, tx, ty = result
             lx, ly = _launch_pt(src.x, src.y, src.radius, angle)
             speed = _fleet_speed(max(1, int(ships)))
-            d = speed * turns
-            ex = lx + math.cos(angle) * d
-            ey = ly + math.sin(angle) * d
-            if _path_hits_planet(lx, ly, ex, ey, self.planets, src_id, tgt_id):
+            # Use distance to predicted target (not speed*turns which overshoots)
+            d_target = _dist(lx, ly, tx, ty)
+            ex = lx + math.cos(angle) * d_target
+            ey = ly + math.sin(angle) * d_target
+            # Reject if fleet would leave the board before reaching target
+            if not (0.0 <= ex <= BOARD and 0.0 <= ey <= BOARD):
+                result = None
+            elif _path_hits_planet(lx, ly, ex, ey, self.planets, src_id, tgt_id):
                 result = None
         self._aim_cache[key] = result
         return result
@@ -1250,7 +1317,9 @@ def _beam_best_launch(src_id, src_planet, ref_ships, ref_prod, ref_time,
         if src_static or t == 0:
             sx, sy = src_planet.x, src_planet.y
         else:
-            sx, sy = _predict_pos(src_planet, world.initial_by_id, world.ang_vel, t)
+            # Source position at future launch time t: observation-time semantics,
+            # not fleet-collision, so add 1 to compensate for _predict_pos's -1.
+            sx, sy = _predict_pos(src_planet, world.initial_by_id, world.ang_vel, t + 1)
 
         if tgt_static:
             eta = _dist(sx, sy, target.x, target.y) / speed
@@ -2585,6 +2654,49 @@ def _plan_moves(world, deadline=None):
     return final
 
 
+# ── comet evacuation ──────────────────────────────────────────────────────
+
+def _evacuate_comets(world, moves):
+    """Send all ships from owned comets about to exit the grid to the best target."""
+    if not world.comet_ids:
+        return moves
+
+    sent = defaultdict(int)
+    for m in moves:
+        sent[m[0]] += m[2]
+
+    for p in world.my_planets:
+        if p.id not in world.comet_ids:
+            continue
+        life = _comet_life(p.id, world.comets)
+        if life > COMET_EVAC_HORIZON or life <= 0:
+            continue
+        remaining = int(p.ships) - sent.get(p.id, 0)
+        if remaining < 1:
+            continue
+
+        # Find best reachable non-comet target (prefer friendly, high production)
+        best_angle = None
+        best_value = -1.0
+        for t in world.planets:
+            if t.id == p.id or t.id in world.comet_ids:
+                continue
+            shot = world.aim(p.id, t.id, remaining)
+            if shot is None:
+                continue
+            value = t.production
+            if t.owner == world.player:
+                value += 10
+            if value > best_value:
+                best_value = value
+                best_angle = shot[0]
+
+        if best_angle is not None:
+            moves.append([p.id, float(best_angle), remaining])
+
+    return moves
+
+
 # ── main agent function (MUST be last callable) ──────────────────────────
 
 def agent(obs, config=None):
@@ -2623,10 +2735,13 @@ def agent(obs, config=None):
 
     # Opening: efficiency-focused planner (steps 0-79, when beam doesn't apply)
     if world.is_opening:
-        return _opening_expand(world, deadline=deadline)
+        moves = _opening_expand(world, deadline=deadline)
+    else:
+        # Mid/late game: mission-based planner
+        moves = _plan_moves(world, deadline=deadline)
 
-    # Mid/late game: mission-based planner
-    return _plan_moves(world, deadline=deadline)
+    # Evacuate owned comets about to exit the grid
+    return _evacuate_comets(world, moves)
 
 
 if __name__ == "__main__":

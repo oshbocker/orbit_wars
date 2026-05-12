@@ -231,21 +231,45 @@ def collect_rollout(
 
         raw_obs_per_env = next_obs_list
 
-    # Compute returns and advantages
+    # Compute GAE returns and advantages
     N = len(all_global)
     returns = [0.0] * N
     advantages = [0.0] * N
+    gamma = cfg.ppo.gamma
+    lam = cfg.ppo.gae_lambda
 
     # Bootstrap final values
     next_values = _bootstrap_values(policy, raw_obs_per_env, cfg, device)
 
     for env_idx, groups in enumerate(groups_per_env):
-        future_return = next_values[env_idx]
-        for group in reversed(groups):
-            future_return = group.reward + cfg.ppo.gamma * future_return * (1.0 - float(group.done))
-            for idx in group.indices:
-                returns[idx] = future_return
-                advantages[idx] = future_return - all_values[idx]
+        n_steps = len(groups)
+        if n_steps == 0:
+            continue
+
+        # Mean value per step group (aggregate per-planet values to step-level)
+        step_values = []
+        for g in groups:
+            if g.indices:
+                step_values.append(np.mean([all_values[i] for i in g.indices]))
+            else:
+                step_values.append(0.0)
+
+        # GAE(lambda)
+        gae = 0.0
+        for t in reversed(range(n_steps)):
+            non_terminal = 1.0 - float(groups[t].done)
+            if t == n_steps - 1:
+                next_v = next_values[env_idx] * non_terminal
+            else:
+                next_v = step_values[t + 1] * non_terminal
+
+            delta = groups[t].reward + gamma * next_v - step_values[t]
+            gae = delta + gamma * lam * non_terminal * gae
+
+            step_return = gae + step_values[t]
+            for idx in groups[t].indices:
+                returns[idx] = step_return
+                advantages[idx] = step_return - all_values[idx]
 
     # Build batch
     if N == 0:
@@ -265,6 +289,7 @@ def collect_rollout(
             log_prob=torch.tensor(all_log_prob, dtype=torch.float32),
             returns=torch.tensor(returns, dtype=torch.float32),
             advantages=torch.tensor(advantages, dtype=torch.float32),
+            values=torch.tensor(all_values, dtype=torch.float32),
         )
 
     stats = {
@@ -325,6 +350,7 @@ def _empty_batch(cfg: TrainConfig) -> TransitionBatch:
         log_prob=torch.zeros(0),
         returns=torch.zeros(0),
         advantages=torch.zeros(0),
+        values=torch.zeros(0),
     )
 
 

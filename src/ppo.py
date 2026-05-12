@@ -34,6 +34,7 @@ class TransitionBatch:
     # Returns
     returns: torch.Tensor              # [N]
     advantages: torch.Tensor           # [N]
+    values: torch.Tensor               # [N] — old value predictions for value clipping
 
 
 def _safe_target_logits(target_logits: torch.Tensor) -> torch.Tensor:
@@ -138,7 +139,7 @@ def ppo_update(
     imitation_coef: float = 0.0,
 ) -> dict[str, float]:
     N = batch.global_features.shape[0]
-    if N == 0:
+    if N < 16:
         return {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0,
                 "imitation_loss": 0.0}
 
@@ -156,6 +157,7 @@ def ppo_update(
     frac_bin = batch.fraction_bin.to(device)
     returns = batch.returns.to(device)
     advantages = batch.advantages.to(device)
+    old_values = batch.values.to(device)
     advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
 
     use_imitation = demo_buffer is not None and imitation_coef > 0.0
@@ -184,7 +186,14 @@ def ppo_update(
                 -adv * ratio,
                 -adv * torch.clamp(ratio, 1.0 - clip_coef, 1.0 + clip_coef),
             ).mean()
-            value_loss = 0.5 * (returns[idx] - outputs.value).pow(2).mean()
+            # Clipped value loss — prevents large value updates
+            value_pred = outputs.value
+            value_clipped = old_values[idx] + torch.clamp(
+                value_pred - old_values[idx], -clip_coef, clip_coef,
+            )
+            vl_unclipped = (returns[idx] - value_pred).pow(2)
+            vl_clipped = (returns[idx] - value_clipped).pow(2)
+            value_loss = 0.5 * torch.maximum(vl_unclipped, vl_clipped).mean()
             entropy_mean = entropy.mean()
 
             loss = policy_loss + vf_coef * value_loss - ent_coef * entropy_mean
