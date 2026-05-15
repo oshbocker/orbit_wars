@@ -68,6 +68,8 @@ def export_submission(
         code = _apex_submission_code()
     elif mode == "hybrid":
         code = _hybrid_submission_code()
+    elif mode == "ultra":
+        code = _ultra_submission_code()
     elif mode == "rl":
         if model_path is None:
             raise ValueError("model_path required for mode='rl'")
@@ -100,6 +102,13 @@ def _apex_submission_code() -> str:
     """Read agents/apex.py and wrap it as a submission."""
     here = Path(__file__).parent
     source = (here / "apex.py").read_text()
+    return source
+
+
+def _ultra_submission_code() -> str:
+    """Read agents/ultra.py and wrap it as a submission."""
+    here = Path(__file__).parent
+    source = (here / "ultra.py").read_text()
     return source
 
 

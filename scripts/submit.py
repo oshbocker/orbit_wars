@@ -57,6 +57,11 @@ def main():
         action="store_true",
         help="Generate a hybrid (mission-based + timeline) submission",
     )
+    source.add_argument(
+        "--ultra",
+        action="store_true",
+        help="Generate an ultra agent submission",
+    )
 
     parser.add_argument(
         "--output", "-o",
@@ -92,6 +97,10 @@ def main():
         out = args.output or "outputs/submissions/submission_hybrid.py"
         path = export_submission(None, output_path=out, mode="hybrid")
         default_message = "Hybrid mission-based agent"
+    elif args.ultra:
+        out = args.output or "outputs/submissions/submission_ultra.py"
+        path = export_submission(None, output_path=out, mode="ultra")
+        default_message = "Ultra agent (apex + phase detection + distance penalty)"
     else:
         out = args.output or "outputs/submissions/submission_rl.py"
         path = export_submission(args.model, output_path=out, mode="rl")
