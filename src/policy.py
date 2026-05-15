@@ -120,6 +120,23 @@ class TransformerPolicy(nn.Module):
             nn.Linear(d, 1),
         )
 
+        self._init_output_heads()
+
+    def _init_output_heads(self) -> None:
+        """Zero-init output heads for stable early training.
+
+        target_head → uniform policy (all logits 0)
+        value_head final layer → 0.5 value (sigmoid midpoint)
+        """
+        nn.init.zeros_(self.target_head.weight)
+        nn.init.zeros_(self.target_head.bias)
+        nn.init.zeros_(self.fraction_head.weight)
+        nn.init.zeros_(self.fraction_head.bias)
+        # Zero-init last linear in value_head Sequential
+        last_layer = self.value_head[-1]
+        nn.init.zeros_(last_layer.weight)
+        nn.init.zeros_(last_layer.bias)
+
     def forward(
         self,
         global_features: torch.Tensor,    # [B, GLOBAL_DIM]

@@ -166,6 +166,52 @@ class DistilledOpponent:
                            deterministic=self.deterministic)
 
 
+class ChampionPoolOpponent:
+    """Samples from saved checkpoints each episode for diverse training."""
+
+    def __init__(
+        self,
+        pool_dir: str | Path,
+        cfg: TrainConfig,
+        device: torch.device,
+        deterministic: bool = True,
+    ) -> None:
+        import random as _rng
+
+        self.pool_dir = Path(pool_dir)
+        self.cfg = cfg
+        self.device = device
+        self.deterministic = deterministic
+        self._rng = _rng
+        self.policy = TransformerPolicy(cfg.model, cfg.env).to(device)
+        self.policy.eval()
+        self._loaded_path: str | None = None
+
+    def _available_checkpoints(self) -> list[Path]:
+        if not self.pool_dir.exists():
+            return []
+        return sorted(self.pool_dir.glob("ckpt_*.pt"))
+
+    def load_random(self) -> bool:
+        """Load a random checkpoint from the pool. Returns True if loaded."""
+        ckpts = self._available_checkpoints()
+        if not ckpts:
+            return False
+        path = self._rng.choice(ckpts)
+        if str(path) != self._loaded_path:
+            ckpt = torch.load(path, map_location=self.device, weights_only=True)
+            self.policy.load_state_dict(ckpt["policy"])
+            self.policy.eval()
+            self._loaded_path = str(path)
+        return True
+
+    def act(self, observation: Any) -> list[list[float | int]]:
+        if self._loaded_path is None:
+            self.load_random()
+        return _policy_act(self.policy, observation, self.cfg, self.device,
+                           deterministic=self.deterministic)
+
+
 def build_opponent(
     name: str,
     cfg: TrainConfig | None = None,
@@ -187,6 +233,10 @@ def build_opponent(
         if cfg is None or device is None or checkpoint_path is None:
             raise ValueError("cfg, device, and checkpoint_path required for distilled opponent")
         return DistilledOpponent(checkpoint_path, cfg, device=device)
+    if name == "champion_pool":
+        if cfg is None or device is None or checkpoint_path is None:
+            raise ValueError("cfg, device, and checkpoint_path (pool_dir) required for champion_pool opponent")
+        return ChampionPoolOpponent(checkpoint_path, cfg, device=device)
     raise ValueError(f"Unknown opponent: {name}")
 
 

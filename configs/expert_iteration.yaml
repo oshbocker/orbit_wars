@@ -1,0 +1,60 @@
+seed: 42
+run_name: expert_iteration
+device: auto
+save_dir: outputs/checkpoints
+log_dir: outputs/logs
+checkpoint_every: 10
+log_every: 1
+opponent: apex
+
+env:
+  max_targets: 30
+  k_neighbors: 3
+  ship_fractions: [0.2, 0.4, 0.6, 0.8, 1.0]
+
+model:
+  embed_dim: 128
+  n_heads: 4
+  n_layers: 2
+  ff_dim: 256
+  pos_hidden: 64
+
+exit:
+  iterations: 200
+  games_per_iter: 30
+  search_depth: 15
+  search_candidates: 10
+  search_fractions: [0.5, 0.75, 1.0]
+  search_temperature: 1.0
+  train_epochs: 5
+  train_batch_size: 256
+  train_lr: 0.001
+  lr_warmup_steps: 100
+  lr_schedule: cosine
+  dataset_max_iters: 10
+  champion_pool_size: 5
+  value_loss_coef: 1.0
+  entropy_coef: 0.01
+  max_grad_norm: 1.0
+  opponent: apex
+  four_player_prob: 0.0
+
+imitation:
+  enabled: true
+  bc_expert: apex
+  bc_games: 100
+  bc_demo_opponent: random
+  bc_epochs: 30
+  bc_lr: 0.001
+  bc_batch_size: 256
+  bc_skip_steps: 0
+
+eval:
+  eval_every: 10
+  eval_games: 10
+  eval_opponents: [apex, random]
+
+# PPO section not used by ExIt but needed for config compatibility
+ppo:
+  total_updates: 0
+  lr: 0.001

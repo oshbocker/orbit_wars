@@ -76,6 +76,28 @@ class ImitationConfig:
 
 
 @dataclass(slots=True)
+class ExItConfig:
+    iterations: int = 200
+    games_per_iter: int = 30
+    search_depth: int = 15
+    search_candidates: int = 10
+    search_fractions: list[float] = field(default_factory=lambda: [0.5, 0.75, 1.0])
+    search_temperature: float = 1.0
+    train_epochs: int = 5
+    train_batch_size: int = 256
+    train_lr: float = 1e-3
+    lr_warmup_steps: int = 100
+    lr_schedule: str = "cosine"  # "cosine" or "constant"
+    dataset_max_iters: int = 10
+    champion_pool_size: int = 5
+    value_loss_coef: float = 1.0
+    entropy_coef: float = 0.01
+    max_grad_norm: float = 1.0
+    opponent: str = "apex"
+    four_player_prob: float = 0.0
+
+
+@dataclass(slots=True)
 class TrainConfig:
     seed: int = 42
     run_name: str = "transformer_ppo"
@@ -98,6 +120,7 @@ class TrainConfig:
     reward: RewardConfig = field(default_factory=RewardConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
     imitation: ImitationConfig = field(default_factory=ImitationConfig)
+    exit: ExItConfig = field(default_factory=ExItConfig)
 
 
 def load_train_config(path: str | Path) -> TrainConfig:
@@ -110,7 +133,7 @@ def load_train_config(path: str | Path) -> TrainConfig:
 
 def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
     cfg = TrainConfig()
-    _update_dataclass(cfg, data, skip={"env", "model", "ppo", "reward", "eval", "imitation"})
+    _update_dataclass(cfg, data, skip={"env", "model", "ppo", "reward", "eval", "imitation", "exit"})
     _update_dataclass(cfg.env, data.get("env", {}))
     _update_dataclass(cfg.model, data.get("model", {}))
     _update_dataclass(cfg.ppo, data.get("ppo", {}))
@@ -127,6 +150,7 @@ def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
 
     _update_dataclass(cfg.eval, data.get("eval", {}))
     _update_dataclass(cfg.imitation, data.get("imitation", {}))
+    _update_dataclass(cfg.exit, data.get("exit", {}))
     return cfg
 
 

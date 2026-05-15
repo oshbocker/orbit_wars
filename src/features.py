@@ -115,6 +115,72 @@ def aim_angle(src: PlanetState, tgt: PlanetState) -> float:
     return math.atan2(tgt.y - src.y, tgt.x - src.x)
 
 
+def intercept_pos(
+    src: PlanetState,
+    tgt: PlanetState,
+    ships: int,
+    step: int,
+    angular_velocity: float,
+) -> tuple[float, float, float]:
+    """Compute intercept position for an orbiting target.
+
+    Returns (x, y, travel_time). For non-orbiting targets, returns current pos.
+    Uses bisection to find the time t where fleet arrives at planet's future position.
+    """
+    if not tgt.is_orbiting or angular_velocity == 0:
+        tt = math.hypot(tgt.x - src.x, tgt.y - src.y) / max(fleet_speed(ships), 0.1)
+        return tgt.x, tgt.y, tt
+
+    speed = fleet_speed(ships)
+    R = tgt.orbital_radius
+    omega = angular_velocity
+
+    def _error(t: float) -> float:
+        """Positive means fleet hasn't arrived yet."""
+        a = tgt.initial_angle + omega * (step + t)
+        tx = SUN_X + R * math.cos(a)
+        ty = SUN_Y + R * math.sin(a)
+        d = math.hypot(tx - src.x, ty - src.y) - src.radius
+        return d / speed - t
+
+    # Bracket the root via linear scan
+    max_t = 80.0
+    dt = 1.0
+    prev_t = 0.5
+    prev_err = _error(prev_t)
+    bracket = None
+
+    t = prev_t + dt
+    while t <= max_t:
+        err = _error(t)
+        if prev_err >= 0 and err <= 0:
+            bracket = (prev_t, t)
+            break
+        prev_t = t
+        prev_err = err
+        t += dt
+
+    if bracket is None:
+        # Fallback: use current position
+        tt = math.hypot(tgt.x - src.x, tgt.y - src.y) / max(speed, 0.1)
+        return tgt.x, tgt.y, tt
+
+    # Bisect to refine
+    lo, hi = bracket
+    for _ in range(20):
+        mid = (lo + hi) / 2.0
+        if _error(mid) > 0:
+            lo = mid
+        else:
+            hi = mid
+
+    t_intercept = (lo + hi) / 2.0
+    a = tgt.initial_angle + omega * (step + t_intercept)
+    ix = SUN_X + R * math.cos(a)
+    iy = SUN_Y + R * math.sin(a)
+    return ix, iy, t_intercept
+
+
 def safe_angle(src_x: float, src_y: float, dst_x: float, dst_y: float) -> tuple[float, bool]:
     """Compute angle with sun avoidance. Returns (angle, was_redirected)."""
     direct = math.atan2(dst_y - src_y, dst_x - src_x)
@@ -289,6 +355,7 @@ def encode_source_decision(
     state: GameState,
     transit: FleetTransitState,
     env_cfg: EnvConfig,
+    use_intercept: bool = True,
 ) -> SourceDecision:
     """Encode all features for one source planet decision."""
     T = env_cfg.max_targets
@@ -339,10 +406,20 @@ def encode_source_decision(
     target_angles: list[float] = []
 
     for i, tgt in enumerate(targets):
-        dist = math.hypot(tgt.x - src.x, tgt.y - src.y)
+        # Use intercept position for orbiting targets
+        if use_intercept and tgt.is_orbiting and state.angular_velocity > 0 and src.ships > 0:
+            # Estimate ships to send (half of source) for speed estimate
+            est_ships = max(1, src.ships // 2)
+            tgt_x, tgt_y, _ = intercept_pos(
+                src, tgt, est_ships, state.step, state.angular_velocity,
+            )
+        else:
+            tgt_x, tgt_y = tgt.x, tgt.y
+
+        dist = math.hypot(tgt_x - src.x, tgt_y - src.y)
         tgt_transit = transit.get(tgt.id)
 
-        target_positions[i] = [tgt.x / BOARD_SIZE, tgt.y / BOARD_SIZE]
+        target_positions[i] = [tgt_x / BOARD_SIZE, tgt_y / BOARD_SIZE]
         target_scalars[i] = [
             1.0 if tgt.owner == -1 else 0.0,                               # neutral
             1.0 if tgt.owner == state.player else 0.0,                      # friendly
@@ -357,13 +434,13 @@ def encode_source_decision(
             1.0 if tgt.is_orbiting else 0.0,                                # orbiting
         ]
 
-        # Compute angle (with sun avoidance)
-        angle, _ = safe_angle(src.x, src.y, tgt.x, tgt.y)
+        # Compute angle to intercept position (with sun avoidance)
+        angle, _ = safe_angle(src.x, src.y, tgt_x, tgt_y)
         target_angles.append(angle)
         target_planet_ids.append(tgt.id)
 
         # Target is valid if we have ships and path doesn't cross sun
-        crosses_sun = passes_through_sun(src.x, src.y, tgt.x, tgt.y)
+        crosses_sun = passes_through_sun(src.x, src.y, tgt_x, tgt_y)
         target_mask[i + 2] = not crosses_sun and src.ships > 0
 
     return SourceDecision(
