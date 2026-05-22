@@ -1,0 +1,51 @@
+run_name: v2_default
+seed: 42
+opponent: apex
+alternate_player_sides: true
+self_play_update_interval: 50
+four_player_prob: 0.0
+rule_based_prob_start: 1.0
+rule_based_prob_end: 0.2
+rule_based_decay_updates: 2000
+
+env:
+  max_planets: 40
+  allocation_threshold: 0.05
+  min_ships_to_send: 1
+
+model:
+  embed_dim: 128
+  n_heads: 4
+  n_layers: 3
+  ff_dim: 256
+  planet_feat_dim: 22
+  global_feat_dim: 8
+
+ppo:
+  rollout_steps: 64
+  num_envs: 2
+  total_updates: 3000
+  epochs: 4
+  minibatch_size: 256
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_coef: 0.2
+  ent_coef: 0.01
+  vf_coef: 0.5
+  lr: 0.0003
+  max_grad_norm: 0.5
+
+reward:
+  reward_mode: dense_relative
+  dense_ship_coef: 0.002
+  dense_prod_coef: 0.005
+  early_prod_bonus: 9.0
+  early_prod_bonus_steps: 50
+
+eval:
+  eval_every: 100
+  eval_games: 10
+  eval_opponents: [apex, random]
+
+imitation:
+  enabled: false
