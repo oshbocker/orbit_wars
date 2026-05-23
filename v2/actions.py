@@ -153,7 +153,11 @@ def decode_actions(
                 if angle is not None:
                     moves.append([src.id, angle, ships])
         else:
-            # Stochastic: sample one target, send P(target) fraction
+            # Stochastic: sample one target, send ships
+            # Use conditional probability (prob among non-hold options) as
+            # the ship fraction. This avoids the cold-start problem where
+            # uniform softmax over 41 options gives ~2.4% per target,
+            # resulting in floor() = 0 ships for most planets.
             dist = Categorical(logits=row_logits)
             action = dist.sample().item()
             if action == 0:  # hold
@@ -164,8 +168,12 @@ def decode_actions(
             if tgt is None or tgt.id == src.id:
                 continue
 
+            prob_hold = float(probs[0])
             prob_j = float(probs[action])
-            ships = int(math.floor(available_ships * prob_j))
+            # Conditional prob: P(target | not hold), clamped to [0.2, 1.0]
+            cond_prob = prob_j / max(1.0 - prob_hold, 1e-6)
+            frac = max(0.2, min(1.0, cond_prob))
+            ships = int(math.floor(available_ships * frac))
             if ships < cfg.min_ships_to_send:
                 continue
 

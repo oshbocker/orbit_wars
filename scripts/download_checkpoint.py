@@ -4,11 +4,11 @@ Requires rclone configured with a 'gdrive' remote pointing to your Google Drive.
 See README / CLAUDE.md for setup instructions.
 
 Usage:
-    # Download latest transformer_mixed checkpoint
-    uv run python scripts/download_checkpoint.py
+    # Download latest v2_default checkpoint
+    uv run python scripts/download_checkpoint.py --run v2_default
 
-    # Download a specific run
-    uv run python scripts/download_checkpoint.py --run transformer_dagger
+    # Download latest transformer_mixed checkpoint (v1)
+    uv run python scripts/download_checkpoint.py --run transformer_mixed
 
     # Download all checkpoints
     uv run python scripts/download_checkpoint.py --all
@@ -32,7 +32,7 @@ DRIVE_BASE = "orbit_wars_outputs/checkpoints"
 LOCAL_BASE = Path("outputs/checkpoints")
 
 DEFAULT_REMOTE = "gdrive"
-DEFAULT_RUN = "transformer_mixed"
+DEFAULT_RUN = "v2_default"
 
 
 def _check_rclone() -> None:

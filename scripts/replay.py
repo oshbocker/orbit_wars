@@ -1,19 +1,26 @@
-"""Run a trained transformer checkpoint vs an opponent and export game_replay.html.
+"""Run a trained checkpoint vs an opponent and export game_replay.html.
+
+Supports both V1 (TransformerPolicy) and V2 (OrbitNet) checkpoints.
 
 Usage:
-    # Mixed checkpoint vs hybrid (default)
-    uv run python scripts/replay.py --checkpoint outputs/checkpoints/transformer_mixed/ckpt_last.pt
-
-    # Dagger checkpoint vs apex
+    # V2 checkpoint vs apex (default)
     uv run python scripts/replay.py \
-        --checkpoint outputs/checkpoints/transformer_dagger/ckpt_last.pt \
-        --config configs/transformer_dagger.yaml \
-        --opponent apex
+        --checkpoint outputs/checkpoints/v2_default/ckpt_last.pt
 
-    # Specify output file
+    # V1 checkpoint vs apex
     uv run python scripts/replay.py \
         --checkpoint outputs/checkpoints/transformer_mixed/ckpt_last.pt \
-        --output my_game.html
+        --v1 --config configs/transformer_mixed.yaml
+
+    # V2 checkpoint vs hybrid with custom output
+    uv run python scripts/replay.py \
+        --checkpoint outputs/checkpoints/v2_default/ckpt_last.pt \
+        --opponent hybrid --output my_game.html
+
+    # Set seed for reproducible games, play as player 1
+    uv run python scripts/replay.py \
+        --checkpoint outputs/checkpoints/v2_default/ckpt_last.pt \
+        --seed 42 --side 1
 """
 
 from __future__ import annotations
@@ -24,10 +31,6 @@ from pathlib import Path
 import torch
 from kaggle_environments import make
 
-from src.config import load_train_config
-from src.logging import make_eval_agent
-from src.policy import TransformerPolicy
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a game and export HTML replay")
@@ -36,13 +39,17 @@ def parse_args() -> argparse.Namespace:
         help="Path to ckpt_last.pt (or any .pt checkpoint)",
     )
     parser.add_argument(
-        "--config", type=str, default="configs/transformer_mixed.yaml",
-        help="Config YAML (must match the checkpoint's model architecture)",
+        "--config", type=str, default=None,
+        help="Config YAML (required for --v1, default for v2: configs/v2_default.yaml)",
     )
     parser.add_argument(
-        "--opponent", type=str, default="hybrid",
+        "--v1", action="store_true",
+        help="Use V1 TransformerPolicy instead of V2 OrbitNet",
+    )
+    parser.add_argument(
+        "--opponent", type=str, default="apex",
         choices=["hybrid", "apex", "random"],
-        help="Opponent to play against (default: hybrid)",
+        help="Opponent to play against (default: apex)",
     )
     parser.add_argument(
         "--output", type=str, default="game_replay.html",
@@ -72,11 +79,38 @@ def load_opponent(name: str):
     raise ValueError(f"Unknown opponent: {name}")
 
 
+def load_v1_agent(ckpt_path: Path, config_path: str, device: torch.device):
+    from src.config import load_train_config
+    from src.logging import make_eval_agent
+    from src.policy import TransformerPolicy
+
+    cfg = load_train_config(config_path)
+    policy = TransformerPolicy(cfg.model, cfg.env).to(device)
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
+    policy.load_state_dict(ckpt["policy"])
+    policy.eval()
+    update = ckpt.get("update", "?")
+    print(f"Loaded V1 checkpoint: {ckpt_path} (update {update})")
+    return make_eval_agent(policy, cfg, device)
+
+
+def load_v2_agent(ckpt_path: Path, config_path: str, device: torch.device):
+    from v2.config import load_v2_config
+    from v2.model import OrbitNet
+    from v2.train import make_v2_eval_agent
+
+    cfg = load_v2_config(config_path)
+    model = OrbitNet(cfg.model).to(device)
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
+    model.load_state_dict(ckpt["model"])
+    model.eval()
+    update = ckpt.get("update", "?")
+    print(f"Loaded V2 checkpoint: {ckpt_path} (update {update})")
+    return make_v2_eval_agent(model, cfg, device)
+
+
 def main() -> None:
     args = parse_args()
-
-    # Load config and checkpoint
-    cfg = load_train_config(args.config)
     device = torch.device("cpu")
 
     ckpt_path = Path(args.checkpoint)
@@ -84,23 +118,25 @@ def main() -> None:
         print(f"Checkpoint not found: {ckpt_path}")
         return
 
-    policy = TransformerPolicy(cfg.model, cfg.env).to(device)
-    ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
-    policy.load_state_dict(ckpt["policy"])
-    policy.eval()
-    update = ckpt.get("update", "?")
-    print(f"Loaded checkpoint: {ckpt_path} (update {update})")
+    if args.v1:
+        config_path = args.config or "configs/transformer_mixed.yaml"
+        rl_agent = load_v1_agent(ckpt_path, config_path, device)
+        agent_label = "V1 RL"
+    else:
+        config_path = args.config or "configs/v2_default.yaml"
+        rl_agent = load_v2_agent(ckpt_path, config_path, device)
+        agent_label = "V2 RL"
 
-    # Build agents
-    rl_agent = make_eval_agent(policy, cfg, device)
     opp_agent = load_opponent(args.opponent)
 
     if args.side == 0:
         players = [rl_agent, opp_agent]
-        rl_label, opp_label = "Player 0 (RL)", f"Player 1 ({args.opponent})"
+        rl_label = f"Player 0 ({agent_label})"
+        opp_label = f"Player 1 ({args.opponent})"
     else:
         players = [opp_agent, rl_agent]
-        rl_label, opp_label = f"Player 0 ({args.opponent})", "Player 1 (RL)"
+        rl_label = f"Player 0 ({args.opponent})"
+        opp_label = f"Player 1 ({agent_label})"
 
     # Run game
     configuration = {}

@@ -26,6 +26,8 @@ from .ppo import V2TransitionBatch, v2_ppo_update
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train V2 OrbitNet agent")
     parser.add_argument("--config", type=str, default="configs/v2_default.yaml")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Path to checkpoint .pt file to resume training from")
     return parser.parse_args()
 
 
@@ -369,14 +371,26 @@ def main() -> None:
     cfg = load_v2_config(args.config)
     seed_everything(cfg.seed)
     device = resolve_device(cfg.device)
-    print(f"V2 Config: {cfg.run_name}, device={device}, updates={cfg.ppo.total_updates}")
-    print(f"  envs={cfg.ppo.num_envs}, rollout_steps={cfg.ppo.rollout_steps}, "
-          f"opponent={cfg.opponent}")
+
+    # Set up text log file (append mode so resume doesn't overwrite)
+    log_dir = Path(cfg.log_dir) / cfg.run_name
+    log_dir.mkdir(parents=True, exist_ok=True)
+    _log_file = open(log_dir / "train.log", "a")
+
+    def log(msg: str) -> None:
+        """Print to stdout and append to train.log."""
+        print(msg)
+        _log_file.write(msg + "\n")
+        _log_file.flush()
+
+    log(f"V2 Config: {cfg.run_name}, device={device}, updates={cfg.ppo.total_updates}")
+    log(f"  envs={cfg.ppo.num_envs}, rollout_steps={cfg.ppo.rollout_steps}, "
+        f"opponent={cfg.opponent}")
 
     # Count parameters
     model = OrbitNet(cfg.model).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"  OrbitNet params: {n_params:,}")
+    log(f"  OrbitNet params: {n_params:,}")
 
     # Logger
     logger = TrainLogger(cfg.log_dir, cfg.run_name)
@@ -394,9 +408,9 @@ def main() -> None:
     scheduler: V2MixedScheduler | None = None
     if use_scheduler:
         scheduler = V2MixedScheduler(cfg, rule_based_opponent, sp_opponent)
-        print(f"  MixedScheduler: 4p_prob={cfg.four_player_prob}, "
-              f"rule_based={cfg.rule_based_prob_start:.1f}->{cfg.rule_based_prob_end:.1f} "
-              f"over {cfg.rule_based_decay_updates} updates")
+        log(f"  MixedScheduler: 4p_prob={cfg.four_player_prob}, "
+            f"rule_based={cfg.rule_based_prob_start:.1f}->{cfg.rule_based_prob_end:.1f} "
+            f"over {cfg.rule_based_decay_updates} updates")
 
     # Create envs
     envs = [V2OrbitWarsEnv(cfg, rule_based_opponent, env_index=idx)
@@ -414,11 +428,42 @@ def main() -> None:
 
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.ppo.lr)
 
+    # Resume from checkpoint if requested
+    start_update = 1
+    if args.resume:
+        resume_path = Path(args.resume)
+        if not resume_path.exists():
+            # Try as relative to save_dir/run_name
+            resume_path = save_dir / cfg.run_name / args.resume
+        if not resume_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {args.resume}")
+        ckpt = torch.load(resume_path, map_location=device, weights_only=True)
+        model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        start_update = ckpt["update"] + 1
+        # Advance seed past completed updates to avoid replaying episodes
+        next_seed = cfg.seed + start_update * cfg.ppo.num_envs * cfg.ppo.rollout_steps
+        # Re-sync self-play opponent with resumed model
+        sp_opponent.sync_from(model)
+        # Re-reset envs with new seeds
+        features_per_env = []
+        for env in envs:
+            if scheduler is not None:
+                scheduler.set_update(start_update)
+                num_p, opps = scheduler.sample_episode()
+                features_per_env.append(env.reset(seed=next_seed, num_players=num_p, opponents=opps))
+            else:
+                features_per_env.append(env.reset(seed=next_seed))
+            next_seed += 1
+        log(f"  Resumed from {resume_path} at update {ckpt['update']}")
+
     # Training loop
-    print(f"\n=== PPO training ({cfg.ppo.total_updates} updates) ===")
+    remaining = cfg.ppo.total_updates - start_update + 1
+    log(f"\n=== PPO training (updates {start_update}..{cfg.ppo.total_updates}, "
+        f"{remaining} remaining) ===")
     t_start = time.time()
 
-    for update in range(1, cfg.ppo.total_updates + 1):
+    for update in range(start_update, cfg.ppo.total_updates + 1):
         t_update = time.time()
 
         if scheduler is not None:
@@ -450,7 +495,7 @@ def main() -> None:
         if update % cfg.log_every == 0:
             elapsed = time.time() - t_start
             update_time = time.time() - t_update
-            print(
+            log(
                 f"update={update:4d}  reward={stats['episode_reward_mean']:+.3f}  "
                 f"eps={int(stats['episodes_finished'])}  samples={int(stats['samples'])}  "
                 f"loss={metrics['loss']:.4f}  ploss={metrics['policy_loss']:.4f}  "
@@ -460,19 +505,20 @@ def main() -> None:
 
         # Periodic evaluation
         if cfg.eval.eval_every > 0 and update % cfg.eval.eval_every == 0:
-            print(f"\n  Running eval ({cfg.eval.eval_games} games)...")
+            log(f"\n  Running eval ({cfg.eval.eval_games} games)...")
             eval_results = run_periodic_eval(model, cfg, device)
             logger.log_eval(update, eval_results)
             for r in eval_results:
-                print(f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
-                      f"T={r.tie_rate:.0%} (n={r.n_games})")
-            print()
+                log(f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
+                    f"T={r.tie_rate:.0%} (n={r.n_games})")
+            log("")
 
         if update % cfg.checkpoint_every == 0 or update == cfg.ppo.total_updates:
             save_checkpoint(save_dir, cfg.run_name, update, model, optimizer)
-            print(f"  -> saved checkpoint at update {update}")
+            log(f"  -> saved checkpoint at update {update}")
 
     logger.close()
+    _log_file.close()
     print(f"\nTraining complete. Total time: {time.time() - t_start:.0f}s")
 
 
