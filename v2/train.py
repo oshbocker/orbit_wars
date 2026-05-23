@@ -71,7 +71,7 @@ def _v2_policy_act(
     deterministic: bool = True,
 ) -> list[list[float | int]]:
     """Run OrbitNet on a raw observation and return Kaggle moves."""
-    state = observation if hasattr(observation, "planets") and hasattr(observation, "step") else parse_observation(observation)
+    state = parse_observation(observation)
     features = encode_features(state, cfg.env)
 
     with torch.inference_mode():
