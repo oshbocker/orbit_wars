@@ -123,6 +123,53 @@ def action_log_prob_and_entropy(
     return log_probs, entropies
 
 
+def decode_sampled_actions(
+    sampled: V2SampledAction,
+    output: OrbitNetOutput,
+    features: V2Features,
+    state: GameState,
+    cfg: V2EnvConfig,
+) -> list[list[float | int]]:
+    """Convert already-sampled actions to Kaggle moves (training rollout).
+
+    Uses the same target_indices stored in the PPO buffer, ensuring
+    the executed actions match the recorded log_probs.
+    """
+    P = cfg.max_planets
+    logits = output.logits[0]  # [P, P+1]
+    moves: list[list[float | int]] = []
+
+    for i in range(P):
+        if not features.own_mask[i]:
+            continue
+        target_idx = int(sampled.target_indices[0, i].item())
+        if target_idx == 0:  # hold (shouldn't happen with masking, but safe)
+            continue
+
+        j = target_idx - 1  # target planet slot
+        src = features.planet_states[i]
+        tgt = features.planet_states[j]
+        if src is None or tgt is None or src.id == tgt.id or src.ships <= 0:
+            continue
+
+        # Ship fraction: softmax prob (hold-masked), clamped to [0.2, 1.0]
+        row_logits = logits[i].clone()
+        row_logits[0] = float("-inf")
+        if not torch.isfinite(row_logits).any():
+            continue
+        probs = torch.softmax(row_logits, dim=-1)
+        frac = max(0.2, min(1.0, float(probs[target_idx])))
+        ships = int(math.floor(src.ships * frac))
+        if ships < cfg.min_ships_to_send:
+            continue
+
+        angle = _compute_angle(src, tgt, ships, state, cfg)
+        if angle is not None:
+            moves.append([src.id, angle, ships])
+
+    return moves
+
+
 def decode_actions(
     output: OrbitNetOutput,
     features: V2Features,
@@ -132,11 +179,14 @@ def decode_actions(
 ) -> list[list[float | int]]:
     """Convert model output to Kaggle [planet_id, angle, ships] commands.
 
-    Deterministic (eval): use full softmax (hold included). For each target
-    with P > threshold, send floor(ships * P) ships.
+    Deterministic (eval): use full softmax (hold included). Send to targets
+    above threshold. If no target exceeds threshold, send to the best target
+    anyway (argmax fallback) so the agent always acts early in training.
 
     Stochastic (train): hold is masked out. Sample one target per planet,
     send a meaningful fraction of ships (conditional probability, min 20%).
+    Note: prefer decode_sampled_actions() in the training loop so executed
+    actions match the PPO buffer's log_probs.
     """
     P = cfg.max_planets
     logits = output.logits[0]  # [P, P+1]
@@ -157,9 +207,9 @@ def decode_actions(
             continue
 
         if deterministic:
-            # Full allocation: send to all targets above threshold
             probs = torch.softmax(row_logits, dim=-1)  # [P+1]
             available_ships = src.ships
+            made_move = False
 
             for j in range(P):
                 prob_j = float(probs[j + 1])  # +1 because index 0 = hold
@@ -176,6 +226,26 @@ def decode_actions(
                 angle = _compute_angle(src, tgt, ships, state, cfg)
                 if angle is not None:
                     moves.append([src.id, angle, ships])
+                    made_move = True
+
+            # Argmax fallback: if no target exceeded threshold, send to the
+            # best non-hold target so the agent always acts early in training.
+            if not made_move:
+                target_probs = probs[1:].clone()  # [P]
+                for j in range(P):
+                    tgt = features.planet_states[j]
+                    if tgt is None or (tgt.id == src.id):
+                        target_probs[j] = 0.0
+                if target_probs.sum() > 0:
+                    best_j = int(target_probs.argmax().item())
+                    tgt = features.planet_states[best_j]
+                    if tgt is not None:
+                        frac = max(0.2, float(target_probs[best_j]) / float(target_probs.sum().clamp(min=1e-8)))
+                        ships = int(math.floor(available_ships * frac))
+                        if ships >= cfg.min_ships_to_send:
+                            angle = _compute_angle(src, tgt, ships, state, cfg)
+                            if angle is not None:
+                                moves.append([src.id, angle, ships])
         else:
             # Mask hold, sample a target, send a meaningful ship fraction
             train_logits = row_logits.clone()

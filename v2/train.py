@@ -15,7 +15,7 @@ from src.game_types import parse_observation
 from src.logging import EvalResult, TrainLogger
 from src.opponents import ApexOpponent, OpponentPolicy, build_opponent
 
-from .actions import V2SampledAction, decode_actions, sample_actions
+from .actions import V2SampledAction, decode_actions, decode_sampled_actions, sample_actions
 from .config import V2Config, load_v2_config
 from .env import V2OrbitWarsEnv
 from .features import V2Features, encode_features
@@ -195,9 +195,10 @@ def collect_rollout(
             all_values.append(float(output.value[0].cpu()))
             value_indices_per_env[env_idx].append(idx)
 
-            # Decode actions and step
+            # Decode the sampled actions (not a fresh sample) so the
+            # executed moves match the log_probs stored in the PPO buffer.
             state = env.last_state
-            moves = decode_actions(output, feat, state, cfg.env, deterministic=False)
+            moves = decode_sampled_actions(sampled, output, feat, state, cfg.env)
             result = env.step(moves)
 
             running_rewards[env_idx] += result.reward

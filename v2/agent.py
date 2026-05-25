@@ -250,6 +250,7 @@ def agent(obs, config=None):
 
         probs = torch.softmax(row_logits, dim=-1)
         available = src["ships"]
+        made_move = False
 
         for j in range(_MAX_PLANETS):
             prob_j = float(probs[j + 1])
@@ -265,5 +266,24 @@ def agent(obs, config=None):
 
             angle = _safe_angle(src["x"], src["y"], tgt["x"], tgt["y"])
             moves.append([src["id"], angle, ships])
+            made_move = True
+
+        # Argmax fallback: always act if no target exceeded threshold
+        if not made_move:
+            best_j, best_prob = -1, 0.0
+            for j in range(_MAX_PLANETS):
+                tgt = planet_map.get(j)
+                if tgt is None or tgt["id"] == src["id"]:
+                    continue
+                p = float(probs[j + 1])
+                if p > best_prob:
+                    best_prob = p
+                    best_j = j
+            if best_j >= 0:
+                tgt = planet_map[best_j]
+                ships = max(_MIN_SHIPS, int(math.floor(available * max(0.2, best_prob))))
+                if ships <= available:
+                    angle = _safe_angle(src["x"], src["y"], tgt["x"], tgt["y"])
+                    moves.append([src["id"], angle, ships])
 
     return moves
