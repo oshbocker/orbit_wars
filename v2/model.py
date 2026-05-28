@@ -90,6 +90,7 @@ class OrbitNet(nn.Module):
         global_features: torch.Tensor,    # [B, G]
         planet_mask: torch.Tensor,        # [B, P] bool (True = exists)
         own_mask: torch.Tensor,           # [B, P] bool (True = we own it)
+        reachability_mask: torch.Tensor | None = None,  # [B, P, P] bool (True = reachable)
     ) -> OrbitNetOutput:
         B, P, _ = planet_features.shape
 
@@ -140,6 +141,12 @@ class OrbitNet(nn.Module):
         diag_mask = torch.eye(P, dtype=torch.bool, device=logits.device)
         diag_mask = diag_mask.unsqueeze(0).expand(B, -1, -1)  # [B, P, P]
         logits[:, :, 1:] = logits[:, :, 1:].masked_fill(diag_mask, NEG_INF)
+
+        # Reachability mask: block targets unreachable due to sun
+        if reachability_mask is not None:
+            logits[:, :, 1:] = logits[:, :, 1:].masked_fill(
+                ~reachability_mask, NEG_INF
+            )
 
         # 6. Value head: masked mean pool
         mask_float = planet_mask.float().unsqueeze(-1)  # [B, P, 1]

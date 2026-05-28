@@ -34,6 +34,7 @@ ppo:
   vf_coef: 0.5
   lr: 0.0003
   max_grad_norm: 0.5
+  num_workers: 4
 
 reward:
   reward_mode: dense_relative

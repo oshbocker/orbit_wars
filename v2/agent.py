@@ -53,28 +53,35 @@ def _passes_through_sun(x1, y1, x2, y2):
     return (0 <= t1 <= 1) or (0 <= t2 <= 1) or (t1 < 0 < t2)
 
 
-def _safe_angle(sx, sy, dx, dy):
-    direct = math.atan2(dy - sy, dx - sx)
-    if not _passes_through_sun(sx, sy, dx, dy):
-        return direct
-    a_src = math.atan2(sy - _SUN_Y, sx - _SUN_X)
-    r = _SUN_SAFE_RADIUS + 3.0
-    best_wp = None
-    best_total = float("inf")
-    for offset in (math.pi / 2, -math.pi / 2, math.pi / 3, -math.pi / 3,
-                   2 * math.pi / 3, -2 * math.pi / 3):
-        wp_a = a_src + offset
-        wx = max(1.0, min(99.0, _SUN_X + r * math.cos(wp_a)))
-        wy = max(1.0, min(99.0, _SUN_Y + r * math.sin(wp_a)))
-        if _passes_through_sun(sx, sy, wx, wy):
-            continue
-        total = math.hypot(sx - wx, sy - wy) + math.hypot(wx - dx, wy - dy)
-        if total < best_total:
-            best_total = total
-            best_wp = (wx, wy)
-    if best_wp is None:
-        return direct
-    return math.atan2(best_wp[1] - sy, best_wp[0] - sx)
+def _can_reach(sx, sy, tx, ty):
+    """Check if a fleet from (sx,sy) can reach (tx,ty) without hitting the sun."""
+    return not _passes_through_sun(sx, sy, tx, ty)
+
+
+def _is_valid_target(src, tgt, player, step):
+    """Check if sending a fleet from src to tgt is a valid action.
+
+    Combines: sun avoidance, takeover viability, arrival time.
+    Own planets (reinforcement) bypass viability.
+    """
+    if not _can_reach(src["x"], src["y"], tgt["x"], tgt["y"]):
+        return False
+
+    # Arrival time check
+    dist = math.hypot(src["x"] - tgt["x"], src["y"] - tgt["y"])
+    speed = _fleet_speed(src["ships"])
+    eta = dist / speed if speed > 0 else 999.0
+    steps_remaining = max(0, 498 - step)
+    if eta > steps_remaining:
+        return False
+
+    # Own planets: reinforcement always valid
+    if tgt["owner"] == player:
+        return True
+
+    # Takeover viability for enemy/neutral
+    prod_growth = tgt["production"] * math.ceil(eta) if tgt["owner"] >= 0 else 0.0
+    return src["ships"] >= tgt["ships"] + prod_growth + 1
 
 
 def _parse_planet(p):
@@ -235,6 +242,7 @@ def agent(obs, config=None):
 
     logits = output.logits[0]  # [P, P+1]
     player = int(_obs_get(obs, "player", 0))
+    step = int(_obs_get(obs, "step", 0))
     moves = []
 
     for i in range(_MAX_PLANETS):
@@ -259,12 +267,18 @@ def agent(obs, config=None):
             tgt = planet_map.get(j)
             if tgt is None or tgt["id"] == src["id"]:
                 continue
+            if not _is_valid_target(src, tgt, player, step):
+                continue
 
             ships = int(math.floor(available * prob_j))
             if ships < _MIN_SHIPS:
                 continue
 
-            angle = _safe_angle(src["x"], src["y"], tgt["x"], tgt["y"])
+            # For non-owned targets: fleet must be large enough to capture
+            if tgt["owner"] != player and ships <= tgt["ships"]:
+                continue
+
+            angle = math.atan2(tgt["y"] - src["y"], tgt["x"] - src["x"])
             moves.append([src["id"], angle, ships])
             made_move = True
 
@@ -275,6 +289,8 @@ def agent(obs, config=None):
                 tgt = planet_map.get(j)
                 if tgt is None or tgt["id"] == src["id"]:
                     continue
+                if not _is_valid_target(src, tgt, player, step):
+                    continue
                 p = float(probs[j + 1])
                 if p > best_prob:
                     best_prob = p
@@ -282,8 +298,11 @@ def agent(obs, config=None):
             if best_j >= 0:
                 tgt = planet_map[best_j]
                 ships = max(_MIN_SHIPS, int(math.floor(available * max(0.2, best_prob))))
-                if ships <= available:
-                    angle = _safe_angle(src["x"], src["y"], tgt["x"], tgt["y"])
+                # For non-owned targets: fleet must be large enough to capture
+                if tgt["owner"] != player and ships <= tgt["ships"]:
+                    pass  # skip undersized fleet
+                elif ships <= available:
+                    angle = math.atan2(tgt["y"] - src["y"], tgt["x"] - src["x"])
                     moves.append([src["id"], angle, ships])
 
     return moves

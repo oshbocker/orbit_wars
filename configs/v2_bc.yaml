@@ -1,0 +1,62 @@
+run_name: v2_bc
+seed: 42
+opponent: apex
+alternate_player_sides: true
+self_play_update_interval: 50
+four_player_prob: 0.0
+rule_based_prob_start: 0.5
+rule_based_prob_end: 0.1
+rule_based_decay_updates: 1000
+
+env:
+  max_planets: 40
+  allocation_threshold: 0.05
+  min_ships_to_send: 1
+
+model:
+  embed_dim: 128
+  n_heads: 4
+  n_layers: 3
+  ff_dim: 256
+  planet_feat_dim: 22
+  global_feat_dim: 8
+
+ppo:
+  rollout_steps: 64
+  num_envs: 2
+  total_updates: 3000
+  epochs: 4
+  minibatch_size: 256
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_coef: 0.2
+  ent_coef: 0.03
+  vf_coef: 0.5
+  lr: 0.0001
+  max_grad_norm: 0.5
+  num_workers: 4
+
+reward:
+  reward_mode: dense_relative
+  dense_ship_coef: 0.002
+  dense_prod_coef: 0.005
+  early_prod_bonus: 9.0
+  early_prod_bonus_steps: 50
+
+eval:
+  eval_every: 100
+  eval_games: 10
+  eval_opponents: [apex, random]
+
+imitation:
+  enabled: true
+  bc_expert: apex
+  bc_games: 200
+  bc_demo_opponent: random
+  bc_epochs: 50
+  bc_lr: 0.001
+  bc_batch_size: 256
+  coef_start: 0.5
+  coef_decay_updates: 1000
+  distilled_opponent: true
+  bc_skip_steps: 0

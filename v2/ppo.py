@@ -15,6 +15,7 @@ class V2TransitionBatch:
     global_features: torch.Tensor    # [N, G]
     planet_mask: torch.Tensor        # [N, P] bool
     own_mask: torch.Tensor           # [N, P] bool
+    reachability_mask: torch.Tensor  # [N, P, P] bool
     target_indices: torch.Tensor     # [N, P] long
     log_prob: torch.Tensor           # [N]
     returns: torch.Tensor            # [N]
@@ -34,6 +35,8 @@ def v2_ppo_update(
     epochs: int,
     minibatch_size: int,
     device: torch.device,
+    demo_buffer: object | None = None,
+    imitation_coef: float = 0.0,
 ) -> dict[str, float]:
     """Clipped PPO update for V2 pipeline."""
     N = batch.planet_features.shape[0]
@@ -45,6 +48,7 @@ def v2_ppo_update(
     gf = batch.global_features.to(device)
     pm = batch.planet_mask.to(device).bool()
     om = batch.own_mask.to(device).bool()
+    rm = batch.reachability_mask.to(device).bool()
     ti = batch.target_indices.to(device)
     old_log_prob = batch.log_prob.to(device)
     returns = batch.returns.to(device)
@@ -55,7 +59,8 @@ def v2_ppo_update(
     advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
 
     minibatch_size = min(N, max(1, minibatch_size))
-    metrics = {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
+    metrics = {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0,
+               "imitation_loss": 0.0}
     updates = 0
 
     for _ in range(epochs):
@@ -63,7 +68,7 @@ def v2_ppo_update(
         for start in range(0, N, minibatch_size):
             idx = order[start:start + minibatch_size]
 
-            output = model(pf[idx], gf[idx], pm[idx], om[idx])
+            output = model(pf[idx], gf[idx], pm[idx], om[idx], rm[idx])
 
             new_log_prob, entropy = action_log_prob_and_entropy(
                 output, om[idx], ti[idx],
@@ -92,6 +97,15 @@ def v2_ppo_update(
 
             loss = policy_loss + vf_coef * value_loss - ent_coef * entropy_mean
 
+            # Imitation loss blending
+            im_loss_val = 0.0
+            if demo_buffer is not None and imitation_coef > 0.0:
+                from .imitation import compute_v2_bc_loss
+                demo_batch = demo_buffer.sample_batch(len(idx), device)
+                im_loss = compute_v2_bc_loss(model, demo_batch)
+                loss = loss + imitation_coef * im_loss
+                im_loss_val = float(im_loss.detach().cpu())
+
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
@@ -101,6 +115,7 @@ def v2_ppo_update(
             metrics["policy_loss"] += float(policy_loss.detach().cpu())
             metrics["value_loss"] += float(value_loss.detach().cpu())
             metrics["entropy"] += float(entropy_mean.detach().cpu())
+            metrics["imitation_loss"] += im_loss_val
             updates += 1
 
     return {k: v / max(updates, 1) for k, v in metrics.items()}

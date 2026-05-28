@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from src.features import BOARD_SIZE, SUN_X, SUN_Y
+from src.features import BOARD_SIZE, SUN_X, SUN_Y, fleet_speed, passes_through_sun
 from src.game_types import GameState, PlanetState
 
 from .config import V2EnvConfig
@@ -22,6 +22,7 @@ class V2Features:
     global_features: np.ndarray    # [GLOBAL_FEAT_DIM]
     planet_mask: np.ndarray        # [max_planets] bool — planet exists
     own_mask: np.ndarray           # [max_planets] bool — we own it
+    reachability_mask: np.ndarray  # [max_planets, max_planets] bool — can fleet from i reach j
     planet_ids: list[int]          # planet_id per slot (-1 if empty)
     planet_states: list[PlanetState | None]  # state per slot
 
@@ -98,6 +99,58 @@ def encode_features(state: GameState, cfg: V2EnvConfig) -> V2Features:
             info.eta[3] / 100.0 if info.ships[3] > 0 else 0.0,     # 21: enemy3 fleet ETA
         ]
 
+    # Reachability mask [P, P]: True if sending from i to j is a valid action.
+    # Combines: (1) sun avoidance, (2) takeover viability, (3) arrival time.
+    # Own planets (reinforcement) bypass viability — always valid if reachable.
+    reachability_mask = np.zeros((P, P), dtype=bool)
+    steps_remaining = max(0, 498 - state.step)
+
+    for i in range(P):
+        src = planet_states[i]
+        if src is None or src.owner != player:
+            continue
+        if src.ships <= 0:
+            continue
+
+        speed = fleet_speed(src.ships)
+
+        for j in range(P):
+            if i == j:
+                continue
+            tgt = planet_states[j]
+            if tgt is None:
+                continue
+
+            # (1) Sun check
+            if passes_through_sun(src.x, src.y, tgt.x, tgt.y):
+                continue
+
+            # (2) Arrival time: fleet must arrive before game ends
+            dist = math.hypot(src.x - tgt.x, src.y - tgt.y)
+            eta = dist / speed if speed > 0 else 999.0
+            if eta > steps_remaining:
+                continue
+
+            # Own planets: reinforcement is always valid
+            if tgt.owner == player:
+                reachability_mask[i, j] = True
+                continue
+
+            # (3) Takeover viability for enemy/neutral targets
+            # Garrison growth: enemy planets produce, neutrals don't
+            prod_growth = tgt.production * math.ceil(eta) if tgt.owner >= 0 else 0.0
+
+            # Account for friendly fleets already en route to this target
+            tgt_info = incoming.get(tgt.id, IncomingFleetInfo())
+            friendly_incoming = tgt_info.ships[0]  # own team's incoming ships
+
+            # Must have enough that a reasonable allocation (50%) can capture.
+            # This prevents the model from considering targets it can only
+            # capture by sending 100% of ships (too restrictive in practice).
+            effective_garrison = tgt.ships + prod_growth - friendly_incoming
+            if src.ships >= 2 * (effective_garrison + 1):
+                reachability_mask[i, j] = True
+
     # Global features [8]
     my_ships = 0.0
     my_prod = 0.0
@@ -145,6 +198,7 @@ def encode_features(state: GameState, cfg: V2EnvConfig) -> V2Features:
         global_features=global_features,
         planet_mask=planet_mask,
         own_mask=own_mask,
+        reachability_mask=reachability_mask,
         planet_ids=planet_ids,
         planet_states=planet_states,
     )

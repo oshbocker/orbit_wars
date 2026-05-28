@@ -40,6 +40,7 @@ class V2PPOConfig:
     vf_coef: float = 0.5
     lr: float = 3e-4
     max_grad_norm: float = 0.5
+    num_workers: int = 0  # 0 = sequential (backward-compat), >0 = parallel subprocess workers
 
 
 @dataclass(slots=True)
@@ -67,6 +68,10 @@ class V2ImitationConfig:
     bc_epochs: int = 50
     bc_lr: float = 1e-3
     bc_batch_size: int = 256
+    coef_start: float = 0.5
+    coef_decay_updates: int = 1000
+    distilled_opponent: bool = True
+    bc_skip_steps: int = 0
 
 
 @dataclass(slots=True)
@@ -113,6 +118,20 @@ def v2_config_from_dict(data: dict[str, Any]) -> V2Config:
     _update_dataclass(cfg.eval, data.get("eval", {}))
     _update_dataclass(cfg.imitation, data.get("imitation", {}))
     return cfg
+
+
+def v2_config_to_dict(cfg: V2Config) -> dict[str, Any]:
+    """Serialize V2Config to a plain dict (for passing to subprocess workers)."""
+    from dataclasses import fields as dc_fields
+    result: dict[str, Any] = {}
+    sub = {"env", "model", "ppo", "reward", "eval", "imitation"}
+    for f in dc_fields(cfg):
+        val = getattr(cfg, f.name)
+        if f.name in sub:
+            result[f.name] = {sf.name: getattr(val, sf.name) for sf in dc_fields(val)}
+        else:
+            result[f.name] = val
+    return result
 
 
 def _update_dataclass(instance: Any, values: dict[str, Any], skip: set[str] | None = None) -> None:

@@ -7,8 +7,8 @@ from dataclasses import dataclass
 import torch
 from torch.distributions import Categorical
 
-from src.features import fleet_speed, intercept_pos, passes_through_sun, safe_angle
-from src.game_types import GameState
+from src.features import BOARD_SIZE, fleet_speed, intercept_pos, passes_through_sun
+from src.game_types import FleetState, GameState
 
 from .config import V2EnvConfig
 from .features import V2Features
@@ -163,6 +163,10 @@ def decode_sampled_actions(
         if ships < cfg.min_ships_to_send:
             continue
 
+        # For non-owned targets: fleet must be large enough to capture
+        if tgt.owner != state.player and ships <= tgt.ships:
+            continue
+
         angle = _compute_angle(src, tgt, ships, state, cfg)
         if angle is not None:
             moves.append([src.id, angle, ships])
@@ -223,6 +227,10 @@ def decode_actions(
                 if ships < cfg.min_ships_to_send:
                     continue
 
+                # For non-owned targets: fleet must be large enough to capture
+                if tgt.owner != state.player and ships <= tgt.ships:
+                    continue
+
                 angle = _compute_angle(src, tgt, ships, state, cfg)
                 if angle is not None:
                     moves.append([src.id, angle, ships])
@@ -243,9 +251,13 @@ def decode_actions(
                         frac = max(0.2, float(target_probs[best_j]) / float(target_probs.sum().clamp(min=1e-8)))
                         ships = int(math.floor(available_ships * frac))
                         if ships >= cfg.min_ships_to_send:
-                            angle = _compute_angle(src, tgt, ships, state, cfg)
-                            if angle is not None:
-                                moves.append([src.id, angle, ships])
+                            # For non-owned targets: fleet must capture
+                            if tgt.owner != state.player and ships <= tgt.ships:
+                                pass  # skip undersized fleet
+                            else:
+                                angle = _compute_angle(src, tgt, ships, state, cfg)
+                                if angle is not None:
+                                    moves.append([src.id, angle, ships])
         else:
             # Mask hold, sample a target, send a meaningful ship fraction
             train_logits = row_logits.clone()
@@ -269,6 +281,10 @@ def decode_actions(
             if ships < cfg.min_ships_to_send:
                 continue
 
+            # For non-owned targets: fleet must be large enough to capture
+            if tgt.owner != state.player and ships <= tgt.ships:
+                continue
+
             angle = _compute_angle(src, tgt, ships, state, cfg)
             if angle is not None:
                 moves.append([src.id, angle, ships])
@@ -279,21 +295,65 @@ def decode_actions(
 def _compute_angle(
     src, tgt, ships: int, state: GameState, cfg: V2EnvConfig,
 ) -> float | None:
-    """Compute launch angle with sun avoidance and orbit intercept."""
+    """Compute launch angle ensuring fleet reaches the target.
+
+    For orbiting targets, aims at the predicted intercept position.
+    Validates the full flight path: sun intersection, map boundary,
+    and that the fleet actually hits the intended target.
+    """
     # For orbiting targets, use intercept position
     if tgt.is_orbiting and state.angular_velocity > 0:
         ix, iy, _ = intercept_pos(src, tgt, ships, state.step, state.angular_velocity)
     else:
         ix, iy = tgt.x, tgt.y
 
-    # Sun avoidance
-    angle, _ = safe_angle(src.x, src.y, ix, iy)
+    # Direct angle to aim position (no waypoint redirect)
+    angle = math.atan2(iy - src.y, ix - src.x)
 
-    # Verify the path doesn't go through the sun after redirection
+    # Quick filter: direct path crosses the sun
     if passes_through_sun(src.x, src.y, ix, iy):
         return None
 
+    # Full path validation: verify fleet actually hits the intended target
+    if not _validate_will_hit(src, tgt, angle, ships, state):
+        return None
+
     return float(angle)
+
+
+def _validate_will_hit(
+    src, tgt, angle: float, ships: int, state: GameState,
+) -> bool:
+    """Verify fleet launched at `angle` will actually hit the intended target.
+
+    Creates a virtual fleet and simulates the path, checking for sun
+    intersection, map boundary exit, and collision with other planets.
+    """
+    from .state import predict_fleet_destination
+
+    # Fleet spawns just outside the source planet's surface
+    spawn_x = src.x + (src.radius + 0.1) * math.cos(angle)
+    spawn_y = src.y + (src.radius + 0.1) * math.sin(angle)
+
+    # Spawn point must be in bounds
+    if spawn_x <= 0 or spawn_x >= BOARD_SIZE or spawn_y <= 0 or spawn_y >= BOARD_SIZE:
+        return False
+
+    virtual_fleet = FleetState(
+        id=-1, owner=state.player,
+        x=spawn_x, y=spawn_y,
+        angle=angle,
+        from_planet_id=src.id,
+        ships=ships,
+    )
+
+    # Exclude source planet from collision check (fleet just launched from it)
+    other_planets = [p for p in state.planets if p.id != src.id]
+    hit_planet, _eta = predict_fleet_destination(
+        virtual_fleet, other_planets, state.step, state.angular_velocity,
+    )
+
+    return hit_planet is not None and hit_planet.id == tgt.id
 
 
 def _safe_logits(logits: torch.Tensor) -> torch.Tensor:

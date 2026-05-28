@@ -79,7 +79,8 @@ def _v2_policy_act(
         gf = torch.from_numpy(features.global_features).unsqueeze(0).to(device)
         pm = torch.from_numpy(features.planet_mask).unsqueeze(0).to(device)
         om = torch.from_numpy(features.own_mask).unsqueeze(0).to(device)
-        output = model(pf, gf, pm, om)
+        rm = torch.from_numpy(features.reachability_mask).unsqueeze(0).to(device)
+        output = model(pf, gf, pm, om, rm)
 
     return decode_actions(output, features, state, cfg.env, deterministic=deterministic)
 
@@ -156,6 +157,7 @@ def collect_rollout(
     all_gf: list[np.ndarray] = []
     all_pm: list[np.ndarray] = []
     all_om: list[np.ndarray] = []
+    all_rm: list[np.ndarray] = []
     all_ti: list[np.ndarray] = []
     all_lp: list[float] = []
     all_values: list[float] = []
@@ -179,6 +181,7 @@ def collect_rollout(
             all_gf.append(feat.global_features)
             all_pm.append(feat.planet_mask)
             all_om.append(feat.own_mask)
+            all_rm.append(feat.reachability_mask)
 
             # Forward pass
             with torch.inference_mode():
@@ -186,7 +189,8 @@ def collect_rollout(
                 gf_t = torch.from_numpy(feat.global_features).unsqueeze(0).to(device)
                 pm_t = torch.from_numpy(feat.planet_mask).unsqueeze(0).to(device)
                 om_t = torch.from_numpy(feat.own_mask).unsqueeze(0).to(device)
-                output = model(pf_t, gf_t, pm_t, om_t)
+                rm_t = torch.from_numpy(feat.reachability_mask).unsqueeze(0).to(device)
+                output = model(pf_t, gf_t, pm_t, om_t, rm_t)
 
                 sampled = sample_actions(output, om_t, deterministic=False)
 
@@ -260,6 +264,7 @@ def collect_rollout(
             global_features=torch.from_numpy(np.array(all_gf, dtype=np.float32)),
             planet_mask=torch.from_numpy(np.array(all_pm, dtype=bool)),
             own_mask=torch.from_numpy(np.array(all_om, dtype=bool)),
+            reachability_mask=torch.from_numpy(np.array(all_rm, dtype=bool)),
             target_indices=torch.from_numpy(np.array(all_ti, dtype=np.int64)),
             log_prob=torch.tensor(all_lp, dtype=torch.float32),
             returns=torch.tensor(returns, dtype=torch.float32),
@@ -290,7 +295,8 @@ def _bootstrap_values(
             gf_t = torch.from_numpy(feat.global_features).unsqueeze(0).to(device)
             pm_t = torch.from_numpy(feat.planet_mask).unsqueeze(0).to(device)
             om_t = torch.from_numpy(feat.own_mask).unsqueeze(0).to(device)
-            output = model(pf_t, gf_t, pm_t, om_t)
+            rm_t = torch.from_numpy(feat.reachability_mask).unsqueeze(0).to(device)
+            output = model(pf_t, gf_t, pm_t, om_t, rm_t)
         values.append(float(output.value[0].cpu()))
     return values
 
@@ -303,6 +309,7 @@ def _empty_batch(cfg: V2Config) -> V2TransitionBatch:
         global_features=torch.zeros(0, GLOBAL_FEAT_DIM),
         planet_mask=torch.zeros(0, P, dtype=torch.bool),
         own_mask=torch.zeros(0, P, dtype=torch.bool),
+        reachability_mask=torch.zeros(0, P, P, dtype=torch.bool),
         target_indices=torch.zeros(0, P, dtype=torch.long),
         log_prob=torch.zeros(0),
         returns=torch.zeros(0),
@@ -397,9 +404,42 @@ def main() -> None:
     logger = TrainLogger(cfg.log_dir, cfg.run_name)
 
     save_dir = Path(cfg.save_dir)
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.ppo.lr)
+
+    # ── Imitation learning phases ──────────────────────────────────────────
+    demo_buffer = None
+
+    if cfg.imitation.enabled:
+        from .imitation import collect_v2_demonstrations, v2_bc_pretrain
+
+        # Phase 1: Collect demonstrations
+        log(f"\n=== Phase 1: Collecting {cfg.imitation.bc_games} demo games "
+            f"(expert={cfg.imitation.bc_expert} vs {cfg.imitation.bc_demo_opponent}) ===")
+        demo_buffer = collect_v2_demonstrations(
+            n_games=cfg.imitation.bc_games,
+            cfg=cfg,
+            opponent_name=cfg.imitation.bc_demo_opponent,
+        )
+        log(f"  Buffer size: {len(demo_buffer)}")
+
+        # Phase 2: BC pretrain
+        log(f"\n=== Phase 2: BC pretraining ({cfg.imitation.bc_epochs} epochs) ===")
+        v2_bc_pretrain(model, demo_buffer, cfg.imitation, device, logger)
+
+        # Save BC-pretrained checkpoint (update=0)
+        save_checkpoint(save_dir, cfg.run_name, 0, model, optimizer)
+        log("  BC checkpoint saved (update=0)")
 
     # Build opponents
     rule_based_opponent = build_opponent(cfg.opponent)
+
+    # Use distilled opponent if BC was done
+    if (cfg.imitation.enabled and cfg.imitation.distilled_opponent
+            and demo_buffer is not None):
+        log("  Using distilled opponent (BC-pretrained V2)")
+        distilled = V2SelfPlayOpponent(cfg, device=device, deterministic=True)
+        distilled.sync_from(model)
+        rule_based_opponent = distilled
     sp_opponent = V2SelfPlayOpponent(cfg, device=device,
                                      deterministic=cfg.self_play_deterministic)
     sp_opponent.sync_from(model)
@@ -413,21 +453,20 @@ def main() -> None:
             f"rule_based={cfg.rule_based_prob_start:.1f}->{cfg.rule_based_prob_end:.1f} "
             f"over {cfg.rule_based_decay_updates} updates")
 
-    # Create envs
-    envs = [V2OrbitWarsEnv(cfg, rule_based_opponent, env_index=idx)
-            for idx in range(cfg.ppo.num_envs)]
-
+    # Create envs (only needed for sequential mode)
+    envs: list = []
+    features_per_env: list = []
     next_seed = cfg.seed
-    features_per_env = []
-    for env in envs:
-        if scheduler is not None:
-            num_p, opps = scheduler.sample_episode()
-            features_per_env.append(env.reset(seed=next_seed, num_players=num_p, opponents=opps))
-        else:
-            features_per_env.append(env.reset(seed=next_seed))
-        next_seed += 1
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.ppo.lr)
+    if cfg.ppo.num_workers == 0:
+        envs = [V2OrbitWarsEnv(cfg, rule_based_opponent, env_index=idx)
+                for idx in range(cfg.ppo.num_envs)]
+        for env in envs:
+            if scheduler is not None:
+                num_p, opps = scheduler.sample_episode()
+                features_per_env.append(env.reset(seed=next_seed, num_players=num_p, opponents=opps))
+            else:
+                features_per_env.append(env.reset(seed=next_seed))
+            next_seed += 1
 
     # Resume from checkpoint if requested
     start_update = 1
@@ -458,10 +497,54 @@ def main() -> None:
             next_seed += 1
         log(f"  Resumed from {resume_path} at update {ckpt['update']}")
 
+        # Re-collect demos if imitation is active at resume point
+        if cfg.imitation.enabled and demo_buffer is None:
+            decay_frac = start_update / max(cfg.imitation.coef_decay_updates, 1)
+            coef_at_resume = cfg.imitation.coef_start * max(0.0, 1.0 - decay_frac)
+            if coef_at_resume > 0.0:
+                from .imitation import collect_v2_demonstrations
+                log(f"  Re-collecting demos for imitation (coef={coef_at_resume:.3f})...")
+                demo_buffer = collect_v2_demonstrations(
+                    n_games=cfg.imitation.bc_games,
+                    cfg=cfg,
+                    opponent_name=cfg.imitation.bc_demo_opponent,
+                )
+                log(f"  Buffer size: {len(demo_buffer)}")
+
     # Training loop
     remaining = cfg.ppo.total_updates - start_update + 1
     log(f"\n=== PPO training (updates {start_update}..{cfg.ppo.total_updates}, "
         f"{remaining} remaining) ===")
+
+    if cfg.ppo.num_workers > 0:
+        _train_parallel(cfg, model, optimizer, logger, save_dir, device, log,
+                        start_update, demo_buffer)
+    else:
+        _train_sequential(cfg, model, optimizer, logger, save_dir, device, log,
+                          envs, features_per_env, next_seed, scheduler,
+                          sp_opponent, start_update, demo_buffer)
+
+    logger.close()
+    _log_file.close()
+
+
+def _train_sequential(
+    cfg: V2Config,
+    model: OrbitNet,
+    optimizer: torch.optim.Optimizer,
+    logger: TrainLogger,
+    save_dir: Path,
+    device: torch.device,
+    log: Any,
+    envs: list,
+    features_per_env: list,
+    next_seed: int,
+    scheduler: V2MixedScheduler | None,
+    sp_opponent: V2SelfPlayOpponent,
+    start_update: int,
+    demo_buffer: object | None = None,
+) -> None:
+    """Original sequential training loop."""
     t_start = time.time()
 
     for update in range(start_update, cfg.ppo.total_updates + 1):
@@ -475,6 +558,12 @@ def main() -> None:
             scheduler=scheduler,
         )
 
+        # Compute imitation coefficient (linear decay)
+        imitation_coef = 0.0
+        if cfg.imitation.enabled and demo_buffer is not None:
+            decay_frac = update / max(cfg.imitation.coef_decay_updates, 1)
+            imitation_coef = cfg.imitation.coef_start * max(0.0, 1.0 - decay_frac)
+
         metrics = v2_ppo_update(
             model, optimizer, batch,
             clip_coef=cfg.ppo.clip_coef,
@@ -484,6 +573,8 @@ def main() -> None:
             epochs=cfg.ppo.epochs,
             minibatch_size=cfg.ppo.minibatch_size,
             device=device,
+            demo_buffer=demo_buffer,
+            imitation_coef=imitation_coef,
         )
 
         # Sync self-play opponent periodically
@@ -518,8 +609,89 @@ def main() -> None:
             save_checkpoint(save_dir, cfg.run_name, update, model, optimizer)
             log(f"  -> saved checkpoint at update {update}")
 
-    logger.close()
-    _log_file.close()
+    print(f"\nTraining complete. Total time: {time.time() - t_start:.0f}s")
+
+
+def _train_parallel(
+    cfg: V2Config,
+    model: OrbitNet,
+    optimizer: torch.optim.Optimizer,
+    logger: TrainLogger,
+    save_dir: Path,
+    device: torch.device,
+    log: Any,
+    start_update: int,
+    demo_buffer: object | None = None,
+) -> None:
+    """Parallel training loop using subprocess workers."""
+    from .parallel import ParallelRolloutCollector
+
+    num_workers = cfg.ppo.num_workers
+    log(f"  Parallel mode: {num_workers} workers")
+
+    collector = ParallelRolloutCollector(cfg, num_workers)
+    # Send initial weights to workers
+    collector.sync_weights(model)
+
+    t_start = time.time()
+    try:
+        for update in range(start_update, cfg.ppo.total_updates + 1):
+            t_update = time.time()
+
+            batch, stats = collector.collect(update)
+
+            # Compute imitation coefficient (linear decay)
+            imitation_coef = 0.0
+            if cfg.imitation.enabled and demo_buffer is not None:
+                decay_frac = update / max(cfg.imitation.coef_decay_updates, 1)
+                imitation_coef = cfg.imitation.coef_start * max(0.0, 1.0 - decay_frac)
+
+            metrics = v2_ppo_update(
+                model, optimizer, batch,
+                clip_coef=cfg.ppo.clip_coef,
+                ent_coef=cfg.ppo.ent_coef,
+                vf_coef=cfg.ppo.vf_coef,
+                max_grad_norm=cfg.ppo.max_grad_norm,
+                epochs=cfg.ppo.epochs,
+                minibatch_size=cfg.ppo.minibatch_size,
+                device=device,
+                demo_buffer=demo_buffer,
+                imitation_coef=imitation_coef,
+            )
+
+            # Sync weights to workers
+            collector.sync_weights(model)
+
+            all_metrics = {**stats, **metrics}
+            logger.log_update(update, all_metrics)
+
+            if update % cfg.log_every == 0:
+                elapsed = time.time() - t_start
+                update_time = time.time() - t_update
+                log(
+                    f"update={update:4d}  reward={stats['episode_reward_mean']:+.3f}  "
+                    f"eps={int(stats['episodes_finished'])}  samples={int(stats['samples'])}  "
+                    f"loss={metrics['loss']:.4f}  ploss={metrics['policy_loss']:.4f}  "
+                    f"vloss={metrics['value_loss']:.4f}  ent={metrics['entropy']:.3f}  "
+                    f"dt={update_time:.1f}s  total={elapsed:.0f}s"
+                )
+
+            # Periodic evaluation
+            if cfg.eval.eval_every > 0 and update % cfg.eval.eval_every == 0:
+                log(f"\n  Running eval ({cfg.eval.eval_games} games)...")
+                eval_results = run_periodic_eval(model, cfg, device)
+                logger.log_eval(update, eval_results)
+                for r in eval_results:
+                    log(f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
+                        f"T={r.tie_rate:.0%} (n={r.n_games})")
+                log("")
+
+            if update % cfg.checkpoint_every == 0 or update == cfg.ppo.total_updates:
+                save_checkpoint(save_dir, cfg.run_name, update, model, optimizer)
+                log(f"  -> saved checkpoint at update {update}")
+    finally:
+        collector.shutdown()
+
     print(f"\nTraining complete. Total time: {time.time() - t_start:.0f}s")
 
 
