@@ -27,9 +27,14 @@ class V2Features:
     planet_states: list[PlanetState | None]  # state per slot
 
 
-def encode_features(state: GameState, cfg: V2EnvConfig) -> V2Features:
+def encode_features(
+    state: GameState,
+    cfg: V2EnvConfig,
+    comet_ids: list[int] | None = None,
+) -> V2Features:
     """Encode full game state into V2 feature tensors."""
     P = cfg.max_planets
+    _comet_set: set[int] = set(comet_ids) if comet_ids else set()
     player = state.player
 
     # Compute incoming fleets
@@ -119,6 +124,10 @@ def encode_features(state: GameState, cfg: V2EnvConfig) -> V2Features:
                 continue
             tgt = planet_states[j]
             if tgt is None:
+                continue
+
+            # Skip comets as targets (unpredictable elliptical orbits)
+            if tgt.id in _comet_set:
                 continue
 
             # (1) Sun check

@@ -137,7 +137,7 @@ def intercept_pos(
 
     def _error(t: float) -> float:
         """Positive means fleet hasn't arrived yet."""
-        a = tgt.initial_angle + omega * (step + t)
+        a = tgt.initial_angle + omega * (step + t - 1)
         tx = SUN_X + R * math.cos(a)
         ty = SUN_Y + R * math.sin(a)
         d = math.hypot(tx - src.x, ty - src.y) - src.radius
@@ -175,7 +175,7 @@ def intercept_pos(
             hi = mid
 
     t_intercept = (lo + hi) / 2.0
-    a = tgt.initial_angle + omega * (step + t_intercept)
+    a = tgt.initial_angle + omega * (step + t_intercept - 1)
     ix = SUN_X + R * math.cos(a)
     iy = SUN_Y + R * math.sin(a)
     return ix, iy, t_intercept

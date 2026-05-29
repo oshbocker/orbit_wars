@@ -72,7 +72,17 @@ def _v2_policy_act(
 ) -> list[list[float | int]]:
     """Run OrbitNet on a raw observation and return Kaggle moves."""
     state = parse_observation(observation)
-    features = encode_features(state, cfg.env)
+    # Extract comet IDs to filter them from reachability
+    comet_ids = None
+    if hasattr(observation, "comet_planet_ids"):
+        ids = getattr(observation, "comet_planet_ids", None)
+        if ids is not None:
+            comet_ids = [int(x) for x in ids]
+    elif isinstance(observation, dict):
+        ids = observation.get("comet_planet_ids")
+        if ids is not None:
+            comet_ids = [int(x) for x in ids]
+    features = encode_features(state, cfg.env, comet_ids=comet_ids)
 
     with torch.inference_mode():
         pf = torch.from_numpy(features.planet_features).unsqueeze(0).to(device)
@@ -409,7 +419,7 @@ def main() -> None:
     # ── Imitation learning phases ──────────────────────────────────────────
     demo_buffer = None
 
-    if cfg.imitation.enabled:
+    if cfg.imitation.enabled and not args.resume:
         from .imitation import collect_v2_demonstrations, v2_bc_pretrain
 
         # Phase 1: Collect demonstrations

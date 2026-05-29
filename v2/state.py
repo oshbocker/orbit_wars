@@ -91,8 +91,8 @@ def _orbiting_hit_check(
         if new_fx < 0 or new_fx > BOARD_SIZE or new_fy < 0 or new_fy > BOARD_SIZE:
             return None
 
-        # Planet position at step + t
-        px, py = planet_pos_at(planet, step + t, angular_velocity)
+        # Planet position during fleet movement (before orbit advance)
+        px, py = planet_pos_at(planet, step + t - 1, angular_velocity)
 
         # Check collision: continuous segment from (prev_fx, prev_fy) to (new_fx, new_fy)
         prev_fx = fx + dx * (t - 1)

@@ -1,0 +1,241 @@
+V2 Config: hparam_small_net, device=cpu, updates=200
+  envs=1, rollout_steps=32, opponent=apex
+  OrbitNet params: 98,499
+  MixedScheduler: 4p_prob=0.0, rule_based=0.5->0.1 over 1000 updates
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO: Successfully loaded OpenSpiel environments: 19.
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_amazons
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_backgammon
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_checkers
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_chess
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_connect_four
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_dark_hex
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_gin_rummy
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_go
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_goofspiel
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_hearts
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_hex
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_matching_pennies_3p
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_othello
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_repeated_game
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_tic_tac_toe
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_y
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_universal_poker
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_repeated_poker
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_python_repeated_pokerkit
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO: OpenSpiel games skipped: 1.
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    snake
+
+=== PPO training (updates 1..200, 200 remaining) ===
+update=   1  reward=+0.000  eps=0  samples=32  loss=-0.0597  ploss=-0.0003  vloss=0.0199  ent=2.310  dt=8.0s  total=8s
+update=   2  reward=+0.000  eps=0  samples=32  loss=-0.1111  ploss=-0.0004  vloss=0.0840  ent=5.088  dt=4.5s  total=12s
+update=   3  reward=+0.000  eps=0  samples=32  loss=0.2851  ploss=0.0000  vloss=0.6226  ent=0.875  dt=2.8s  total=15s
+update=   4  reward=-2.938  eps=1  samples=32  loss=0.1881  ploss=-0.0001  vloss=0.4459  ent=1.156  dt=2.2s  total=17s
+update=   5  reward=+0.000  eps=0  samples=32  loss=-0.1819  ploss=-0.0004  vloss=0.0027  ent=6.095  dt=4.5s  total=22s
+update=   6  reward=+0.000  eps=0  samples=32  loss=-0.5911  ploss=-0.0017  vloss=0.0027  ent=19.693  dt=12.6s  total=35s
+update=   7  reward=+0.000  eps=0  samples=32  loss=-0.8047  ploss=-0.0004  vloss=0.0023  ent=26.850  dt=13.4s  total=48s
+update=   8  reward=+0.000  eps=0  samples=32  loss=-0.9563  ploss=-0.0002  vloss=0.0019  ent=31.901  dt=15.0s  total=63s
+update=   9  reward=+0.000  eps=0  samples=32  loss=-1.1030  ploss=-0.0001  vloss=0.0056  ent=36.855  dt=13.6s  total=77s
+update=  10  reward=+0.000  eps=0  samples=32  loss=-1.1177  ploss=-0.0002  vloss=0.0051  ent=37.334  dt=14.1s  total=91s
+update=  11  reward=+0.000  eps=0  samples=32  loss=-1.0994  ploss=-0.0002  vloss=0.0064  ent=36.746  dt=15.4s  total=106s
+update=  12  reward=+0.000  eps=0  samples=32  loss=-1.3099  ploss=0.0000  vloss=0.0040  ent=43.731  dt=15.7s  total=122s
+update=  13  reward=+0.000  eps=0  samples=32  loss=-1.2906  ploss=-0.0002  vloss=0.0252  ent=43.433  dt=15.2s  total=137s
+update=  14  reward=+0.000  eps=0  samples=32  loss=-1.1335  ploss=-0.0001  vloss=0.0781  ent=39.081  dt=13.8s  total=151s
+update=  15  reward=+0.000  eps=0  samples=32  loss=-1.1003  ploss=-0.0002  vloss=0.0184  ent=36.976  dt=13.1s  total=164s
+update=  16  reward=+0.000  eps=0  samples=32  loss=-1.1229  ploss=-0.0004  vloss=0.0251  ent=37.836  dt=14.8s  total=179s
+update=  17  reward=+0.000  eps=0  samples=32  loss=-0.9774  ploss=-0.0006  vloss=0.0087  ent=32.703  dt=13.8s  total=192s
+update=  18  reward=+0.000  eps=0  samples=32  loss=-0.9462  ploss=0.0005  vloss=0.0811  ent=32.907  dt=13.7s  total=206s
+update=  19  reward=+0.000  eps=0  samples=32  loss=-0.8591  ploss=-0.0003  vloss=0.0334  ent=29.184  dt=16.6s  total=223s
+update=  20  reward=-1.248  eps=1  samples=32  loss=-0.1190  ploss=-0.0001  vloss=0.0065  ent=4.072  dt=3.4s  total=226s
+update=  21  reward=+0.000  eps=0  samples=32  loss=-0.0835  ploss=-0.0003  vloss=0.0044  ent=2.847  dt=2.2s  total=228s
+update=  22  reward=+0.000  eps=0  samples=32  loss=-0.1283  ploss=-0.0000  vloss=0.0006  ent=4.287  dt=3.0s  total=231s
+update=  23  reward=+0.000  eps=0  samples=32  loss=-0.2001  ploss=-0.0003  vloss=0.0043  ent=6.731  dt=2.9s  total=234s
+update=  24  reward=+0.000  eps=0  samples=32  loss=-0.2723  ploss=-0.0011  vloss=0.0064  ent=9.147  dt=5.2s  total=240s
+update=  25  reward=+0.000  eps=0  samples=32  loss=-0.3312  ploss=0.0014  vloss=0.0686  ent=12.227  dt=6.8s  total=246s
+update=  26  reward=+0.000  eps=0  samples=32  loss=-0.2684  ploss=-0.0002  vloss=0.1096  ent=10.765  dt=24.3s  total=271s
+update=  27  reward=+0.000  eps=0  samples=32  loss=-0.2774  ploss=-0.0004  vloss=0.0925  ent=10.774  dt=28.7s  total=299s
+update=  28  reward=+0.000  eps=0  samples=32  loss=-0.2626  ploss=-0.0007  vloss=0.0149  ent=8.978  dt=23.3s  total=323s
+update=  29  reward=+0.000  eps=0  samples=32  loss=-0.1239  ploss=-0.0002  vloss=0.0880  ent=5.589  dt=17.1s  total=340s
+update=  30  reward=+0.000  eps=0  samples=32  loss=-0.0595  ploss=-0.0000  vloss=0.0883  ent=3.452  dt=13.0s  total=353s
+update=  31  reward=+0.000  eps=0  samples=32  loss=-0.1068  ploss=0.0000  vloss=0.0455  ent=4.321  dt=14.1s  total=367s
+update=  32  reward=+0.000  eps=0  samples=32  loss=-0.0240  ploss=-0.0001  vloss=0.0616  ent=1.823  dt=14.3s  total=381s
+update=  33  reward=+0.000  eps=0  samples=32  loss=-0.0060  ploss=-0.0000  vloss=0.1049  ent=1.949  dt=15.9s  total=397s
+update=  34  reward=+0.000  eps=0  samples=32  loss=-0.0573  ploss=-0.0001  vloss=0.0141  ent=2.143  dt=22.1s  total=419s
+update=  35  reward=-1.692  eps=1  samples=32  loss=0.0828  ploss=-0.0000  vloss=0.2412  ent=1.258  dt=22.2s  total=441s
+update=  36  reward=+0.000  eps=0  samples=32  loss=-0.0720  ploss=-0.0000  vloss=0.0318  ent=2.928  dt=21.5s  total=463s
+update=  37  reward=+0.000  eps=0  samples=32  loss=0.1873  ploss=-0.0000  vloss=0.7212  ent=5.775  dt=9.9s  total=473s
+update=  38  reward=+0.000  eps=0  samples=32  loss=0.3381  ploss=0.0000  vloss=0.8131  ent=2.281  dt=7.9s  total=481s
+update=  39  reward=-2.232  eps=1  samples=32  loss=0.0709  ploss=-0.0000  vloss=0.2926  ent=2.513  dt=2.8s  total=484s
+update=  40  reward=+0.000  eps=0  samples=32  loss=-0.3851  ploss=-0.0000  vloss=0.0876  ent=14.296  dt=4.8s  total=488s
+update=  41  reward=+0.000  eps=0  samples=32  loss=-0.8706  ploss=-0.0000  vloss=0.0812  ent=30.370  dt=7.0s  total=495s
+update=  42  reward=+0.000  eps=0  samples=32  loss=-0.9487  ploss=-0.0000  vloss=0.0216  ent=31.982  dt=11.7s  total=507s
+update=  43  reward=+0.000  eps=0  samples=32  loss=-1.1501  ploss=-0.0002  vloss=0.1811  ent=41.349  dt=11.9s  total=519s
+update=  44  reward=+0.000  eps=0  samples=32  loss=-1.4363  ploss=-0.0005  vloss=0.2627  ent=52.239  dt=14.8s  total=534s
+update=  45  reward=+0.000  eps=0  samples=32  loss=-1.7530  ploss=0.0002  vloss=0.3520  ent=64.305  dt=22.8s  total=556s
+update=  46  reward=+0.000  eps=0  samples=32  loss=-1.7964  ploss=0.0001  vloss=0.6029  ent=69.931  dt=22.2s  total=579s
+update=  47  reward=+0.000  eps=0  samples=32  loss=-2.3288  ploss=-0.0003  vloss=0.7320  ent=89.817  dt=15.9s  total=595s
+update=  48  reward=+0.000  eps=0  samples=32  loss=-2.1615  ploss=0.0001  vloss=0.3866  ent=78.496  dt=15.4s  total=610s
+update=  49  reward=+0.000  eps=0  samples=32  loss=-2.0238  ploss=-0.0005  vloss=0.6520  ent=78.310  dt=11.3s  total=621s
+update=  50  reward=+0.000  eps=0  samples=32  loss=-2.3971  ploss=-0.0004  vloss=0.4397  ent=87.220  dt=11.3s  total=633s
+update=  51  reward=+0.000  eps=0  samples=32  loss=-2.3149  ploss=-0.0001  vloss=0.1689  ent=79.974  dt=7.8s  total=640s
+update=  52  reward=+0.000  eps=0  samples=32  loss=-1.9933  ploss=-0.0009  vloss=0.6852  ent=77.834  dt=9.6s  total=650s
+update=  53  reward=+0.000  eps=0  samples=32  loss=-2.3783  ploss=-0.0007  vloss=0.3466  ent=85.027  dt=11.8s  total=662s
+update=  54  reward=+0.522  eps=1  samples=32  loss=-1.4256  ploss=-0.0015  vloss=0.0980  ent=49.102  dt=8.2s  total=670s
+update=  55  reward=+0.000  eps=0  samples=32  loss=-0.0527  ploss=0.0003  vloss=0.0152  ent=2.021  dt=1.1s  total=671s
+update=  56  reward=+0.000  eps=0  samples=32  loss=-0.2088  ploss=-0.0003  vloss=0.0165  ent=7.224  dt=2.6s  total=674s
+update=  57  reward=+0.000  eps=0  samples=32  loss=-0.3286  ploss=0.0001  vloss=0.0548  ent=11.870  dt=5.2s  total=679s
+update=  58  reward=+0.000  eps=0  samples=32  loss=-0.4378  ploss=-0.0007  vloss=0.0108  ent=14.749  dt=7.9s  total=687s
+update=  59  reward=+0.000  eps=0  samples=32  loss=-0.5566  ploss=-0.0007  vloss=0.0500  ent=19.365  dt=6.8s  total=694s
+update=  60  reward=+0.000  eps=0  samples=32  loss=-0.6013  ploss=-0.0013  vloss=0.0170  ent=20.284  dt=13.4s  total=707s
+update=  61  reward=+0.000  eps=0  samples=32  loss=-0.6437  ploss=-0.0019  vloss=0.0030  ent=21.444  dt=12.9s  total=720s
+update=  62  reward=+0.000  eps=0  samples=32  loss=-0.7764  ploss=-0.0027  vloss=0.0255  ent=26.213  dt=14.3s  total=734s
+update=  63  reward=+0.000  eps=0  samples=32  loss=-0.8761  ploss=0.0001  vloss=0.0307  ent=29.719  dt=14.4s  total=749s
+update=  64  reward=+0.000  eps=0  samples=32  loss=-0.5506  ploss=-0.0006  vloss=0.1630  ent=21.051  dt=10.9s  total=759s
+update=  65  reward=+0.000  eps=0  samples=32  loss=-0.5183  ploss=-0.0001  vloss=0.1706  ent=20.116  dt=14.7s  total=774s
+update=  66  reward=+0.000  eps=0  samples=32  loss=-0.5931  ploss=-0.0001  vloss=0.0710  ent=20.952  dt=15.6s  total=790s
+update=  67  reward=+0.000  eps=0  samples=32  loss=-0.5924  ploss=-0.0001  vloss=0.0306  ent=20.253  dt=10.4s  total=800s
+update=  68  reward=+0.000  eps=0  samples=32  loss=-0.5606  ploss=-0.0001  vloss=0.0883  ent=20.156  dt=11.9s  total=812s
+update=  69  reward=+0.000  eps=0  samples=32  loss=-0.6194  ploss=-0.0003  vloss=0.0443  ent=21.378  dt=12.1s  total=824s
+update=  70  reward=-1.328  eps=1  samples=32  loss=-0.1870  ploss=-0.0001  vloss=0.0463  ent=7.000  dt=26.9s  total=851s
+update=  71  reward=+0.000  eps=0  samples=32  loss=-0.0786  ploss=-0.0001  vloss=0.0023  ent=2.656  dt=28.5s  total=879s
+update=  72  reward=+0.000  eps=0  samples=32  loss=-0.0012  ploss=-0.0001  vloss=0.1348  ent=2.283  dt=12.3s  total=892s
+update=  73  reward=-1.927  eps=1  samples=32  loss=-0.0239  ploss=0.0000  vloss=0.0192  ent=1.116  dt=18.2s  total=910s
+update=  74  reward=+0.000  eps=0  samples=32  loss=0.3237  ploss=-0.0000  vloss=0.7386  ent=1.517  dt=8.8s  total=919s
+update=  75  reward=+0.000  eps=0  samples=32  loss=0.4586  ploss=0.0002  vloss=0.9385  ent=0.359  dt=4.8s  total=924s
+update=  76  reward=-2.936  eps=1  samples=32  loss=-0.0048  ploss=-0.0000  vloss=0.0644  ent=1.233  dt=14.2s  total=938s
+update=  77  reward=+0.000  eps=0  samples=32  loss=-0.1385  ploss=-0.0002  vloss=0.0145  ent=4.854  dt=12.5s  total=950s
+update=  78  reward=+0.000  eps=0  samples=32  loss=0.1067  ploss=0.0002  vloss=0.6347  ent=7.029  dt=12.1s  total=962s
+update=  79  reward=+0.000  eps=0  samples=32  loss=0.3835  ploss=-0.0000  vloss=0.8205  ent=0.891  dt=3.1s  total=966s
+update=  80  reward=+0.000  eps=0  samples=32  loss=0.4819  ploss=-0.0000  vloss=0.9638  ent=0.000  dt=1.1s  total=967s
+update=  81  reward=-1.400  eps=1  samples=32  loss=0.0305  ploss=0.0000  vloss=0.1622  ent=1.688  dt=2.9s  total=970s
+update=  82  reward=+0.000  eps=0  samples=32  loss=-0.1312  ploss=-0.0000  vloss=0.0169  ent=4.654  dt=3.6s  total=973s
+update=  83  reward=+0.000  eps=0  samples=32  loss=-0.2619  ploss=-0.0001  vloss=0.0198  ent=9.055  dt=5.6s  total=979s
+update=  84  reward=+0.000  eps=0  samples=32  loss=-0.1153  ploss=-0.0001  vloss=0.0544  ent=4.745  dt=7.6s  total=986s
+update=  85  reward=+0.000  eps=0  samples=32  loss=-0.0840  ploss=0.0000  vloss=0.1206  ent=4.811  dt=6.0s  total=992s
+update=  86  reward=+0.000  eps=0  samples=32  loss=-0.0796  ploss=-0.0000  vloss=0.0205  ent=2.994  dt=7.2s  total=1000s
+update=  87  reward=+0.000  eps=0  samples=32  loss=-0.0100  ploss=-0.0000  vloss=0.0394  ent=0.988  dt=6.1s  total=1006s
+update=  88  reward=+0.000  eps=0  samples=32  loss=0.1593  ploss=0.0000  vloss=0.3355  ent=0.282  dt=10.4s  total=1016s
+update=  89  reward=+0.000  eps=0  samples=32  loss=1.0532  ploss=-0.0000  vloss=2.1214  ent=0.251  dt=8.9s  total=1025s
+update=  90  reward=+0.000  eps=0  samples=32  loss=0.8382  ploss=-0.0000  vloss=1.6765  ent=0.000  dt=8.4s  total=1033s
+update=  91  reward=-2.974  eps=1  samples=32  loss=0.3379  ploss=-0.0000  vloss=0.7287  ent=0.882  dt=16.0s  total=1049s
+update=  92  reward=+0.000  eps=0  samples=32  loss=-0.1037  ploss=0.0000  vloss=0.0452  ent=4.209  dt=15.8s  total=1065s
+update=  93  reward=+0.000  eps=0  samples=32  loss=-0.3134  ploss=-0.0002  vloss=0.0185  ent=10.750  dt=16.5s  total=1081s
+update=  94  reward=+0.000  eps=0  samples=32  loss=0.2974  ploss=-0.0001  vloss=0.8583  ent=4.388  dt=11.5s  total=1093s
+update=  95  reward=+0.000  eps=0  samples=32  loss=0.4085  ploss=-0.0000  vloss=0.8169  ent=0.000  dt=2.7s  total=1096s
+update=  96  reward=-1.136  eps=1  samples=32  loss=0.0002  ploss=0.0000  vloss=0.0946  ent=1.570  dt=1.4s  total=1097s
+update=  97  reward=+0.000  eps=0  samples=32  loss=-0.1057  ploss=-0.0000  vloss=0.0070  ent=3.637  dt=2.2s  total=1099s
+update=  98  reward=+0.000  eps=0  samples=32  loss=-0.2021  ploss=-0.0001  vloss=0.0090  ent=6.884  dt=6.9s  total=1106s
+update=  99  reward=+0.000  eps=0  samples=32  loss=-0.2158  ploss=0.0000  vloss=0.0185  ent=7.503  dt=12.3s  total=1118s
+update= 100  reward=+0.000  eps=0  samples=32  loss=0.0520  ploss=-0.0000  vloss=0.2753  ent=2.854  dt=12.2s  total=1131s
+
+  Running eval (10 games)...
+    vs apex: W=0% L=100% T=0% (n=10)
+    vs random: W=100% L=0% T=0% (n=10)
+
+update= 101  reward=+0.000  eps=0  samples=32  loss=0.6314  ploss=0.0000  vloss=1.2629  ent=0.000  dt=9.1s  total=4386s
+update= 102  reward=+0.000  eps=0  samples=32  loss=0.4410  ploss=-0.0000  vloss=0.8820  ent=0.000  dt=7.2s  total=4394s
+update= 103  reward=-1.108  eps=1  samples=32  loss=0.0194  ploss=0.0000  vloss=0.1818  ent=2.383  dt=1.5s  total=4395s
+update= 104  reward=+0.000  eps=0  samples=32  loss=-0.2046  ploss=-0.0001  vloss=0.1511  ent=9.337  dt=2.2s  total=4397s
+update= 105  reward=+0.000  eps=0  samples=32  loss=-0.6014  ploss=-0.0000  vloss=0.1467  ent=22.490  dt=4.6s  total=4402s
+update= 106  reward=+0.000  eps=0  samples=32  loss=-0.6574  ploss=0.0000  vloss=0.2317  ent=25.775  dt=6.6s  total=4408s
+update= 107  reward=+0.000  eps=0  samples=32  loss=-0.8247  ploss=-0.0002  vloss=0.2685  ent=31.962  dt=4.9s  total=4413s
+update= 108  reward=+0.000  eps=0  samples=32  loss=-1.3054  ploss=-0.0003  vloss=0.1181  ent=45.471  dt=5.4s  total=4419s
+update= 109  reward=+0.000  eps=0  samples=32  loss=-1.1629  ploss=0.0002  vloss=0.2737  ent=43.330  dt=7.3s  total=4426s
+update= 110  reward=+0.000  eps=0  samples=32  loss=-1.3605  ploss=-0.0006  vloss=0.6647  ent=56.407  dt=8.6s  total=4435s
+update= 111  reward=+0.000  eps=0  samples=32  loss=-1.9340  ploss=-0.0007  vloss=0.4160  ent=71.378  dt=9.0s  total=4444s
+update= 112  reward=+0.000  eps=0  samples=32  loss=-1.6678  ploss=-0.0005  vloss=0.5248  ent=64.322  dt=7.6s  total=4451s
+update= 113  reward=+5.168  eps=1  samples=32  loss=-1.0001  ploss=-0.0001  vloss=1.5394  ent=58.990  dt=6.7s  total=4458s
+update= 114  reward=+0.000  eps=0  samples=32  loss=-0.0718  ploss=-0.0002  vloss=0.0005  ent=2.395  dt=0.8s  total=4459s
+update= 115  reward=+0.000  eps=0  samples=32  loss=-0.1038  ploss=0.0001  vloss=0.0002  ent=3.466  dt=1.5s  total=4460s
+update= 116  reward=+0.000  eps=0  samples=32  loss=-0.0951  ploss=-0.0000  vloss=0.0092  ent=3.323  dt=3.4s  total=4464s
+update= 117  reward=+0.000  eps=0  samples=32  loss=-0.1753  ploss=-0.0001  vloss=0.0288  ent=6.320  dt=3.4s  total=4467s
+update= 118  reward=+0.000  eps=0  samples=32  loss=-0.1985  ploss=-0.0000  vloss=0.0844  ent=8.025  dt=5.5s  total=4472s
+update= 119  reward=+0.000  eps=0  samples=32  loss=-0.1541  ploss=-0.0000  vloss=0.1024  ent=6.842  dt=6.1s  total=4479s
+update= 120  reward=+0.000  eps=0  samples=32  loss=-0.0317  ploss=0.0000  vloss=0.2383  ent=5.029  dt=7.6s  total=4486s
+update= 121  reward=+0.000  eps=0  samples=32  loss=0.0559  ploss=-0.0001  vloss=0.3125  ent=3.342  dt=9.6s  total=4496s
+update= 122  reward=+0.000  eps=0  samples=32  loss=0.0377  ploss=-0.0001  vloss=0.2008  ent=2.086  dt=10.5s  total=4506s
+update= 123  reward=+0.000  eps=0  samples=32  loss=0.1450  ploss=-0.0000  vloss=0.2914  ent=0.022  dt=10.3s  total=4517s
+update= 124  reward=+0.000  eps=0  samples=32  loss=0.2925  ploss=-0.0000  vloss=0.5942  ent=0.152  dt=9.6s  total=4526s
+update= 125  reward=-2.076  eps=1  samples=32  loss=0.0670  ploss=-0.0000  vloss=0.2164  ent=1.372  dt=19.3s  total=4545s
+update= 126  reward=+0.000  eps=0  samples=32  loss=0.2607  ploss=-0.0000  vloss=0.6077  ent=1.440  dt=8.9s  total=4554s
+update= 127  reward=-4.617  eps=1  samples=32  loss=0.4701  ploss=-0.0000  vloss=0.9948  ent=0.908  dt=8.4s  total=4563s
+update= 128  reward=+0.000  eps=0  samples=32  loss=-0.0504  ploss=-0.0001  vloss=0.0762  ent=2.947  dt=8.0s  total=4571s
+update= 129  reward=+0.000  eps=0  samples=32  loss=0.0757  ploss=0.0002  vloss=0.3113  ent=2.669  dt=7.2s  total=4578s
+update= 130  reward=+0.000  eps=0  samples=32  loss=0.2123  ploss=-0.0000  vloss=0.5527  ent=2.135  dt=3.8s  total=4582s
+update= 131  reward=-3.010  eps=1  samples=32  loss=0.1225  ploss=0.0000  vloss=0.2449  ent=0.000  dt=1.4s  total=4583s
+update= 132  reward=+0.000  eps=0  samples=32  loss=-0.0656  ploss=-0.0001  vloss=0.0060  ent=2.284  dt=0.9s  total=4584s
+update= 133  reward=+0.000  eps=0  samples=32  loss=-0.0971  ploss=-0.0001  vloss=0.0044  ent=3.307  dt=1.8s  total=4586s
+update= 134  reward=+0.000  eps=0  samples=32  loss=-0.1055  ploss=-0.0001  vloss=0.0047  ent=3.590  dt=1.6s  total=4588s
+update= 135  reward=+0.000  eps=0  samples=32  loss=-0.1656  ploss=-0.0005  vloss=0.0126  ent=5.714  dt=2.0s  total=4589s
+update= 136  reward=+0.000  eps=0  samples=32  loss=-0.3541  ploss=0.0002  vloss=0.0257  ent=12.237  dt=5.8s  total=4595s
+update= 137  reward=+0.000  eps=0  samples=32  loss=-0.6650  ploss=-0.0001  vloss=0.0215  ent=22.522  dt=4.6s  total=4600s
+update= 138  reward=+0.000  eps=0  samples=32  loss=-1.1348  ploss=-0.0013  vloss=0.0392  ent=38.435  dt=7.9s  total=4608s
+update= 139  reward=+0.000  eps=0  samples=32  loss=-1.5367  ploss=-0.0023  vloss=0.0381  ent=51.781  dt=10.8s  total=4619s
+update= 140  reward=+0.000  eps=0  samples=32  loss=-1.9373  ploss=-0.0094  vloss=0.0358  ent=64.862  dt=12.5s  total=4631s
+update= 141  reward=+0.000  eps=0  samples=32  loss=-1.8057  ploss=0.0024  vloss=0.1182  ent=62.240  dt=10.0s  total=4641s
+update= 142  reward=+0.000  eps=0  samples=32  loss=-2.0717  ploss=-0.0039  vloss=0.0498  ent=69.758  dt=9.3s  total=4650s
+update= 143  reward=+0.000  eps=0  samples=32  loss=-2.2520  ploss=-0.0009  vloss=0.0114  ent=75.225  dt=10.9s  total=4661s
+update= 144  reward=+0.000  eps=0  samples=32  loss=-2.0826  ploss=-0.0018  vloss=0.0221  ent=69.729  dt=10.2s  total=4672s
+update= 145  reward=+0.000  eps=0  samples=32  loss=-2.2966  ploss=0.0012  vloss=0.0629  ent=77.644  dt=14.2s  total=4686s
+update= 146  reward=+0.000  eps=0  samples=32  loss=-2.1195  ploss=-0.0052  vloss=0.0634  ent=71.534  dt=15.3s  total=4701s
+update= 147  reward=+0.896  eps=1  samples=32  loss=0.0037  ploss=-0.0001  vloss=0.0714  ent=1.063  dt=19.5s  total=4721s
+update= 148  reward=+0.000  eps=0  samples=32  loss=0.0624  ploss=0.0004  vloss=0.3275  ent=3.393  dt=12.5s  total=4733s
+update= 149  reward=+0.000  eps=0  samples=32  loss=0.1783  ploss=-0.0003  vloss=0.5507  ent=3.222  dt=10.3s  total=4743s
+update= 150  reward=+0.000  eps=0  samples=32  loss=0.5855  ploss=-0.0004  vloss=1.2408  ent=1.151  dt=4.0s  total=4747s
+update= 151  reward=-1.864  eps=1  samples=32  loss=0.0118  ploss=-0.0003  vloss=0.1280  ent=1.731  dt=1.5s  total=4749s
+update= 152  reward=+0.000  eps=0  samples=32  loss=-0.1372  ploss=-0.0004  vloss=0.0018  ent=4.590  dt=1.9s  total=4751s
+update= 153  reward=+0.000  eps=0  samples=32  loss=-0.3540  ploss=-0.0010  vloss=0.0104  ent=11.938  dt=5.2s  total=4756s
+update= 154  reward=+0.000  eps=0  samples=32  loss=-0.5810  ploss=-0.0096  vloss=0.0211  ent=19.397  dt=4.8s  total=4761s
+update= 155  reward=+0.000  eps=0  samples=32  loss=-0.8405  ploss=0.0016  vloss=0.0337  ent=28.631  dt=8.3s  total=4769s
+update= 156  reward=+0.000  eps=0  samples=32  loss=-1.1931  ploss=-0.0155  vloss=0.0173  ent=39.541  dt=8.2s  total=4777s
+update= 157  reward=+0.000  eps=0  samples=32  loss=-1.2123  ploss=0.0088  vloss=0.0270  ent=41.156  dt=9.7s  total=4787s
+update= 158  reward=+0.000  eps=0  samples=32  loss=-1.2390  ploss=-0.0023  vloss=0.0301  ent=41.726  dt=11.2s  total=4798s
+update= 159  reward=+0.000  eps=0  samples=32  loss=-1.6777  ploss=-0.0076  vloss=0.0597  ent=56.665  dt=9.2s  total=4807s
+update= 160  reward=+0.000  eps=0  samples=32  loss=-1.5763  ploss=-0.0055  vloss=0.0050  ent=52.443  dt=10.8s  total=4818s
+update= 161  reward=+0.000  eps=0  samples=32  loss=-1.6926  ploss=-0.0132  vloss=0.0267  ent=56.425  dt=12.2s  total=4830s
+update= 162  reward=+0.000  eps=0  samples=32  loss=-2.0708  ploss=-0.0122  vloss=0.0459  ent=69.385  dt=12.7s  total=4843s
+update= 163  reward=+0.000  eps=0  samples=32  loss=-1.8760  ploss=-0.0080  vloss=0.0076  ent=62.394  dt=12.0s  total=4855s
+update= 164  reward=+0.000  eps=0  samples=32  loss=-1.9083  ploss=-0.0196  vloss=0.0330  ent=63.507  dt=11.2s  total=4866s
+update= 165  reward=+0.000  eps=0  samples=32  loss=-2.2200  ploss=-0.0008  vloss=0.1074  ent=75.761  dt=11.9s  total=4878s
+update= 166  reward=+1.484  eps=1  samples=32  loss=-0.9366  ploss=0.0027  vloss=0.1645  ent=34.051  dt=9.8s  total=4888s
+update= 167  reward=+0.000  eps=0  samples=32  loss=-0.0356  ploss=-0.0024  vloss=0.0002  ent=1.110  dt=0.8s  total=4889s
+update= 168  reward=+0.000  eps=0  samples=32  loss=-0.0852  ploss=0.0002  vloss=0.0001  ent=2.849  dt=0.9s  total=4890s
+update= 169  reward=+0.000  eps=0  samples=32  loss=-0.0876  ploss=-0.0007  vloss=0.0000  ent=2.899  dt=0.9s  total=4891s
+update= 170  reward=+0.000  eps=0  samples=32  loss=-0.1241  ploss=-0.0008  vloss=0.0008  ent=4.122  dt=1.7s  total=4892s
+update= 171  reward=+0.000  eps=0  samples=32  loss=-0.1658  ploss=0.0002  vloss=0.0035  ent=5.590  dt=4.1s  total=4896s
+update= 172  reward=+0.000  eps=0  samples=32  loss=-0.1937  ploss=-0.0009  vloss=0.0603  ent=7.433  dt=3.7s  total=4900s
+update= 173  reward=+0.000  eps=0  samples=32  loss=-0.3246  ploss=-0.0022  vloss=0.0103  ent=10.915  dt=3.1s  total=4903s
+update= 174  reward=+0.000  eps=0  samples=32  loss=-0.4088  ploss=-0.0004  vloss=0.1288  ent=15.760  dt=4.4s  total=4908s
+update= 175  reward=+0.000  eps=0  samples=32  loss=-0.4277  ploss=-0.0016  vloss=0.0695  ent=15.361  dt=7.2s  total=4915s
+update= 176  reward=+0.000  eps=0  samples=32  loss=-0.4040  ploss=-0.0018  vloss=0.1018  ent=15.104  dt=7.5s  total=4922s
+update= 177  reward=+0.000  eps=0  samples=32  loss=-0.2874  ploss=0.0003  vloss=0.2679  ent=14.056  dt=5.9s  total=4928s
+update= 178  reward=+0.000  eps=0  samples=32  loss=-0.2839  ploss=-0.0051  vloss=0.1805  ent=12.300  dt=4.4s  total=4933s
+update= 179  reward=+0.000  eps=0  samples=32  loss=-0.2906  ploss=-0.0001  vloss=0.0704  ent=10.858  dt=4.6s  total=4937s
+update= 180  reward=+0.000  eps=0  samples=32  loss=-0.0090  ploss=-0.0083  vloss=0.5531  ent=9.241  dt=4.0s  total=4941s
+update= 181  reward=+0.000  eps=0  samples=32  loss=-0.1747  ploss=-0.0065  vloss=0.2073  ent=9.061  dt=4.6s  total=4946s
+update= 182  reward=-2.014  eps=1  samples=32  loss=-0.0204  ploss=-0.0011  vloss=0.1965  ent=3.918  dt=2.0s  total=4948s
+update= 183  reward=+0.000  eps=0  samples=32  loss=-0.1272  ploss=-0.0016  vloss=0.0021  ent=4.220  dt=1.1s  total=4949s
+update= 184  reward=+0.000  eps=0  samples=32  loss=-0.4233  ploss=-0.0083  vloss=0.0023  ent=13.871  dt=3.5s  total=4952s
+update= 185  reward=+0.000  eps=0  samples=32  loss=-0.7863  ploss=-0.0015  vloss=0.0088  ent=26.304  dt=8.0s  total=4960s
+update= 186  reward=+0.000  eps=0  samples=32  loss=-0.8157  ploss=-0.0043  vloss=0.0096  ent=27.206  dt=10.2s  total=4971s
+update= 187  reward=+0.000  eps=0  samples=32  loss=-1.3992  ploss=-0.0003  vloss=0.0742  ent=47.868  dt=15.9s  total=4987s
+update= 188  reward=+0.000  eps=0  samples=32  loss=-1.0549  ploss=0.0009  vloss=0.0098  ent=35.356  dt=16.7s  total=5003s
+update= 189  reward=+0.000  eps=0  samples=32  loss=-1.1393  ploss=-0.0002  vloss=0.0110  ent=38.151  dt=17.2s  total=5021s
+update= 190  reward=+0.000  eps=0  samples=32  loss=-1.3423  ploss=-0.0001  vloss=0.0075  ent=44.868  dt=16.2s  total=5037s
+update= 191  reward=+0.000  eps=0  samples=32  loss=-1.3322  ploss=0.0001  vloss=0.0022  ent=44.447  dt=15.1s  total=5052s
+update= 192  reward=+0.000  eps=0  samples=32  loss=-1.3460  ploss=-0.0001  vloss=0.0977  ent=46.495  dt=15.7s  total=5068s
+update= 193  reward=+0.000  eps=0  samples=32  loss=-1.6356  ploss=-0.0008  vloss=0.0167  ent=54.770  dt=14.5s  total=5082s
+update= 194  reward=+0.000  eps=0  samples=32  loss=-1.5900  ploss=-0.0004  vloss=0.0347  ent=53.565  dt=14.2s  total=5096s
+update= 195  reward=+0.000  eps=0  samples=32  loss=-1.5359  ploss=0.0002  vloss=0.0762  ent=52.472  dt=14.8s  total=5111s
+update= 196  reward=+0.000  eps=0  samples=32  loss=-1.7304  ploss=-0.0005  vloss=0.0549  ent=58.577  dt=17.0s  total=5128s
+update= 197  reward=+1.601  eps=1  samples=32  loss=-0.9222  ploss=-0.0000  vloss=0.2299  ent=34.570  dt=13.3s  total=5141s
+update= 198  reward=+0.000  eps=0  samples=32  loss=-0.0889  ploss=-0.0001  vloss=0.0070  ent=3.077  dt=1.2s  total=5142s
+update= 199  reward=+0.000  eps=0  samples=32  loss=-0.2515  ploss=0.0000  vloss=0.0148  ent=8.629  dt=2.6s  total=5145s
+update= 200  reward=+0.000  eps=0  samples=32  loss=-0.3490  ploss=-0.0002  vloss=0.1001  ent=13.297  dt=4.3s  total=5149s
+
+  Running eval (10 games)...
+    vs apex: W=0% L=100% T=0% (n=10)
+    vs random: W=70% L=30% T=0% (n=10)
+
+  -> saved checkpoint at update 200
+
+Training complete. Total time: 6385s

@@ -86,7 +86,8 @@ class V2OrbitWarsEnv:
         self.last_state = state
         self.prev_state = None
 
-        return encode_features(state, self.cfg.env)
+        comet_ids = _get_comet_ids(self.last_obs)
+        return encode_features(state, self.cfg.env, comet_ids=comet_ids)
 
     def step(self, player_moves: list[list[float | int]]) -> V2StepResult:
         """Step environment with player's moves."""
@@ -138,7 +139,8 @@ class V2OrbitWarsEnv:
             done, terminal_reward, self.cfg.reward,
         )
 
-        features = encode_features(new_state, self.cfg.env)
+        comet_ids = _get_comet_ids(self.last_obs)
+        features = encode_features(new_state, self.cfg.env, comet_ids=comet_ids)
         info = {
             "learner_player": self.learner_player,
             "num_players": self.num_players,

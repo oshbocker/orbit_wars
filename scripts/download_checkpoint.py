@@ -4,6 +4,9 @@ Requires rclone configured with a 'gdrive' remote pointing to your Google Drive.
 See README / CLAUDE.md for setup instructions.
 
 Usage:
+    # Download latest v2_bc checkpoint
+    uv run python scripts/download_checkpoint.py --run v2_bc
+
     # Download latest v2_default checkpoint
     uv run python scripts/download_checkpoint.py --run v2_default
 
@@ -32,7 +35,7 @@ DRIVE_BASE = "orbit_wars_outputs/checkpoints"
 LOCAL_BASE = Path("outputs/checkpoints")
 
 DEFAULT_REMOTE = "gdrive"
-DEFAULT_RUN = "v2_default"
+DEFAULT_RUN = "v2_bc"
 
 
 def _check_rclone() -> None:
