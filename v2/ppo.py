@@ -5,8 +5,20 @@ from dataclasses import dataclass
 
 import torch
 
+import torch
+
 from .actions import action_log_prob_and_entropy
 from .model import OrbitNet
+
+
+def symlog(x: torch.Tensor) -> torch.Tensor:
+    """Symmetric log: compresses large magnitudes, ~identity near 0 (DreamerV3)."""
+    return torch.sign(x) * torch.log1p(torch.abs(x))
+
+
+def symexp(x: torch.Tensor) -> torch.Tensor:
+    """Inverse of symlog."""
+    return torch.sign(x) * torch.expm1(torch.abs(x))
 
 
 @dataclass
@@ -17,6 +29,7 @@ class V2TransitionBatch:
     own_mask: torch.Tensor           # [N, P] bool
     reachability_mask: torch.Tensor  # [N, P, P] bool
     target_indices: torch.Tensor     # [N, P] long
+    frac_indices: torch.Tensor       # [N, P] long (ship-fraction bin per planet)
     log_prob: torch.Tensor           # [N]
     returns: torch.Tensor            # [N]
     advantages: torch.Tensor         # [N]
@@ -37,6 +50,7 @@ def v2_ppo_update(
     device: torch.device,
     demo_buffer: object | None = None,
     imitation_coef: float = 0.0,
+    value_symlog: bool = False,
 ) -> dict[str, float]:
     """Clipped PPO update for V2 pipeline."""
     N = batch.planet_features.shape[0]
@@ -50,6 +64,7 @@ def v2_ppo_update(
     om = batch.own_mask.to(device).bool()
     rm = batch.reachability_mask.to(device).bool()
     ti = batch.target_indices.to(device)
+    fi = batch.frac_indices.to(device)
     old_log_prob = batch.log_prob.to(device)
     returns = batch.returns.to(device)
     advantages = batch.advantages.to(device)
@@ -71,7 +86,7 @@ def v2_ppo_update(
             output = model(pf[idx], gf[idx], pm[idx], om[idx], rm[idx])
 
             new_log_prob, entropy = action_log_prob_and_entropy(
-                output, om[idx], ti[idx],
+                output, om[idx], ti[idx], fi[idx],
             )
 
             # Importance ratio
@@ -84,13 +99,16 @@ def v2_ppo_update(
                 -adv * torch.clamp(ratio, 1.0 - clip_coef, 1.0 + clip_coef),
             ).mean()
 
-            # Clipped value loss
+            # Clipped value loss. With value_symlog, both the prediction (raw
+            # head output) and old_values are in symlog space, and we compress
+            # the return target with symlog -> scale-robust value learning.
+            value_target = symlog(returns[idx]) if value_symlog else returns[idx]
             value_pred = output.value
             value_clipped = old_values[idx] + torch.clamp(
                 value_pred - old_values[idx], -clip_coef, clip_coef,
             )
-            vl_unclipped = (returns[idx] - value_pred).pow(2)
-            vl_clipped = (returns[idx] - value_clipped).pow(2)
+            vl_unclipped = (value_target - value_pred).pow(2)
+            vl_clipped = (value_target - value_clipped).pow(2)
             value_loss = 0.5 * torch.maximum(vl_unclipped, vl_clipped).mean()
 
             entropy_mean = entropy.mean()

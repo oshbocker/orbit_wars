@@ -23,6 +23,7 @@ _PLANET_FEAT_DIM = 22
 _GLOBAL_FEAT_DIM = 8
 _ALLOCATION_THRESHOLD = 0.05
 _MIN_SHIPS = 1
+_SHIP_FRACTIONS = [0.25, 0.5, 0.75, 1.0]  # must match env.ship_fractions used in training
 
 # ── Singleton state ────────────────────────────────────────────────────────
 _model = None
@@ -240,7 +241,8 @@ def agent(obs, config=None):
         om_t = torch.from_numpy(om).unsqueeze(0).to(_device)
         output = _model(pf_t, gf_t, pm_t, om_t)
 
-    logits = output.logits[0]  # [P, P+1]
+    logits = output.logits[0]            # [P, P+1]
+    frac_logits = output.frac_logits[0]  # [P, P, K]
     player = int(_obs_get(obs, "player", 0))
     step = int(_obs_get(obs, "step", 0))
     moves = []
@@ -252,57 +254,34 @@ def agent(obs, config=None):
         if src is None or src["ships"] <= 0:
             continue
 
-        row_logits = logits[i]
-        if not torch.isfinite(row_logits).any():
+        # Mask invalid targets (sun / viability / arrival), then argmax over
+        # [hold, valid targets]. Factored fraction head sets the fleet size.
+        row = logits[i].clone()  # [P+1]
+        for j in range(_MAX_PLANETS):
+            tgt = planet_map.get(j)
+            if tgt is None or tgt["id"] == src["id"] or not _is_valid_target(src, tgt, player, step):
+                row[j + 1] = float("-inf")
+        if not torch.isfinite(row[1:]).any():
             continue
 
-        probs = torch.softmax(row_logits, dim=-1)
-        available = src["ships"]
-        made_move = False
+        action = int(row.argmax().item())
+        if action == 0:
+            continue  # model chose hold
+        j = action - 1
+        tgt = planet_map.get(j)
+        if tgt is None:
+            continue
 
-        for j in range(_MAX_PLANETS):
-            prob_j = float(probs[j + 1])
-            if prob_j < _ALLOCATION_THRESHOLD:
-                continue
-            tgt = planet_map.get(j)
-            if tgt is None or tgt["id"] == src["id"]:
-                continue
-            if not _is_valid_target(src, tgt, player, step):
-                continue
+        fbin = int(frac_logits[i, j].argmax().item())
+        fbin = max(0, min(len(_SHIP_FRACTIONS) - 1, fbin))
+        ships = int(math.floor(src["ships"] * _SHIP_FRACTIONS[fbin]))
+        if ships < _MIN_SHIPS:
+            continue
+        # For non-owned targets: fleet must be large enough to capture
+        if tgt["owner"] != player and ships <= tgt["ships"]:
+            continue
 
-            ships = int(math.floor(available * prob_j))
-            if ships < _MIN_SHIPS:
-                continue
-
-            # For non-owned targets: fleet must be large enough to capture
-            if tgt["owner"] != player and ships <= tgt["ships"]:
-                continue
-
-            angle = math.atan2(tgt["y"] - src["y"], tgt["x"] - src["x"])
-            moves.append([src["id"], angle, ships])
-            made_move = True
-
-        # Argmax fallback: always act if no target exceeded threshold
-        if not made_move:
-            best_j, best_prob = -1, 0.0
-            for j in range(_MAX_PLANETS):
-                tgt = planet_map.get(j)
-                if tgt is None or tgt["id"] == src["id"]:
-                    continue
-                if not _is_valid_target(src, tgt, player, step):
-                    continue
-                p = float(probs[j + 1])
-                if p > best_prob:
-                    best_prob = p
-                    best_j = j
-            if best_j >= 0:
-                tgt = planet_map[best_j]
-                ships = max(_MIN_SHIPS, int(math.floor(available * max(0.2, best_prob))))
-                # For non-owned targets: fleet must be large enough to capture
-                if tgt["owner"] != player and ships <= tgt["ships"]:
-                    pass  # skip undersized fleet
-                elif ships <= available:
-                    angle = math.atan2(tgt["y"] - src["y"], tgt["x"] - src["x"])
-                    moves.append([src["id"], angle, ships])
+        angle = math.atan2(tgt["y"] - src["y"], tgt["x"] - src["x"])
+        moves.append([src["id"], angle, ships])
 
     return moves

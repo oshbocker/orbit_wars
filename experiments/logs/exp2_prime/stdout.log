@@ -1,0 +1,50 @@
+V2 Config: exp2_prime, device=cpu, updates=0
+  envs=1, rollout_steps=32, opponent=apex
+  OrbitNet params: 517,891
+
+=== Phase 1: Collecting 100 demo games (expert=apex vs random) ===
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO: Successfully loaded OpenSpiel environments: 19.
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_amazons
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_backgammon
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_checkers
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_chess
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_connect_four
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_dark_hex
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_gin_rummy
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_go
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_goofspiel
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_hearts
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_hex
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_matching_pennies_3p
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_othello
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_repeated_game
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_tic_tac_toe
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_y
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_universal_poker
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_repeated_poker
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    open_spiel_python_repeated_pokerkit
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO: OpenSpiel games skipped: 1.
+[kaggle_environments.envs.open_spiel_env.open_spiel_env] INFO:    snake
+  demo game 20/100  buffer=1778
+  demo game 40/100  buffer=3631
+  demo game 60/100  buffer=5338
+  demo game 80/100  buffer=7126
+  demo game 100/100  buffer=8938
+  V2 demo collection (apex): 8938 samples, 7913 mapped (8%), 86867 hold/unmapped
+  Cached 8938 demos to /home/aeschbacher/git/orbit_wars/experiments/demos_apex.pkl
+  Buffer size: 8938
+
+=== Phase 2: BC pretraining (50 epochs) ===
+  V2 BC pretrain: 50 epochs, 8938 samples, batch=256
+    epoch 10/50  loss=0.4010
+    epoch 20/50  loss=0.3345
+    epoch 30/50  loss=0.2668
+    epoch 40/50  loss=0.1813
+    epoch 50/50  loss=0.1241
+  BC checkpoint saved (update=0)
+  Using distilled opponent (BC-pretrained V2)
+  MixedScheduler: 4p_prob=0.0, rule_based=0.5->0.1 over 1000 updates
+
+=== PPO training (updates 1..0, 0 remaining) ===
+
+Training complete. Total time: 0s

@@ -29,7 +29,7 @@ class V2DemonstrationBuffer:
     own_mask: list[np.ndarray]            # each [P] bool
     reachability_mask: list[np.ndarray]   # each [P, P] bool
     target_indices: list[np.ndarray]      # each [P] int64 (0=hold, 1..P=target+1)
-    ship_fractions: list[np.ndarray]      # each [P] float32
+    frac_bins: list[np.ndarray]           # each [P] int64 (expert ship-fraction bin)
 
     def __init__(self) -> None:
         self.planet_features = []
@@ -38,19 +38,19 @@ class V2DemonstrationBuffer:
         self.own_mask = []
         self.reachability_mask = []
         self.target_indices = []
-        self.ship_fractions = []
+        self.frac_bins = []
 
     def __len__(self) -> int:
         return len(self.planet_features)
 
-    def add(self, features: V2Features, targets: np.ndarray, fractions: np.ndarray) -> None:
+    def add(self, features: V2Features, targets: np.ndarray, frac_bins: np.ndarray) -> None:
         self.planet_features.append(features.planet_features.copy())
         self.global_features.append(features.global_features.copy())
         self.planet_mask.append(features.planet_mask.copy())
         self.own_mask.append(features.own_mask.copy())
         self.reachability_mask.append(features.reachability_mask.copy())
         self.target_indices.append(targets.copy())
-        self.ship_fractions.append(fractions.copy())
+        self.frac_bins.append(frac_bins.copy())
 
     def sample_batch(self, batch_size: int, device: torch.device) -> dict[str, torch.Tensor]:
         indices = np.random.randint(0, len(self), size=min(batch_size, len(self)))
@@ -79,6 +79,9 @@ class V2DemonstrationBuffer:
             "target_indices": torch.from_numpy(
                 np.array([self.target_indices[i] for i in indices], dtype=np.int64)
             ).to(device),
+            "frac_bins": torch.from_numpy(
+                np.array([self.frac_bins[i] for i in indices], dtype=np.int64)
+            ).to(device),
         }
 
 
@@ -89,6 +92,11 @@ def _angle_diff(a: float, b: float) -> float:
     """Signed angular difference, wrapped to [-pi, pi]."""
     d = a - b
     return (d + math.pi) % (2 * math.pi) - math.pi
+
+
+def _frac_to_bin(frac: float, bins: list[float]) -> int:
+    """Nearest discrete ship-fraction bin index for a continuous fraction."""
+    return int(min(range(len(bins)), key=lambda k: abs(bins[k] - frac)))
 
 
 def _resolve_expert(name: str):
@@ -126,13 +134,13 @@ def _map_expert_moves_to_v2(
 ) -> tuple[np.ndarray, np.ndarray, int, int]:
     """Map expert [src_id, angle, ships] moves to V2 target_indices [P].
 
-    Returns (target_indices, ship_fractions, n_mapped, n_unmapped).
+    Returns (target_indices, frac_bins, n_mapped, n_unmapped).
     target_indices[i] = 0 (hold) or j+1 (target planet slot j).
-    ship_fractions[i] = fraction of ships sent (0.0 for hold).
+    frac_bins[i] = expert ship-fraction bin index (0 for hold).
     """
     P = env_cfg.max_planets
     target_indices = np.zeros(P, dtype=np.int64)
-    ship_fractions = np.zeros(P, dtype=np.float32)
+    frac_bins = np.zeros(P, dtype=np.int64)
     n_mapped = 0
     n_unmapped = 0
 
@@ -156,6 +164,7 @@ def _map_expert_moves_to_v2(
         if not src_moves:
             # Expert chose hold for this planet
             target_indices[i] = 0
+            frac_bins[i] = 0
             n_unmapped += 1
             continue
 
@@ -193,10 +202,10 @@ def _map_expert_moves_to_v2(
             continue
 
         target_indices[i] = best_j + 1  # 0=hold, 1..P=targets
-        ship_fractions[i] = max(0.2, min(1.0, frac))
+        frac_bins[i] = _frac_to_bin(max(0.2, min(1.0, frac)), env_cfg.ship_fractions)
         n_mapped += 1
 
-    return target_indices, ship_fractions, n_mapped, n_unmapped
+    return target_indices, frac_bins, n_mapped, n_unmapped
 
 
 # ── Demo Collection ──────────────────────────────────────────────────────────
@@ -243,8 +252,8 @@ def collect_v2_demonstrations(
             # Encode V2 features
             features = encode_features(state, cfg.env)
 
-            # Map expert moves to V2 target indices
-            targets, fractions, n_mapped, n_unmapped = _map_expert_moves_to_v2(
+            # Map expert moves to V2 target indices + fraction bins
+            targets, frac_bins, n_mapped, n_unmapped = _map_expert_moves_to_v2(
                 expert_moves, features, cfg.env,
             )
             mapped_count += n_mapped
@@ -252,7 +261,7 @@ def collect_v2_demonstrations(
 
             # Only add if we own at least one planet
             if features.own_mask.any():
-                buffer.add(features, targets, fractions)
+                buffer.add(features, targets, frac_bins)
 
             # Step environment
             opp_moves = opponent.act(obs_p1)
@@ -276,10 +285,12 @@ def compute_v2_bc_loss(
     model: OrbitNet,
     batch: dict[str, torch.Tensor],
 ) -> torch.Tensor:
-    """Cross-entropy loss on target selection for all owned planets.
+    """Cross-entropy on target selection + ship-fraction for owned planets.
 
-    For each owned planet i, computes cross_entropy(logits[i, :], target_indices[i]).
-    Averages over all owned planets across the batch.
+    Target loss: CE(logits[i, :], target_indices[i]) over all owned planets.
+    Fraction loss: CE(frac_logits[i, chosen_target, :], frac_bin[i]) over owned
+    planets that send (target > 0). The fraction term lets BC clone the expert's
+    fleet sizes, which the old target-only loss discarded.
     """
     output = model(
         batch["planet_features"],
@@ -302,8 +313,20 @@ def compute_v2_bc_loss(
 
     # Clamp logits to avoid -inf from masked positions causing NaN
     safe_logits = flat_logits.clamp(min=-1e4)
+    target_loss = F.cross_entropy(safe_logits, flat_targets)
 
-    return F.cross_entropy(safe_logits, flat_targets)
+    # Fraction loss on owned planets that actually send (target > 0)
+    frac_loss = torch.tensor(0.0, device=logits.device)
+    send = own_mask & (targets > 0)  # [B, P]
+    if send.any() and "frac_bins" in batch:
+        bi = send.nonzero(as_tuple=False)            # [M, 2] -> (b, i)
+        b_idx, i_idx = bi[:, 0], bi[:, 1]
+        tslot = (targets[b_idx, i_idx] - 1).clamp(min=0)
+        frac_rows = output.frac_logits[b_idx, i_idx, tslot]  # [M, K]
+        frac_targets = batch["frac_bins"][b_idx, i_idx]      # [M]
+        frac_loss = F.cross_entropy(frac_rows, frac_targets)
+
+    return target_loss + frac_loss
 
 
 # ── BC Pretraining ───────────────────────────────────────────────────────────

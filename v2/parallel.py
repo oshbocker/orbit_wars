@@ -23,6 +23,7 @@ class WorkerTransitions:
     own_mask: np.ndarray           # [N, P]
     reachability_mask: np.ndarray  # [N, P, P]
     target_indices: np.ndarray     # [N, P]
+    frac_indices: np.ndarray       # [N, P]
     log_prob: np.ndarray           # [N]
     returns: np.ndarray            # [N]
     advantages: np.ndarray         # [N]
@@ -119,6 +120,7 @@ def _worker_fn(conn: mp.connection.Connection, worker_id: int, cfg_dict: dict) -
                     own_mask=batch.own_mask.numpy(),
                     reachability_mask=batch.reachability_mask.numpy(),
                     target_indices=batch.target_indices.numpy(),
+                    frac_indices=batch.frac_indices.numpy(),
                     log_prob=batch.log_prob.numpy(),
                     returns=batch.returns.numpy(),
                     advantages=batch.advantages.numpy(),
@@ -235,6 +237,7 @@ class ParallelRolloutCollector:
             own_mask=torch.from_numpy(np.concatenate([r.own_mask for r in non_empty])),
             reachability_mask=torch.from_numpy(np.concatenate([r.reachability_mask for r in non_empty])),
             target_indices=torch.from_numpy(np.concatenate([r.target_indices for r in non_empty])),
+            frac_indices=torch.from_numpy(np.concatenate([r.frac_indices for r in non_empty])),
             log_prob=torch.from_numpy(np.concatenate([r.log_prob for r in non_empty])),
             returns=torch.from_numpy(np.concatenate([r.returns for r in non_empty])),
             advantages=torch.from_numpy(np.concatenate([r.advantages for r in non_empty])),

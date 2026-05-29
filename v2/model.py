@@ -13,8 +13,9 @@ from .config import V2ModelConfig
 
 @dataclass(slots=True)
 class OrbitNetOutput:
-    logits: torch.Tensor   # [B, max_planets, max_planets+1] (hold + targets)
-    value: torch.Tensor    # [B]
+    logits: torch.Tensor        # [B, max_planets, max_planets+1] (hold + targets)
+    value: torch.Tensor         # [B]
+    frac_logits: torch.Tensor   # [B, max_planets, max_planets, n_fractions] per (source->target) ship-fraction
 
 
 class OrbitNet(nn.Module):
@@ -66,6 +67,16 @@ class OrbitNet(nn.Module):
         )
         self.hold_head = nn.Linear(d, 1)
 
+        # Factored ship-fraction head: per (source->target) pair, a distribution
+        # over discrete fraction bins. Decouples "how many ships" from "which
+        # target", so PPO/BC/ExIt can learn fleet size directly.
+        self.n_fractions = cfg.n_fractions
+        self.frac_mlp = nn.Sequential(
+            nn.Linear(2 * d, d),
+            nn.ReLU(),
+            nn.Linear(d, cfg.n_fractions),
+        )
+
         # Value head: masked mean pool -> MLP -> scalar
         self.value_head = nn.Sequential(
             nn.Linear(d, d),
@@ -83,6 +94,9 @@ class OrbitNet(nn.Module):
         nn.init.zeros_(self.hold_head.bias)
         nn.init.zeros_(self.value_head[-1].weight)
         nn.init.zeros_(self.value_head[-1].bias)
+        # Zero-init fraction head -> uniform fraction distribution at start.
+        nn.init.zeros_(self.frac_mlp[-1].weight)
+        nn.init.zeros_(self.frac_mlp[-1].bias)
 
     def forward(
         self,
@@ -116,6 +130,9 @@ class OrbitNet(nn.Module):
         tgt_exp = tgt.unsqueeze(1).expand(B, P, P, -1)
         pair_input = torch.cat([src_exp, tgt_exp], dim=-1)  # [B, P, P, 2d]
         pair_logits = self.pair_mlp(pair_input).squeeze(-1)  # [B, P, P]
+
+        # Ship-fraction logits per (source->target) pair
+        frac_logits = self.frac_mlp(pair_input)  # [B, P, P, n_fractions]
 
         # Hold logits
         hold_logits = self.hold_head(x)  # [B, P, 1]
@@ -153,4 +170,4 @@ class OrbitNet(nn.Module):
         pooled = (x * mask_float).sum(dim=1) / mask_float.sum(dim=1).clamp(min=1.0)  # [B, d]
         value = self.value_head(pooled).squeeze(-1)  # [B]
 
-        return OrbitNetOutput(logits=logits, value=value)
+        return OrbitNetOutput(logits=logits, value=value, frac_logits=frac_logits)

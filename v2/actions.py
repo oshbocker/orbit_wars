@@ -17,9 +17,10 @@ from .model import OrbitNetOutput
 
 @dataclass(slots=True)
 class V2SampledAction:
-    target_indices: torch.Tensor  # [B, P] sampled target per planet (1..P, 0 unused)
-    log_prob: torch.Tensor        # [B] sum of per-planet log probs
-    entropy: torch.Tensor         # [B] sum of per-planet entropies
+    target_indices: torch.Tensor  # [B, P] sampled target per planet (1..P, 0=hold)
+    frac_indices: torch.Tensor    # [B, P] sampled ship-fraction bin per planet (0..K-1)
+    log_prob: torch.Tensor        # [B] sum of per-planet (target + fraction) log probs
+    entropy: torch.Tensor         # [B] MEAN per-planet (target + fraction) entropy
 
 
 def _mask_hold(logits: torch.Tensor) -> torch.Tensor:
@@ -29,59 +30,79 @@ def _mask_hold(logits: torch.Tensor) -> torch.Tensor:
     return masked
 
 
+def _frac_dist_for(output: OrbitNetOutput, idx: torch.Tensor, i: int,
+                   actions: torch.Tensor) -> tuple[Categorical, torch.Tensor]:
+    """Categorical over fraction bins for the chosen target of source planet i.
+
+    Returns (distribution, send_mask) where send_mask is True for non-hold
+    actions. For hold actions the target slot is clamped to 0 (the row is
+    ignored downstream via send_mask).
+    """
+    tgt_slot = (actions - 1).clamp(min=0)                       # [M]
+    fl = output.frac_logits[idx, i]                             # [M, P, K]
+    rows = torch.arange(fl.shape[0], device=fl.device)
+    frac_row = fl[rows, tgt_slot]                               # [M, K]
+    return Categorical(logits=frac_row), (actions > 0)
+
+
 def sample_actions(
     output: OrbitNetOutput,
     own_mask: torch.Tensor,
     deterministic: bool = False,
 ) -> V2SampledAction:
-    """Sample one target per owned planet from Categorical(logits).
+    """Sample a factored (target, ship-fraction) action per owned planet.
 
     During training (deterministic=False), hold is masked out so every owned
-    planet must send ships somewhere. This prevents exploration collapse where
-    the model learns "never send ships" as a local optimum.
-
-    Args:
-        output: OrbitNetOutput with logits [B, P, P+1]
-        own_mask: [B, P] bool (True = we own this planet)
-        deterministic: If True, use argmax (eval mode, hold allowed).
+    planet must send ships somewhere. The ship fraction is a *separate*
+    categorical over discrete bins (decoupled from target selection), so the
+    policy gradient can learn fleet size directly.
     """
     B, P, _ = output.logits.shape
     device = output.logits.device
 
     target_indices = torch.zeros(B, P, dtype=torch.long, device=device)
+    frac_indices = torch.zeros(B, P, dtype=torch.long, device=device)
     log_probs = torch.zeros(B, device=device)
     entropies = torch.zeros(B, device=device)
 
     for i in range(P):
-        slot_mask = own_mask[:, i]  # [B] which batches own planet i
+        slot_mask = own_mask[:, i]
         if not slot_mask.any():
             continue
-
-        # Only process batch elements that own this planet to avoid NaN
         idx = slot_mask.nonzero(as_tuple=True)[0]
-        logits_subset = output.logits[idx, i, :]  # [K, P+1]
+        logits_subset = output.logits[idx, i, :]  # [M, P+1]
 
         if deterministic:
             logits_safe = _safe_logits(logits_subset)
+            tdist = Categorical(logits=logits_safe)
+            actions = logits_safe.argmax(dim=-1)
         else:
-            # Mask hold (index 0) so model must pick a target
             logits_safe = _safe_logits(_mask_hold(logits_subset))
+            tdist = Categorical(logits=logits_safe)
+            actions = tdist.sample()
 
-        dist = Categorical(logits=logits_safe)
-        if deterministic:
-            actions = logits_safe.argmax(dim=-1)  # [K]
-        else:
-            actions = dist.sample()  # [K]
+        t_lp = tdist.log_prob(actions)
+        t_ent = tdist.entropy()
 
-        lp = dist.log_prob(actions)  # [K]
-        ent = dist.entropy()  # [K]
+        # Factored ship-fraction
+        fdist, send = _frac_dist_for(output, idx, i, actions)
+        fbins = fdist.probs.argmax(dim=-1) if deterministic else fdist.sample()
+        f_lp = fdist.log_prob(fbins) * send.float()
+        f_ent = fdist.entropy() * send.float()
+        fbins = fbins * send.long()
 
         target_indices[idx, i] = actions
-        log_probs[idx] += lp
-        entropies[idx] += ent
+        frac_indices[idx, i] = fbins
+        log_probs[idx] += t_lp + f_lp
+        entropies[idx] += t_ent + f_ent
+
+    # Fix 2: mean per-planet entropy (decouple exploration pressure from planet count)
+    own_counts = own_mask.sum(dim=1).clamp(min=1).float()
+    entropies = entropies / own_counts
 
     return V2SampledAction(
         target_indices=target_indices,
+        frac_indices=frac_indices,
         log_prob=log_probs,
         entropy=entropies,
     )
@@ -91,12 +112,12 @@ def action_log_prob_and_entropy(
     output: OrbitNetOutput,
     own_mask: torch.Tensor,
     target_indices: torch.Tensor,
+    frac_indices: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Recompute log_prob and entropy for stored actions (PPO update).
+    """Recompute factored (target + fraction) log_prob and mean entropy (PPO update).
 
-    Must use the same hold-masking as sample_actions (training mode).
-    Only processes batch elements that own planet i to avoid NaN from
-    all-masked logits.
+    Mirrors sample_actions' training-mode masking. log_prob is summed over
+    planets (joint action); entropy is the mean per owned planet.
     """
     B, P, _ = output.logits.shape
     device = output.logits.device
@@ -105,21 +126,26 @@ def action_log_prob_and_entropy(
     entropies = torch.zeros(B, device=device)
 
     for i in range(P):
-        slot_mask = own_mask[:, i]  # [B]
+        slot_mask = own_mask[:, i]
         if not slot_mask.any():
             continue
-
-        # Only process batch elements that own this planet
         idx = slot_mask.nonzero(as_tuple=True)[0]
-        logits_subset = output.logits[idx, i, :]  # [K, P+1]
+        logits_subset = output.logits[idx, i, :]
         logits_masked = _safe_logits(_mask_hold(logits_subset))
-        dist = Categorical(logits=logits_masked)
-        lp = dist.log_prob(target_indices[idx, i])
-        ent = dist.entropy()
+        tdist = Categorical(logits=logits_masked)
+        actions = target_indices[idx, i]
+        t_lp = tdist.log_prob(actions)
+        t_ent = tdist.entropy()
 
-        log_probs[idx] += lp
-        entropies[idx] += ent
+        fdist, send = _frac_dist_for(output, idx, i, actions)
+        f_lp = fdist.log_prob(frac_indices[idx, i]) * send.float()
+        f_ent = fdist.entropy() * send.float()
 
+        log_probs[idx] += t_lp + f_lp
+        entropies[idx] += t_ent + f_ent
+
+    own_counts = own_mask.sum(dim=1).clamp(min=1).float()
+    entropies = entropies / own_counts
     return log_probs, entropies
 
 
@@ -152,13 +178,10 @@ def decode_sampled_actions(
         if src is None or tgt is None or src.id == tgt.id or src.ships <= 0:
             continue
 
-        # Ship fraction: softmax prob (hold-masked), clamped to [0.2, 1.0]
-        row_logits = logits[i].clone()
-        row_logits[0] = float("-inf")
-        if not torch.isfinite(row_logits).any():
-            continue
-        probs = torch.softmax(row_logits, dim=-1)
-        frac = max(0.2, min(1.0, float(probs[target_idx])))
+        # Ship fraction: dedicated fraction head (decoupled from target selection)
+        frac_bin = int(sampled.frac_indices[0, i].item())
+        frac_bin = max(0, min(len(cfg.ship_fractions) - 1, frac_bin))
+        frac = cfg.ship_fractions[frac_bin]
         ships = int(math.floor(src.ships * frac))
         if ships < cfg.min_ships_to_send:
             continue
@@ -183,17 +206,14 @@ def decode_actions(
 ) -> list[list[float | int]]:
     """Convert model output to Kaggle [planet_id, angle, ships] commands.
 
-    Deterministic (eval): use full softmax (hold included). Send to targets
-    above threshold. If no target exceeds threshold, send to the best target
-    anyway (argmax fallback) so the agent always acts early in training.
-
-    Stochastic (train): hold is masked out. Sample one target per planet,
-    send a meaningful fraction of ships (conditional probability, min 20%).
-    Note: prefer decode_sampled_actions() in the training loop so executed
-    actions match the PPO buffer's log_probs.
+    Factored action: each owned source picks ONE target (argmax in eval, sample
+    in train) and ONE ship-fraction bin from the dedicated fraction head. This
+    decouples fleet size from target-selection probability.
     """
     P = cfg.max_planets
-    logits = output.logits[0]  # [P, P+1]
+    logits = output.logits[0]            # [P, P+1]
+    frac_logits = output.frac_logits[0]  # [P, P, K]
+    fracs = cfg.ship_fractions
     moves: list[list[float | int]] = []
 
     for i in range(P):
@@ -203,91 +223,45 @@ def decode_actions(
         if src is None or src.ships <= 0:
             continue
 
-        # Softmax over valid targets
         row_logits = logits[i]  # [P+1]
-        # Check if any valid target exists (non -inf)
-        finite_mask = torch.isfinite(row_logits)
-        if not finite_mask.any():
+        if not torch.isfinite(row_logits).any():
             continue
 
         if deterministic:
-            probs = torch.softmax(row_logits, dim=-1)  # [P+1]
-            available_ships = src.ships
-            made_move = False
-
-            for j in range(P):
-                prob_j = float(probs[j + 1])  # +1 because index 0 = hold
-                if prob_j < cfg.allocation_threshold:
-                    continue
-                tgt = features.planet_states[j]
-                if tgt is None or tgt.id == src.id:
-                    continue
-
-                ships = int(math.floor(available_ships * prob_j))
-                if ships < cfg.min_ships_to_send:
-                    continue
-
-                # For non-owned targets: fleet must be large enough to capture
-                if tgt.owner != state.player and ships <= tgt.ships:
-                    continue
-
-                angle = _compute_angle(src, tgt, ships, state, cfg)
-                if angle is not None:
-                    moves.append([src.id, angle, ships])
-                    made_move = True
-
-            # Argmax fallback: if no target exceeded threshold, send to the
-            # best non-hold target so the agent always acts early in training.
-            if not made_move:
-                target_probs = probs[1:].clone()  # [P]
-                for j in range(P):
-                    tgt = features.planet_states[j]
-                    if tgt is None or (tgt.id == src.id):
-                        target_probs[j] = 0.0
-                if target_probs.sum() > 0:
-                    best_j = int(target_probs.argmax().item())
-                    tgt = features.planet_states[best_j]
-                    if tgt is not None:
-                        frac = max(0.2, float(target_probs[best_j]) / float(target_probs.sum().clamp(min=1e-8)))
-                        ships = int(math.floor(available_ships * frac))
-                        if ships >= cfg.min_ships_to_send:
-                            # For non-owned targets: fleet must capture
-                            if tgt.owner != state.player and ships <= tgt.ships:
-                                pass  # skip undersized fleet
-                            else:
-                                angle = _compute_angle(src, tgt, ships, state, cfg)
-                                if angle is not None:
-                                    moves.append([src.id, angle, ships])
+            # Hold allowed in eval: argmax over [hold, targets]
+            action = int(row_logits.argmax().item())
+            if action == 0:
+                continue  # model chose to hold
         else:
-            # Mask hold, sample a target, send a meaningful ship fraction
             train_logits = row_logits.clone()
             train_logits[0] = float("-inf")
-
             if not torch.isfinite(train_logits).any():
                 continue
+            action = int(Categorical(logits=train_logits).sample().item())
 
-            probs = torch.softmax(train_logits, dim=-1)  # [P+1], hold=0
-            dist = Categorical(logits=train_logits)
-            action = dist.sample().item()
+        j = action - 1
+        tgt = features.planet_states[j]
+        if tgt is None or tgt.id == src.id:
+            continue
 
-            j = action - 1
-            tgt = features.planet_states[j]
-            if tgt is None or tgt.id == src.id:
-                continue
+        # Ship fraction from the dedicated head (argmax in eval, sample in train)
+        frac_row = frac_logits[i, j]  # [K]
+        if deterministic:
+            fbin = int(frac_row.argmax().item())
+        else:
+            fbin = int(Categorical(logits=frac_row).sample().item())
+        fbin = max(0, min(len(fracs) - 1, fbin))
+        ships = int(math.floor(src.ships * fracs[fbin]))
+        if ships < cfg.min_ships_to_send:
+            continue
 
-            # Ship fraction: use probability among targets, min 20%
-            frac = max(0.2, min(1.0, float(probs[action])))
-            ships = int(math.floor(src.ships * frac))
-            if ships < cfg.min_ships_to_send:
-                continue
+        # For non-owned targets: fleet must be large enough to capture
+        if tgt.owner != state.player and ships <= tgt.ships:
+            continue
 
-            # For non-owned targets: fleet must be large enough to capture
-            if tgt.owner != state.player and ships <= tgt.ships:
-                continue
-
-            angle = _compute_angle(src, tgt, ships, state, cfg)
-            if angle is not None:
-                moves.append([src.id, angle, ships])
+        angle = _compute_angle(src, tgt, ships, state, cfg)
+        if angle is not None:
+            moves.append([src.id, angle, ships])
 
     return moves
 

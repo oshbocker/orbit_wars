@@ -45,6 +45,51 @@ def seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _current_ent_coef(cfg: V2Config, update: int) -> float:
+    """Entropy coefficient with optional linear annealing.
+
+    If cfg.ppo.ent_coef_end < 0 the coefficient is constant. Otherwise it
+    interpolates linearly from ent_coef (update 1) to ent_coef_end
+    (update total_updates).
+    """
+    end = cfg.ppo.ent_coef_end
+    if end < 0:
+        return cfg.ppo.ent_coef
+    total = max(1, cfg.ppo.total_updates)
+    frac = min(1.0, update / total)
+    return cfg.ppo.ent_coef + frac * (end - cfg.ppo.ent_coef)
+
+
+def _load_or_collect_demos(cfg: V2Config, log: Any) -> object:
+    """Load demos from cache if available, else collect and (optionally) cache.
+
+    Caching keeps the BC demonstration set identical and avoids re-running
+    hundreds of expert games for every experiment.
+    """
+    import pickle
+
+    from .imitation import collect_v2_demonstrations
+
+    cache = cfg.imitation.bc_cache_path
+    if cache and Path(cache).exists():
+        with open(cache, "rb") as f:
+            buf = pickle.load(f)
+        log(f"  Loaded {len(buf)} cached demos from {cache}")
+        return buf
+
+    buf = collect_v2_demonstrations(
+        n_games=cfg.imitation.bc_games,
+        cfg=cfg,
+        opponent_name=cfg.imitation.bc_demo_opponent,
+    )
+    if cache:
+        Path(cache).parent.mkdir(parents=True, exist_ok=True)
+        with open(cache, "wb") as f:
+            pickle.dump(buf, f)
+        log(f"  Cached {len(buf)} demos to {cache}")
+    return buf
+
+
 class V2SelfPlayOpponent:
     """Wraps OrbitNet for opponent use."""
 
@@ -169,6 +214,7 @@ def collect_rollout(
     all_om: list[np.ndarray] = []
     all_rm: list[np.ndarray] = []
     all_ti: list[np.ndarray] = []
+    all_fi: list[np.ndarray] = []
     all_lp: list[float] = []
     all_values: list[float] = []
 
@@ -205,6 +251,7 @@ def collect_rollout(
                 sampled = sample_actions(output, om_t, deterministic=False)
 
             all_ti.append(sampled.target_indices[0].cpu().numpy())
+            all_fi.append(sampled.frac_indices[0].cpu().numpy())
             all_lp.append(float(sampled.log_prob[0].cpu()))
             all_values.append(float(output.value[0].cpu()))
             value_indices_per_env[env_idx].append(idx)
@@ -237,7 +284,17 @@ def collect_rollout(
     # Bootstrap final values
     next_values = _bootstrap_values(model, features_per_env, device)
 
-    # Compute GAE
+    # Compute GAE. Stored values (all_values / next_values) are raw head
+    # outputs; with value_symlog they live in symlog space, so map them back to
+    # real return space via symexp before doing GAE arithmetic. The buffer keeps
+    # the raw (symlog-space) values so the PPO clipped value loss stays consistent.
+    import math as _math
+
+    def _real(v: float) -> float:
+        if not cfg.ppo.value_symlog:
+            return v
+        return _math.copysign(_math.expm1(abs(v)), v)
+
     N = len(all_pf)
     returns = [0.0] * N
     advantages = [0.0] * N
@@ -256,13 +313,13 @@ def collect_rollout(
         for t in reversed(range(n_steps)):
             non_terminal = 1.0 - float(dones[t])
             if t == n_steps - 1:
-                next_v = next_values[env_idx] * non_terminal
+                next_v = _real(next_values[env_idx]) * non_terminal
             else:
-                next_v = all_values[idxs[t + 1]] * non_terminal
-            delta = rews[t] + gamma * next_v - all_values[idxs[t]]
+                next_v = _real(all_values[idxs[t + 1]]) * non_terminal
+            delta = rews[t] + gamma * next_v - _real(all_values[idxs[t]])
             gae = delta + gamma * lam * non_terminal * gae
             i = idxs[t]
-            returns[i] = gae + all_values[i]
+            returns[i] = gae + _real(all_values[i])
             advantages[i] = gae
 
     # Build batch
@@ -276,6 +333,7 @@ def collect_rollout(
             own_mask=torch.from_numpy(np.array(all_om, dtype=bool)),
             reachability_mask=torch.from_numpy(np.array(all_rm, dtype=bool)),
             target_indices=torch.from_numpy(np.array(all_ti, dtype=np.int64)),
+            frac_indices=torch.from_numpy(np.array(all_fi, dtype=np.int64)),
             log_prob=torch.tensor(all_lp, dtype=torch.float32),
             returns=torch.tensor(returns, dtype=torch.float32),
             advantages=torch.tensor(advantages, dtype=torch.float32),
@@ -321,6 +379,7 @@ def _empty_batch(cfg: V2Config) -> V2TransitionBatch:
         own_mask=torch.zeros(0, P, dtype=torch.bool),
         reachability_mask=torch.zeros(0, P, P, dtype=torch.bool),
         target_indices=torch.zeros(0, P, dtype=torch.long),
+        frac_indices=torch.zeros(0, P, dtype=torch.long),
         log_prob=torch.zeros(0),
         returns=torch.zeros(0),
         advantages=torch.zeros(0),
@@ -389,6 +448,9 @@ def main() -> None:
     cfg = load_v2_config(args.config)
     seed_everything(cfg.seed)
     device = resolve_device(cfg.device)
+    if device.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
     # Set up text log file (append mode so resume doesn't overwrite)
     log_dir = Path(cfg.log_dir) / cfg.run_name
@@ -420,16 +482,12 @@ def main() -> None:
     demo_buffer = None
 
     if cfg.imitation.enabled and not args.resume:
-        from .imitation import collect_v2_demonstrations, v2_bc_pretrain
+        from .imitation import v2_bc_pretrain
 
-        # Phase 1: Collect demonstrations
+        # Phase 1: Collect demonstrations (or load from cache)
         log(f"\n=== Phase 1: Collecting {cfg.imitation.bc_games} demo games "
             f"(expert={cfg.imitation.bc_expert} vs {cfg.imitation.bc_demo_opponent}) ===")
-        demo_buffer = collect_v2_demonstrations(
-            n_games=cfg.imitation.bc_games,
-            cfg=cfg,
-            opponent_name=cfg.imitation.bc_demo_opponent,
-        )
+        demo_buffer = _load_or_collect_demos(cfg, log)
         log(f"  Buffer size: {len(demo_buffer)}")
 
         # Phase 2: BC pretrain
@@ -512,13 +570,8 @@ def main() -> None:
             decay_frac = start_update / max(cfg.imitation.coef_decay_updates, 1)
             coef_at_resume = cfg.imitation.coef_start * max(0.0, 1.0 - decay_frac)
             if coef_at_resume > 0.0:
-                from .imitation import collect_v2_demonstrations
-                log(f"  Re-collecting demos for imitation (coef={coef_at_resume:.3f})...")
-                demo_buffer = collect_v2_demonstrations(
-                    n_games=cfg.imitation.bc_games,
-                    cfg=cfg,
-                    opponent_name=cfg.imitation.bc_demo_opponent,
-                )
+                log(f"  Loading demos for imitation (coef={coef_at_resume:.3f})...")
+                demo_buffer = _load_or_collect_demos(cfg, log)
                 log(f"  Buffer size: {len(demo_buffer)}")
 
     # Training loop
@@ -577,7 +630,7 @@ def _train_sequential(
         metrics = v2_ppo_update(
             model, optimizer, batch,
             clip_coef=cfg.ppo.clip_coef,
-            ent_coef=cfg.ppo.ent_coef,
+            ent_coef=_current_ent_coef(cfg, update),
             vf_coef=cfg.ppo.vf_coef,
             max_grad_norm=cfg.ppo.max_grad_norm,
             epochs=cfg.ppo.epochs,
@@ -585,6 +638,7 @@ def _train_sequential(
             device=device,
             demo_buffer=demo_buffer,
             imitation_coef=imitation_coef,
+            value_symlog=cfg.ppo.value_symlog,
         )
 
         # Sync self-play opponent periodically
@@ -659,7 +713,7 @@ def _train_parallel(
             metrics = v2_ppo_update(
                 model, optimizer, batch,
                 clip_coef=cfg.ppo.clip_coef,
-                ent_coef=cfg.ppo.ent_coef,
+                ent_coef=_current_ent_coef(cfg, update),
                 vf_coef=cfg.ppo.vf_coef,
                 max_grad_norm=cfg.ppo.max_grad_norm,
                 epochs=cfg.ppo.epochs,
@@ -667,6 +721,7 @@ def _train_parallel(
                 device=device,
                 demo_buffer=demo_buffer,
                 imitation_coef=imitation_coef,
+                value_symlog=cfg.ppo.value_symlog,
             )
 
             # Sync weights to workers

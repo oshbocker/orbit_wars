@@ -14,6 +14,9 @@ class V2EnvConfig:
     episode_steps: int = 500
     allocation_threshold: float = 0.05
     min_ships_to_send: int = 1
+    # Discrete ship-fraction bins for the factored fraction head (decoupled from
+    # target selection). len(ship_fractions) must equal model.n_fractions.
+    ship_fractions: list[float] = field(default_factory=lambda: [0.25, 0.5, 0.75, 1.0])
 
 
 @dataclass(slots=True)
@@ -24,6 +27,7 @@ class V2ModelConfig:
     ff_dim: int = 256
     planet_feat_dim: int = 22
     global_feat_dim: int = 8
+    n_fractions: int = 4  # number of discrete ship-fraction bins (factored fraction head)
 
 
 @dataclass(slots=True)
@@ -41,6 +45,8 @@ class V2PPOConfig:
     lr: float = 3e-4
     max_grad_norm: float = 0.5
     num_workers: int = 0  # 0 = sequential (backward-compat), >0 = parallel subprocess workers
+    ent_coef_end: float = -1.0  # <0 = constant ent_coef; >=0 = linearly anneal ent_coef -> ent_coef_end
+    value_symlog: bool = False  # symlog-transform value targets (scale-robust value learning; DreamerV3)
 
 
 @dataclass(slots=True)
@@ -72,6 +78,28 @@ class V2ImitationConfig:
     coef_decay_updates: int = 1000
     distilled_opponent: bool = True
     bc_skip_steps: int = 0
+    bc_cache_path: str = ""  # if set, pickle-cache demos here and reuse across runs
+
+
+@dataclass(slots=True)
+class V2ExItConfig:
+    """Expert Iteration: simulator + per-planet search to distill OrbitNet."""
+    enabled: bool = False
+    iterations: int = 50
+    games_per_iter: int = 8
+    search_depth: int = 12          # forward-sim steps per candidate evaluation
+    search_candidates: int = 10     # max reachable targets searched per source planet
+    search_temperature: float = 1.0  # softmax temperature over candidate scores
+    train_epochs: int = 4
+    train_batch_size: int = 256
+    train_lr: float = 3e-4
+    value_loss_coef: float = 0.5
+    max_grad_norm: float = 0.5
+    dataset_max_iters: int = 3       # keep this many iterations of data in the buffer
+    four_player_prob: float = 0.0
+    opponent: str = "apex"
+    sample_collect: bool = True      # sample (vs argmax) during self-play collection
+    search_workers: int = 0          # >1 = parallelize the (CPU-bound) search across processes
 
 
 @dataclass(slots=True)
@@ -97,6 +125,7 @@ class V2Config:
     reward: V2RewardConfig = field(default_factory=V2RewardConfig)
     eval: V2EvalConfig = field(default_factory=V2EvalConfig)
     imitation: V2ImitationConfig = field(default_factory=V2ImitationConfig)
+    exit: V2ExItConfig = field(default_factory=V2ExItConfig)
 
 
 def load_v2_config(path: str | Path) -> V2Config:
@@ -109,7 +138,7 @@ def load_v2_config(path: str | Path) -> V2Config:
 
 def v2_config_from_dict(data: dict[str, Any]) -> V2Config:
     cfg = V2Config()
-    sub = {"env", "model", "ppo", "reward", "eval", "imitation"}
+    sub = {"env", "model", "ppo", "reward", "eval", "imitation", "exit"}
     _update_dataclass(cfg, data, skip=sub)
     _update_dataclass(cfg.env, data.get("env", {}))
     _update_dataclass(cfg.model, data.get("model", {}))
@@ -117,6 +146,7 @@ def v2_config_from_dict(data: dict[str, Any]) -> V2Config:
     _update_dataclass(cfg.reward, data.get("reward", {}))
     _update_dataclass(cfg.eval, data.get("eval", {}))
     _update_dataclass(cfg.imitation, data.get("imitation", {}))
+    _update_dataclass(cfg.exit, data.get("exit", {}))
     return cfg
 
 
@@ -124,7 +154,7 @@ def v2_config_to_dict(cfg: V2Config) -> dict[str, Any]:
     """Serialize V2Config to a plain dict (for passing to subprocess workers)."""
     from dataclasses import fields as dc_fields
     result: dict[str, Any] = {}
-    sub = {"env", "model", "ppo", "reward", "eval", "imitation"}
+    sub = {"env", "model", "ppo", "reward", "eval", "imitation", "exit"}
     for f in dc_fields(cfg):
         val = getattr(cfg, f.name)
         if f.name in sub:
