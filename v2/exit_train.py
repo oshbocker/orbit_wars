@@ -296,6 +296,12 @@ def main() -> None:
         v2_bc_pretrain(model, demos, cfg.imitation, device, logger)
         save_checkpoint(save_dir, cfg.run_name, 0, model, optimizer)
         log("  BC checkpoint saved (iter=0)")
+        if cfg.eval.eval_every > 0:
+            log(f"  Eval of BC clone (iter 0, {cfg.eval.eval_games} games)...")
+            for r in run_periodic_eval(model, cfg, device):
+                logger.log_eval(0, [r])
+                log(f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
+                    f"T={r.tie_rate:.0%} (n={r.n_games})")
     elif args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=True)
         model.load_state_dict(ckpt["model"])

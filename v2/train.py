@@ -498,6 +498,14 @@ def main() -> None:
         save_checkpoint(save_dir, cfg.run_name, 0, model, optimizer)
         log("  BC checkpoint saved (update=0)")
 
+        # Eval the BC clone before PPO starts, so the warm-start strength is visible.
+        if cfg.eval.eval_every > 0:
+            log(f"  Eval of BC clone (update 0, {cfg.eval.eval_games} games)...")
+            for r in run_periodic_eval(model, cfg, device):
+                logger.log_eval(0, [r])
+                log(f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
+                    f"T={r.tie_rate:.0%} (n={r.n_games})")
+
     # Build opponents
     rule_based_opponent = build_opponent(cfg.opponent)
 
