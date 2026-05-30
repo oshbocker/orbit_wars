@@ -153,11 +153,11 @@ def encode_features(
             tgt_info = incoming.get(tgt.id, IncomingFleetInfo())
             friendly_incoming = tgt_info.ships[0]  # own team's incoming ships
 
-            # Must have enough that a reasonable allocation (50%) can capture.
-            # This prevents the model from considering targets it can only
-            # capture by sending 100% of ships (too restrictive in practice).
+            # Viability: attackable if we can capture at the configured margin.
+            # takeover_margin=1.0 means "capturable by sending 100%" (matches the
+            # submission agent); higher values demand more headroom.
             effective_garrison = tgt.ships + prod_growth - friendly_incoming
-            if src.ships >= 2 * (effective_garrison + 1):
+            if src.ships >= cfg.takeover_margin * (effective_garrison + 1):
                 reachability_mask[i, j] = True
 
     # Global features [8]

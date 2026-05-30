@@ -30,6 +30,7 @@ class V2DemonstrationBuffer:
     reachability_mask: list[np.ndarray]   # each [P, P] bool
     target_indices: list[np.ndarray]      # each [P] int64 (0=hold, 1..P=target+1)
     frac_bins: list[np.ndarray]           # each [P] int64 (expert ship-fraction bin)
+    supervise_mask: list[np.ndarray]      # each [P] bool (planets that contribute to BC loss)
 
     def __init__(self) -> None:
         self.planet_features = []
@@ -39,11 +40,13 @@ class V2DemonstrationBuffer:
         self.reachability_mask = []
         self.target_indices = []
         self.frac_bins = []
+        self.supervise_mask = []
 
     def __len__(self) -> int:
         return len(self.planet_features)
 
-    def add(self, features: V2Features, targets: np.ndarray, frac_bins: np.ndarray) -> None:
+    def add(self, features: V2Features, targets: np.ndarray, frac_bins: np.ndarray,
+            supervise_mask: np.ndarray) -> None:
         self.planet_features.append(features.planet_features.copy())
         self.global_features.append(features.global_features.copy())
         self.planet_mask.append(features.planet_mask.copy())
@@ -51,6 +54,7 @@ class V2DemonstrationBuffer:
         self.reachability_mask.append(features.reachability_mask.copy())
         self.target_indices.append(targets.copy())
         self.frac_bins.append(frac_bins.copy())
+        self.supervise_mask.append(supervise_mask.copy())
 
     def sample_batch(self, batch_size: int, device: torch.device) -> dict[str, torch.Tensor]:
         indices = np.random.randint(0, len(self), size=min(batch_size, len(self)))
@@ -82,6 +86,14 @@ class V2DemonstrationBuffer:
             "frac_bins": torch.from_numpy(
                 np.array([self.frac_bins[i] for i in indices], dtype=np.int64)
             ).to(device),
+            # supervise_mask: fall back to own_mask for caches predating this field
+            "supervise_mask": torch.from_numpy(
+                np.array([
+                    (self.supervise_mask[i] if getattr(self, "supervise_mask", None)
+                     else self.own_mask[i])
+                    for i in indices
+                ])
+            ).to(device).bool(),
         }
 
 
@@ -131,20 +143,29 @@ def _map_expert_moves_to_v2(
     expert_moves: list,
     features: V2Features,
     env_cfg: V2EnvConfig,
-) -> tuple[np.ndarray, np.ndarray, int, int]:
+    match_tolerance_deg: float = 90.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int, int]:
     """Map expert [src_id, angle, ships] moves to V2 target_indices [P].
 
-    Returns (target_indices, frac_bins, n_mapped, n_unmapped).
+    Returns (target_indices, frac_bins, supervise_mask, n_mapped, n_hold, n_dropped).
     target_indices[i] = 0 (hold) or j+1 (target planet slot j).
-    frac_bins[i] = expert ship-fraction bin index (0 for hold).
+    frac_bins[i]      = expert ship-fraction bin index (0 for hold).
+    supervise_mask[i] = whether this owned planet contributes to the BC loss.
+
+    We supervise genuine holds (apex launched nothing) and successful matches, but
+    DROP apex launches we couldn't faithfully map (no angular match within
+    tolerance, or matched target not reachable). Previously those were relabeled as
+    "hold", which actively taught the clone to be passive.
     """
     P = env_cfg.max_planets
     target_indices = np.zeros(P, dtype=np.int64)
     frac_bins = np.zeros(P, dtype=np.int64)
+    supervise_mask = features.own_mask.copy()
     n_mapped = 0
-    n_unmapped = 0
+    n_hold = 0
+    n_dropped = 0
 
-    # Group moves by source planet id, pick largest-ships move per source
+    # Group moves by source planet id
     moves_by_src: dict[int, list[tuple[float, int]]] = {}
     for move in expert_moves:
         src_id = int(move[0])
@@ -152,31 +173,32 @@ def _map_expert_moves_to_v2(
         ships = int(move[2])
         moves_by_src.setdefault(src_id, []).append((angle, ships))
 
+    tol = math.radians(match_tolerance_deg)
+
     for i in range(P):
         if not features.own_mask[i]:
             continue
         src = features.planet_states[i]
         if src is None or src.ships <= 0:
-            n_unmapped += 1
+            # Owns it but can't act -> hold is the correct label
+            n_hold += 1
             continue
 
         src_moves = moves_by_src.get(src.id, [])
         if not src_moves:
-            # Expert chose hold for this planet
-            target_indices[i] = 0
-            frac_bins[i] = 0
-            n_unmapped += 1
+            # Genuine hold: apex launched nothing from this planet
+            n_hold += 1
             continue
 
-        # Pick the move with the most ships as the primary target
+        # Apex launched: pick the largest-ships move as the primary target
         best_move = max(src_moves, key=lambda m: m[1])
         angle = best_move[0]
         total_ships = sum(s for _, s in src_moves)
         frac = total_ships / max(src.ships, 1)
 
-        # Find closest target planet by angular difference
+        # Closest target by angular difference (within tolerance)
         best_j = -1
-        best_diff = math.radians(45)  # tolerance
+        best_diff = tol
         for j in range(P):
             if i == j:
                 continue
@@ -189,23 +211,18 @@ def _map_expert_moves_to_v2(
                 best_diff = diff
                 best_j = j
 
-        if best_j < 0:
-            # No matching target within tolerance -> hold
-            target_indices[i] = 0
-            n_unmapped += 1
-            continue
-
-        # Verify target is reachable (avoid teaching impossible moves)
-        if not features.reachability_mask[i, best_j]:
-            target_indices[i] = 0
-            n_unmapped += 1
+        # Apex acted but we can't faithfully map it -> DROP from supervision
+        # (do NOT relabel as hold).
+        if best_j < 0 or not features.reachability_mask[i, best_j]:
+            supervise_mask[i] = False
+            n_dropped += 1
             continue
 
         target_indices[i] = best_j + 1  # 0=hold, 1..P=targets
         frac_bins[i] = _frac_to_bin(max(0.2, min(1.0, frac)), env_cfg.ship_fractions)
         n_mapped += 1
 
-    return target_indices, frac_bins, n_mapped, n_unmapped
+    return target_indices, frac_bins, supervise_mask, n_mapped, n_hold, n_dropped
 
 
 # ── Demo Collection ──────────────────────────────────────────────────────────
@@ -223,7 +240,8 @@ def collect_v2_demonstrations(
     opponent = build_opponent(opponent_name)
     buffer = V2DemonstrationBuffer()
     mapped_count = 0
-    unmapped_count = 0
+    hold_count = 0
+    dropped_count = 0
 
     for game_i in range(n_games):
         from kaggle_environments import make
@@ -253,15 +271,17 @@ def collect_v2_demonstrations(
             features = encode_features(state, cfg.env)
 
             # Map expert moves to V2 target indices + fraction bins
-            targets, frac_bins, n_mapped, n_unmapped = _map_expert_moves_to_v2(
+            targets, frac_bins, supervise_mask, n_mapped, n_hold, n_dropped = _map_expert_moves_to_v2(
                 expert_moves, features, cfg.env,
+                match_tolerance_deg=cfg.imitation.bc_match_tolerance_deg,
             )
             mapped_count += n_mapped
-            unmapped_count += n_unmapped
+            hold_count += n_hold
+            dropped_count += n_dropped
 
             # Only add if we own at least one planet
             if features.own_mask.any():
-                buffer.add(features, targets, frac_bins)
+                buffer.add(features, targets, frac_bins, supervise_mask)
 
             # Step environment
             opp_moves = opponent.act(obs_p1)
@@ -271,10 +291,14 @@ def collect_v2_demonstrations(
         if (game_i + 1) % max(1, n_games // 5) == 0:
             print(f"  demo game {game_i + 1}/{n_games}  buffer={len(buffer)}")
 
-    total = mapped_count + unmapped_count
-    pct = mapped_count / max(total, 1) * 100
+    total = mapped_count + hold_count + dropped_count
+    supervised = mapped_count + hold_count
+    launches = mapped_count + dropped_count  # apex launches we tried to map
+    capture = mapped_count / max(launches, 1) * 100  # of apex launches, how many mapped
     print(f"  V2 demo collection ({cfg.imitation.bc_expert}): {len(buffer)} samples, "
-          f"{mapped_count} mapped ({pct:.0f}%), {unmapped_count} hold/unmapped")
+          f"{mapped_count} mapped sends, {hold_count} genuine holds, "
+          f"{dropped_count} dropped (unmappable launches); "
+          f"launch-capture={capture:.0f}%, supervised={supervised}/{total}")
     return buffer
 
 
@@ -303,10 +327,13 @@ def compute_v2_bc_loss(
     logits = output.logits   # [B, P, P+1]
     targets = batch["target_indices"]  # [B, P]
     own_mask = batch["own_mask"]       # [B, P]
+    # Supervise only genuine holds + mapped launches; drop unmappable apex launches
+    # so we never teach spurious passivity.
+    sup = own_mask & batch["supervise_mask"] if "supervise_mask" in batch else own_mask
 
-    # Flatten to owned planets only
-    flat_logits = logits[own_mask]     # [N_owned, P+1]
-    flat_targets = targets[own_mask]   # [N_owned]
+    # Flatten to supervised owned planets only
+    flat_logits = logits[sup]     # [N_sup, P+1]
+    flat_targets = targets[sup]   # [N_sup]
 
     if flat_logits.shape[0] == 0:
         return torch.tensor(0.0, device=logits.device, requires_grad=True)
@@ -315,9 +342,9 @@ def compute_v2_bc_loss(
     safe_logits = flat_logits.clamp(min=-1e4)
     target_loss = F.cross_entropy(safe_logits, flat_targets)
 
-    # Fraction loss on owned planets that actually send (target > 0)
+    # Fraction loss on supervised planets that actually send (target > 0)
     frac_loss = torch.tensor(0.0, device=logits.device)
-    send = own_mask & (targets > 0)  # [B, P]
+    send = sup & (targets > 0)  # [B, P]
     if send.any() and "frac_bins" in batch:
         bi = send.nonzero(as_tuple=False)            # [M, 2] -> (b, i)
         b_idx, i_idx = bi[:, 0], bi[:, 1]

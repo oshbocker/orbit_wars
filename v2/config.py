@@ -17,6 +17,11 @@ class V2EnvConfig:
     # Discrete ship-fraction bins for the factored fraction head (decoupled from
     # target selection). len(ship_fractions) must equal model.n_fractions.
     ship_fractions: list[float] = field(default_factory=lambda: [0.25, 0.5, 0.75, 1.0])
+    # Reachability viability: a target is attackable if src.ships >=
+    # takeover_margin * (effective_garrison + 1). 1.0 = "capturable by sending
+    # 100%" (matches the submission agent); the old 2.0 ("capturable with 50%")
+    # was over-conservative and masked many of apex's real targets.
+    takeover_margin: float = 1.0
 
 
 @dataclass(slots=True)
@@ -79,6 +84,7 @@ class V2ImitationConfig:
     distilled_opponent: bool = True
     bc_skip_steps: int = 0
     bc_cache_path: str = ""  # if set, pickle-cache demos here and reuse across runs
+    bc_match_tolerance_deg: float = 90.0  # angular tolerance for matching an apex launch to a target slot
 
 
 @dataclass(slots=True)
