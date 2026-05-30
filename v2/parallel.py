@@ -42,6 +42,14 @@ def _worker_fn(conn: mp.connection.Connection, worker_id: int, cfg_dict: dict) -
     sys.stdout = devnull
     sys.stderr = devnull
 
+    # Pin each worker to a single thread. Without this, N workers each spawn
+    # ~N BLAS/OMP threads on an N-core box -> catastrophic oversubscription
+    # (every env step ~5x slower, negating the parallelism). One thread per
+    # worker lets the workers actually run in parallel.
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    torch.set_num_threads(1)
+
     # Lazy imports inside subprocess to avoid pickling issues
     from src.opponents import build_opponent
 
