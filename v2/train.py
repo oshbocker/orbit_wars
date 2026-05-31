@@ -179,6 +179,96 @@ class V2MixedScheduler:
         return (4 if is_4p else 2), opponents
 
 
+class V2PFSPScheduler:
+    """Prioritized Fictitious Self-Play opponent pool.
+
+    Always keeps the rule-based reference (apex) in the pool — with a probability
+    floor — and adds frozen snapshots of the training policy over time. Opponents
+    are sampled by win-rate so the agent trains more against the ones it currently
+    loses to (PFSP "hard" weighting, à la AlphaStar). This directly counters the
+    failure mode where self-play forgets how to beat the script.
+    """
+
+    def __init__(self, cfg: V2Config, rule_based: OpponentPolicy,
+                 device: torch.device) -> None:
+        self.cfg = cfg
+        self.device = device
+        self._update = 0
+        # Pool entries: {"name", "agent", "wins", "games"}. Apex is index 0.
+        self.pool: list[dict] = [
+            {"name": "apex", "agent": rule_based, "wins": 0.0, "games": 0.0},
+        ]
+        self._last_sampled: str | None = None
+
+    def set_update(self, update: int) -> None:
+        self._update = update
+
+    def maybe_snapshot(self, model: OrbitNet) -> None:
+        """Add a frozen snapshot of the current policy to the pool (FIFO-capped)."""
+        if self.cfg.pfsp_snapshot_every <= 0:
+            return
+        if self._update == 0 or self._update % self.cfg.pfsp_snapshot_every != 0:
+            return
+        snap = V2SelfPlayOpponent(self.cfg, device=self.device, deterministic=False)
+        snap.sync_from(model)
+        self.pool.append({"name": f"self@{self._update}", "agent": snap,
+                          "wins": 0.0, "games": 0.0})
+        # Cap frozen snapshots (never evict apex at index 0).
+        frozen = self.pool[1:]
+        if len(frozen) > self.cfg.pfsp_pool_size:
+            self.pool = [self.pool[0]] + frozen[-self.cfg.pfsp_pool_size:]
+
+    def _win_rate(self, entry: dict) -> float:
+        return entry["wins"] / entry["games"] if entry["games"] > 0 else 0.5
+
+    def _weights(self) -> list[float]:
+        # PFSP "hard": weight ∝ (1 - win_rate) so we favor opponents we lose to.
+        if self.cfg.pfsp_weighting == "uniform":
+            return [1.0] * len(self.pool)
+        return [max(0.05, 1.0 - self._win_rate(e)) for e in self.pool]
+
+    def sample_episode(self) -> tuple[int, list[OpponentPolicy]]:
+        is_4p = random.random() < self.cfg.four_player_prob
+        n_opp = 3 if is_4p else 1
+        opponents: list[OpponentPolicy] = []
+        names: list[str] = []
+        for _ in range(n_opp):
+            # Enforce the apex probability floor, else PFSP-weighted sample.
+            if random.random() < self.cfg.pfsp_apex_min_prob:
+                idx = 0
+            else:
+                w = self._weights()
+                total = sum(w)
+                r = random.random() * total
+                idx, acc = 0, 0.0
+                for k, wk in enumerate(w):
+                    acc += wk
+                    if r <= acc:
+                        idx = k
+                        break
+            opponents.append(self.pool[idx]["agent"])
+            names.append(self.pool[idx]["name"])
+        self._last_sampled = names[0] if names else None
+        return (4 if is_4p else 2), opponents
+
+    def last_name(self) -> str | None:
+        return self._last_sampled
+
+    def update_result(self, name: str | None, win: bool) -> None:
+        """Record the learner's result against a specific pool opponent."""
+        if name is None:
+            return
+        for e in self.pool:
+            if e["name"] == name:
+                e["games"] += 1.0
+                e["wins"] += 1.0 if win else 0.0
+                break
+
+    def pool_summary(self) -> str:
+        return ", ".join(f"{e['name']}:{self._win_rate(e):.0%}({int(e['games'])})"
+                         for e in self.pool)
+
+
 def make_v2_eval_agent(
     model: OrbitNet,
     cfg: V2Config,
@@ -224,6 +314,11 @@ def collect_rollout(
     value_indices_per_env: list[list[int]] = [[] for _ in envs]
     episode_rewards: list[float] = []
     running_rewards = [0.0 for _ in envs]
+    is_pfsp = isinstance(scheduler, V2PFSPScheduler)
+    # Track which PFSP opponent each env is currently facing (set at reset).
+    active_opp_name: list[str | None] = [
+        (scheduler.last_name() if is_pfsp else None) for _ in envs
+    ]
 
     for _step_i in range(cfg.ppo.rollout_steps):
         next_features = []
@@ -268,10 +363,16 @@ def collect_rollout(
 
             if result.done:
                 episode_rewards.append(running_rewards[env_idx])
+                # PFSP: record win/loss vs the opponent this env just faced.
+                if is_pfsp:
+                    scheduler.update_result(
+                        active_opp_name[env_idx], running_rewards[env_idx] > 0.0)
                 running_rewards[env_idx] = 0.0
                 next_seed += 1
                 if scheduler is not None:
                     num_p, opps = scheduler.sample_episode()
+                    if is_pfsp:
+                        active_opp_name[env_idx] = scheduler.last_name()
                     new_feat = env.reset(seed=next_seed, num_players=num_p, opponents=opps)
                 else:
                     new_feat = env.reset(seed=next_seed)
@@ -520,10 +621,15 @@ def main() -> None:
                                      deterministic=cfg.self_play_deterministic)
     sp_opponent.sync_from(model)
 
-    # Mixed scheduler
-    use_scheduler = cfg.four_player_prob > 0.0 or cfg.rule_based_prob_start < 1.0
-    scheduler: V2MixedScheduler | None = None
-    if use_scheduler:
+    # Scheduler: PFSP pool (keeps apex, samples by win-rate) takes precedence;
+    # else the linear rule-based->self-play MixedScheduler.
+    scheduler: V2MixedScheduler | V2PFSPScheduler | None = None
+    if cfg.pfsp_enabled:
+        scheduler = V2PFSPScheduler(cfg, rule_based_opponent, device)
+        log(f"  PFSPScheduler: apex_floor={cfg.pfsp_apex_min_prob}, "
+            f"pool_size={cfg.pfsp_pool_size}, snapshot_every={cfg.pfsp_snapshot_every}, "
+            f"weighting={cfg.pfsp_weighting}")
+    elif cfg.four_player_prob > 0.0 or cfg.rule_based_prob_start < 1.0:
         scheduler = V2MixedScheduler(cfg, rule_based_opponent, sp_opponent)
         log(f"  MixedScheduler: 4p_prob={cfg.four_player_prob}, "
             f"rule_based={cfg.rule_based_prob_start:.1f}->{cfg.rule_based_prob_end:.1f} "
@@ -587,6 +693,12 @@ def main() -> None:
     log(f"\n=== PPO training (updates {start_update}..{cfg.ppo.total_updates}, "
         f"{remaining} remaining) ===")
 
+    if cfg.ppo.num_workers > 0 and cfg.pfsp_enabled:
+        raise ValueError(
+            "pfsp_enabled requires num_workers=0 (sequential): the PFSP pool holds "
+            "live in-process opponent models that can't be sent to subprocess workers."
+        )
+
     if cfg.ppo.num_workers > 0:
         _train_parallel(cfg, model, optimizer, logger, save_dir, device, log,
                         start_update, demo_buffer)
@@ -610,7 +722,7 @@ def _train_sequential(
     envs: list,
     features_per_env: list,
     next_seed: int,
-    scheduler: V2MixedScheduler | None,
+    scheduler: V2MixedScheduler | V2PFSPScheduler | None,
     sp_opponent: V2SelfPlayOpponent,
     start_update: int,
     demo_buffer: object | None = None,
@@ -653,6 +765,10 @@ def _train_sequential(
         if update % cfg.self_play_update_interval == 0:
             sp_opponent.sync_from(model)
 
+        # PFSP: periodically freeze a snapshot of the current policy into the pool.
+        if isinstance(scheduler, V2PFSPScheduler):
+            scheduler.maybe_snapshot(model)
+
         all_metrics = {**stats, **metrics}
         logger.log_update(update, all_metrics)
 
@@ -675,6 +791,8 @@ def _train_sequential(
             for r in eval_results:
                 log(f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
                     f"T={r.tie_rate:.0%} (n={r.n_games})")
+            if isinstance(scheduler, V2PFSPScheduler):
+                log(f"    PFSP pool: {scheduler.pool_summary()}")
             log("")
 
         if update % cfg.checkpoint_every == 0 or update == cfg.ppo.total_updates:

@@ -56,11 +56,18 @@ class V2PPOConfig:
 
 @dataclass(slots=True)
 class V2RewardConfig:
-    reward_mode: str = "dense_relative"
+    reward_mode: str = "dense_relative"  # sparse | dense_absolute | dense_relative | pbrs
     dense_ship_coef: float = 0.002
     dense_prod_coef: float = 0.005
     early_prod_bonus: float = 9.0
     early_prod_bonus_steps: int = 50
+    # PBRS (potential-based reward shaping): r = gamma*Phi(s') - Phi(s).
+    # Phi rewards owning productive territory (not banked ships), so effective
+    # capture is rewarded and ship-hoarding is not. Policy-invariant (Ng 1999).
+    pbrs_gamma: float = 0.997           # must match ppo.gamma for invariance
+    pbrs_prod_weight: float = 1.0       # weight on (own_prod - best_enemy_prod)
+    pbrs_planet_weight: float = 0.5     # weight on (own_planets - best_enemy_planets)
+    pbrs_scale: float = 0.01            # overall scale of the shaping term
 
 
 @dataclass(slots=True)
@@ -125,6 +132,15 @@ class V2Config:
     rule_based_prob_start: float = 1.0
     rule_based_prob_end: float = 0.2
     rule_based_decay_updates: int = 2000
+    # PFSP (prioritized fictitious self-play). When enabled, replaces the linear
+    # rule-based decay with a pool of {apex (always kept), frozen self-snapshots}
+    # sampled by win-rate so the agent trains more against what it loses to —
+    # which prevents self-play from forgetting how to beat apex.
+    pfsp_enabled: bool = False
+    pfsp_apex_min_prob: float = 0.3     # floor on probability of facing apex each episode
+    pfsp_pool_size: int = 5             # max frozen self-snapshots retained
+    pfsp_snapshot_every: int = 50       # add a frozen self-snapshot every N updates
+    pfsp_weighting: str = "hard"        # "hard" (favor low win-rate) or "uniform"
     env: V2EnvConfig = field(default_factory=V2EnvConfig)
     model: V2ModelConfig = field(default_factory=V2ModelConfig)
     ppo: V2PPOConfig = field(default_factory=V2PPOConfig)
