@@ -4,19 +4,20 @@ Requires rclone configured with a 'gdrive' remote pointing to your Google Drive.
 See README / CLAUDE.md for setup instructions.
 
 Usage:
-    # Download latest v2_bc checkpoint
-    uv run python scripts/download_checkpoint.py --run v2_bc
+    # Download latest checkpoint of the A100 PPO run (default)
+    uv run python scripts/download_checkpoint.py --run v2_ppo_a100
 
-    # Download latest v2_default checkpoint
-    uv run python scripts/download_checkpoint.py --run v2_default
+    # List which checkpoint files exist for a run, then grab a specific one
+    uv run python scripts/download_checkpoint.py --run v2_ppo_a100 --list-ckpts
+    uv run python scripts/download_checkpoint.py --run v2_ppo_a100 --ckpt ckpt_000750.pt
 
-    # Download latest transformer_mixed checkpoint (v1)
-    uv run python scripts/download_checkpoint.py --run transformer_mixed
+    # Download the BC-only clone (update 0) to compare vs the PPO checkpoints
+    uv run python scripts/download_checkpoint.py --run v2_ppo_a100 --ckpt ckpt_000000.pt
 
     # Download all checkpoints
     uv run python scripts/download_checkpoint.py --all
 
-    # List available checkpoints on Drive
+    # List available run directories on Drive
     uv run python scripts/download_checkpoint.py --list
 
     # Use a different rclone remote name
@@ -35,7 +36,7 @@ DRIVE_BASE = "orbit_wars_outputs/checkpoints"
 LOCAL_BASE = Path("outputs/checkpoints")
 
 DEFAULT_REMOTE = "gdrive"
-DEFAULT_RUN = "v2_bc"
+DEFAULT_RUN = "v2_ppo_a100"
 
 
 def _check_rclone() -> None:
@@ -74,8 +75,16 @@ def list_checkpoints(remote: str) -> None:
     )
 
 
-def download_run(remote: str, run_name: str) -> None:
-    src = f"{remote}:{DRIVE_BASE}/{run_name}/ckpt_last.pt"
+def list_run_checkpoints(remote: str, run_name: str) -> None:
+    """List the individual checkpoint files available for a run."""
+    print(f"Checkpoints in {remote}:{DRIVE_BASE}/{run_name}/")
+    subprocess.run(
+        ["rclone", "lsf", f"{remote}:{DRIVE_BASE}/{run_name}/"],
+    )
+
+
+def download_run(remote: str, run_name: str, ckpt_file: str = "ckpt_last.pt") -> None:
+    src = f"{remote}:{DRIVE_BASE}/{run_name}/{ckpt_file}"
     dst = LOCAL_BASE / run_name
     dst.mkdir(parents=True, exist_ok=True)
 
@@ -85,14 +94,15 @@ def download_run(remote: str, run_name: str) -> None:
     )
     if result.returncode != 0:
         print(f"Error: rclone copy failed (exit code {result.returncode})")
+        print(f"Tip: list available checkpoints with --run {run_name} --list-ckpts")
         sys.exit(1)
 
-    ckpt = dst / "ckpt_last.pt"
+    ckpt = dst / ckpt_file
     if ckpt.exists():
         size_mb = ckpt.stat().st_size / 1e6
         print(f"Downloaded: {ckpt} ({size_mb:.1f} MB)")
     else:
-        print(f"Warning: ckpt_last.pt not found in {dst}")
+        print(f"Warning: {ckpt_file} not found in {dst}")
         print("Available files:")
         for f in sorted(dst.iterdir()):
             print(f"  {f.name}")
@@ -121,12 +131,20 @@ def main() -> None:
         help=f"Run name to download (default: {DEFAULT_RUN})",
     )
     parser.add_argument(
+        "--ckpt", default="ckpt_last.pt",
+        help="Which checkpoint file to fetch, e.g. ckpt_000750.pt (default: ckpt_last.pt)",
+    )
+    parser.add_argument(
         "--all", action="store_true",
         help="Download all checkpoint runs",
     )
     parser.add_argument(
         "--list", action="store_true",
         help="List available checkpoint runs on Drive",
+    )
+    parser.add_argument(
+        "--list-ckpts", action="store_true",
+        help="List the individual checkpoint files within --run",
     )
     parser.add_argument(
         "--remote", default=DEFAULT_REMOTE,
@@ -139,10 +157,12 @@ def main() -> None:
 
     if args.list:
         list_checkpoints(args.remote)
+    elif args.list_ckpts:
+        list_run_checkpoints(args.remote, args.run)
     elif args.all:
         download_all(args.remote)
     else:
-        download_run(args.remote, args.run)
+        download_run(args.remote, args.run, args.ckpt)
 
 
 if __name__ == "__main__":

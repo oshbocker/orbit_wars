@@ -203,12 +203,18 @@ def decode_actions(
     state: GameState,
     cfg: V2EnvConfig,
     deterministic: bool = True,
+    force_act: bool = False,
 ) -> list[list[float | int]]:
     """Convert model output to Kaggle [planet_id, angle, ships] commands.
 
     Factored action: each owned source picks ONE target (argmax in eval, sample
     in train) and ONE ship-fraction bin from the dedicated fraction head. This
     decouples fleet size from target-selection probability.
+
+    force_act: in deterministic (eval) mode, mask the hold action so every owned
+    planet sends (argmax over targets only). Diagnostic for the train/eval hold
+    mismatch — PPO trains with hold masked, so the hold logit is BC-driven and
+    may be spuriously inflated.
     """
     P = cfg.max_planets
     logits = output.logits[0]            # [P, P+1]
@@ -228,10 +234,18 @@ def decode_actions(
             continue
 
         if deterministic:
-            # Hold allowed in eval: argmax over [hold, targets]
-            action = int(row_logits.argmax().item())
-            if action == 0:
-                continue  # model chose to hold
+            if force_act:
+                # Mask hold: argmax over targets only (must send if any valid).
+                masked = row_logits.clone()
+                masked[0] = float("-inf")
+                if not torch.isfinite(masked).any():
+                    continue
+                action = int(masked.argmax().item())
+            else:
+                # Hold allowed in eval: argmax over [hold, targets]
+                action = int(row_logits.argmax().item())
+                if action == 0:
+                    continue  # model chose to hold
         else:
             train_logits = row_logits.clone()
             train_logits[0] = float("-inf")

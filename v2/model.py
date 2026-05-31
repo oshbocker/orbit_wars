@@ -57,11 +57,18 @@ class OrbitNet(nn.Module):
         ])
         self.final_ln = nn.LayerNorm(d)
 
+        # Optional pairwise (source->target) input features (v3): travel_time,
+        # required-ships-on-arrival, intercept-valid. Concatenated onto the pair
+        # embedding so the target/fraction heads can reason about reachability
+        # and fleet sizing directly. 0 = disabled (identical to the prior model).
+        self.pair_feat_dim = cfg.pair_feat_dim if cfg.use_pair_features else 0
+        pair_in = 2 * d + self.pair_feat_dim
+
         # Pairwise output head
         self.src_proj = nn.Linear(d, d)
         self.tgt_proj = nn.Linear(d, d)
         self.pair_mlp = nn.Sequential(
-            nn.Linear(2 * d, d),
+            nn.Linear(pair_in, d),
             nn.ReLU(),
             nn.Linear(d, 1),
         )
@@ -72,7 +79,7 @@ class OrbitNet(nn.Module):
         # target", so PPO/BC/ExIt can learn fleet size directly.
         self.n_fractions = cfg.n_fractions
         self.frac_mlp = nn.Sequential(
-            nn.Linear(2 * d, d),
+            nn.Linear(pair_in, d),
             nn.ReLU(),
             nn.Linear(d, cfg.n_fractions),
         )
@@ -105,6 +112,7 @@ class OrbitNet(nn.Module):
         planet_mask: torch.Tensor,        # [B, P] bool (True = exists)
         own_mask: torch.Tensor,           # [B, P] bool (True = we own it)
         reachability_mask: torch.Tensor | None = None,  # [B, P, P] bool (True = reachable)
+        pair_features: torch.Tensor | None = None,  # [B, P, P, pair_feat_dim] (v3)
     ) -> OrbitNetOutput:
         B, P, _ = planet_features.shape
 
@@ -129,6 +137,17 @@ class OrbitNet(nn.Module):
         src_exp = src.unsqueeze(2).expand(B, P, P, -1)
         tgt_exp = tgt.unsqueeze(1).expand(B, P, P, -1)
         pair_input = torch.cat([src_exp, tgt_exp], dim=-1)  # [B, P, P, 2d]
+        # Concatenate optional pairwise input features (v3 travel-time etc.).
+        # If enabled but not supplied (e.g. the BC pretrain path, which has no
+        # pair tensor), zero-fill so the layer shape matches — zeros = "no
+        # pairwise info available" rather than crashing.
+        if self.pair_feat_dim > 0:
+            if pair_features is None:
+                pair_features = torch.zeros(
+                    B, P, P, self.pair_feat_dim,
+                    dtype=pair_input.dtype, device=pair_input.device,
+                )
+            pair_input = torch.cat([pair_input, pair_features], dim=-1)  # [B,P,P,2d+pf]
         pair_logits = self.pair_mlp(pair_input).squeeze(-1)  # [B, P, P]
 
         # Ship-fraction logits per (source->target) pair

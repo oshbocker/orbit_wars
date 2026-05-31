@@ -1,0 +1,76 @@
+run_name: v2_pbrs_pfsp
+seed: 42
+device: auto
+save_dir: outputs/checkpoints
+log_dir: outputs/logs
+checkpoint_every: 50
+opponent: apex
+alternate_player_sides: true
+self_play_update_interval: 50
+four_player_prob: 0.0
+
+# PFSP: keep apex permanently in the pool, sampled by win-rate (train more
+# against what we lose to). Replaces the decay-to-self-play scheduler that let
+# the agent forget how to beat apex. Requires num_workers=0 (live opponent models).
+pfsp_enabled: true
+pfsp_apex_min_prob: 0.4
+pfsp_pool_size: 5
+pfsp_snapshot_every: 50
+pfsp_weighting: hard
+
+env:
+  max_planets: 40
+  ship_fractions: [0.25, 0.5, 0.75, 1.0]
+
+model:
+  embed_dim: 128
+  n_heads: 4
+  n_layers: 3
+  ff_dim: 256
+  n_fractions: 4
+
+ppo:
+  rollout_steps: 64
+  num_envs: 4
+  total_updates: 3000
+  epochs: 4
+  minibatch_size: 1024
+  gamma: 0.997
+  gae_lambda: 0.95
+  clip_coef: 0.2
+  ent_coef: 0.01
+  ent_coef_end: 0.0
+  vf_coef: 0.5
+  lr: 0.0001
+  max_grad_norm: 0.5
+  num_workers: 0          # PFSP requires sequential
+  value_symlog: true
+
+# PBRS reward: r = gamma*Phi(s') - Phi(s), Phi keyed on production + planet count
+# (territory you must CAPTURE and HOLD), not banked ships. Closes the hoarding
+# loophole that made dense_relative reward passivity.
+reward:
+  reward_mode: pbrs
+  pbrs_gamma: 0.997       # matches ppo.gamma (policy invariance)
+  pbrs_prod_weight: 1.0
+  pbrs_planet_weight: 0.5
+  pbrs_scale: 0.05
+
+eval:
+  eval_every: 50
+  eval_games: 20
+  eval_opponents: [apex, random]
+
+# BC warm start (reuse the fidelity-fixed cached demos).
+imitation:
+  enabled: true
+  bc_expert: apex
+  bc_games: 300
+  bc_demo_opponent: random
+  bc_epochs: 60
+  bc_lr: 0.001
+  bc_batch_size: 1024
+  coef_start: 0.5
+  coef_decay_updates: 1000
+  distilled_opponent: false   # PFSP manages the opponent pool
+  bc_cache_path: experiments/demos_apex.pkl

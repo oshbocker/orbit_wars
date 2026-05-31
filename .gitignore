@@ -30,3 +30,22 @@ wandb/
 # Large notebook outputs (the tutorial notebook has 51 MB of embedded renders)
 # To strip outputs: jupyter nbconvert --clear-output --inplace notebooks/*.ipynb
 game_replay.html
+# Generated HTML game replays (multi-MB each)
+game_replay*.html
+replay_*.html
+
+# Local Claude Code settings
+.claude/
+
+# Experiment artifacts — keep configs + reports (*.md), drop heavy generated files
+experiments/checkpoints/
+experiments/logs/
+experiments/plots/
+experiments/plots2/
+experiments/*.pkl
+experiments/*.log
+experiments/results.json
+experiments/margin_vs_apex.json
+
+# Research paper PDFs (downloaded locally; keep the .md write-ups)
+rl_research/*.pdf
