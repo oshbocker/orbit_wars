@@ -45,6 +45,13 @@ def seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _pair_tensor(feat: V2Features, device: torch.device):
+    """Single-obs pair-feature tensor [1,P,P,pf], or None if disabled."""
+    if feat.pair_features is None:
+        return None
+    return torch.from_numpy(feat.pair_features).unsqueeze(0).to(device)
+
+
 def _current_ent_coef(cfg: V2Config, update: int) -> float:
     """Entropy coefficient with optional linear annealing.
 
@@ -127,7 +134,11 @@ def _v2_policy_act(
         ids = observation.get("comet_planet_ids")
         if ids is not None:
             comet_ids = [int(x) for x in ids]
-    features = encode_features(state, cfg.env, comet_ids=comet_ids)
+    comets_data = getattr(observation, "comets", None)
+    if comets_data is None and isinstance(observation, dict):
+        comets_data = observation.get("comets")
+    features = encode_features(state, cfg.env, comet_ids=comet_ids,
+                               comets_data=comets_data)
 
     with torch.inference_mode():
         pf = torch.from_numpy(features.planet_features).unsqueeze(0).to(device)
@@ -135,7 +146,7 @@ def _v2_policy_act(
         pm = torch.from_numpy(features.planet_mask).unsqueeze(0).to(device)
         om = torch.from_numpy(features.own_mask).unsqueeze(0).to(device)
         rm = torch.from_numpy(features.reachability_mask).unsqueeze(0).to(device)
-        output = model(pf, gf, pm, om, rm)
+        output = model(pf, gf, pm, om, rm, _pair_tensor(features, device))
 
     return decode_actions(output, features, state, cfg.env, deterministic=deterministic)
 
@@ -303,6 +314,7 @@ def collect_rollout(
     all_pm: list[np.ndarray] = []
     all_om: list[np.ndarray] = []
     all_rm: list[np.ndarray] = []
+    all_pairf: list[np.ndarray] = []
     all_ti: list[np.ndarray] = []
     all_fi: list[np.ndarray] = []
     all_lp: list[float] = []
@@ -333,6 +345,8 @@ def collect_rollout(
             all_pm.append(feat.planet_mask)
             all_om.append(feat.own_mask)
             all_rm.append(feat.reachability_mask)
+            if feat.pair_features is not None:
+                all_pairf.append(feat.pair_features)
 
             # Forward pass
             with torch.inference_mode():
@@ -341,7 +355,7 @@ def collect_rollout(
                 pm_t = torch.from_numpy(feat.planet_mask).unsqueeze(0).to(device)
                 om_t = torch.from_numpy(feat.own_mask).unsqueeze(0).to(device)
                 rm_t = torch.from_numpy(feat.reachability_mask).unsqueeze(0).to(device)
-                output = model(pf_t, gf_t, pm_t, om_t, rm_t)
+                output = model(pf_t, gf_t, pm_t, om_t, rm_t, _pair_tensor(feat, device))
 
                 sampled = sample_actions(output, om_t, deterministic=False)
 
@@ -439,6 +453,8 @@ def collect_rollout(
             returns=torch.tensor(returns, dtype=torch.float32),
             advantages=torch.tensor(advantages, dtype=torch.float32),
             values=torch.tensor(all_values, dtype=torch.float32),
+            pair_features=(torch.from_numpy(np.array(all_pairf, dtype=np.float32))
+                           if all_pairf else None),
         )
 
     stats = {
@@ -465,7 +481,7 @@ def _bootstrap_values(
             pm_t = torch.from_numpy(feat.planet_mask).unsqueeze(0).to(device)
             om_t = torch.from_numpy(feat.own_mask).unsqueeze(0).to(device)
             rm_t = torch.from_numpy(feat.reachability_mask).unsqueeze(0).to(device)
-            output = model(pf_t, gf_t, pm_t, om_t, rm_t)
+            output = model(pf_t, gf_t, pm_t, om_t, rm_t, _pair_tensor(feat, device))
         values.append(float(output.value[0].cpu()))
     return values
 
@@ -556,13 +572,43 @@ def main() -> None:
     # Set up text log file (append mode so resume doesn't overwrite)
     log_dir = Path(cfg.log_dir) / cfg.run_name
     log_dir.mkdir(parents=True, exist_ok=True)
-    _log_file = open(log_dir / "train.log", "a")
+    _log_path = log_dir / "train.log"
+    _log_state = {"f": open(_log_path, "a"), "n": 0}
 
     def log(msg: str) -> None:
-        """Print to stdout and append to train.log."""
+        """Print to stdout and append to train.log.
+
+        On Google Drive (Colab) the FUSE mount only reliably syncs a file on
+        close(), so flush()/fsync() alone can leave the synced copy stale. We
+        close-and-reopen every few writes to force the data through to Drive —
+        this is what keeps train.log complete across Colab session resumes.
+        """
+        import os as _os
         print(msg)
-        _log_file.write(msg + "\n")
-        _log_file.flush()
+        f = _log_state["f"]
+        f.write(msg + "\n")
+        f.flush()
+        try:
+            _os.fsync(f.fileno())
+        except (OSError, ValueError):
+            pass
+        _log_state["n"] += 1
+        if _log_state["n"] % 10 == 0:  # periodic close/reopen -> Drive sync
+            f.close()
+            _log_state["f"] = open(_log_path, "a")
+
+    # Resume-safe, Drive-synced eval history (append + close each call, so the
+    # full eval curve survives Colab session restarts and is directly plottable).
+    _eval_csv = log_dir / "eval_history.csv"
+    if not _eval_csv.exists():
+        with open(_eval_csv, "w") as ef:
+            ef.write("update,opponent,win_rate,loss_rate,tie_rate,n_games\n")
+
+    def log_eval_row(update: int, results) -> None:
+        with open(_eval_csv, "a") as ef:
+            for r in results:
+                ef.write(f"{update},{r.opponent_name},{r.win_rate},"
+                         f"{r.loss_rate},{r.tie_rate},{r.n_games}\n")
 
     log(f"V2 Config: {cfg.run_name}, device={device}, updates={cfg.ppo.total_updates}")
     log(f"  envs={cfg.ppo.num_envs}, rollout_steps={cfg.ppo.rollout_steps}, "
@@ -701,14 +747,14 @@ def main() -> None:
 
     if cfg.ppo.num_workers > 0:
         _train_parallel(cfg, model, optimizer, logger, save_dir, device, log,
-                        start_update, demo_buffer)
+                        start_update, demo_buffer, log_eval_row)
     else:
         _train_sequential(cfg, model, optimizer, logger, save_dir, device, log,
                           envs, features_per_env, next_seed, scheduler,
-                          sp_opponent, start_update, demo_buffer)
+                          sp_opponent, start_update, demo_buffer, log_eval_row)
 
     logger.close()
-    _log_file.close()
+    _log_state["f"].close()
 
 
 def _train_sequential(
@@ -726,6 +772,7 @@ def _train_sequential(
     sp_opponent: V2SelfPlayOpponent,
     start_update: int,
     demo_buffer: object | None = None,
+    log_eval_row: Any = None,
 ) -> None:
     """Original sequential training loop."""
     t_start = time.time()
@@ -788,6 +835,8 @@ def _train_sequential(
             log(f"\n  Running eval ({cfg.eval.eval_games} games)...")
             eval_results = run_periodic_eval(model, cfg, device)
             logger.log_eval(update, eval_results)
+            if log_eval_row is not None:
+                log_eval_row(update, eval_results)
             for r in eval_results:
                 log(f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
                     f"T={r.tie_rate:.0%} (n={r.n_games})")
@@ -812,6 +861,7 @@ def _train_parallel(
     log: Any,
     start_update: int,
     demo_buffer: object | None = None,
+    log_eval_row: Any = None,
 ) -> None:
     """Parallel training loop using subprocess workers."""
     from .parallel import ParallelRolloutCollector
@@ -872,6 +922,8 @@ def _train_parallel(
                 log(f"\n  Running eval ({cfg.eval.eval_games} games)...")
                 eval_results = run_periodic_eval(model, cfg, device)
                 logger.log_eval(update, eval_results)
+                if log_eval_row is not None:
+                    log_eval_row(update, eval_results)
                 for r in eval_results:
                     log(f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
                         f"T={r.tie_rate:.0%} (n={r.n_games})")

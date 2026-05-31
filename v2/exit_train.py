@@ -269,12 +269,25 @@ def main() -> None:
 
     log_dir = Path(cfg.log_dir) / cfg.run_name
     log_dir.mkdir(parents=True, exist_ok=True)
-    logf = open(log_dir / "train.log", "a")
+    _log_path = log_dir / "train.log"
+    _log_state = {"f": open(_log_path, "a"), "n": 0}
 
     def log(msg: str) -> None:
+        # Close-and-reopen periodically so the Google Drive FUSE mount (Colab)
+        # actually syncs train.log — flush()/fsync() alone can leave it stale.
+        import os as _os
         print(msg)
-        logf.write(msg + "\n")
-        logf.flush()
+        f = _log_state["f"]
+        f.write(msg + "\n")
+        f.flush()
+        try:
+            _os.fsync(f.fileno())
+        except (OSError, ValueError):
+            pass
+        _log_state["n"] += 1
+        if _log_state["n"] % 10 == 0:
+            f.close()
+            _log_state["f"] = open(_log_path, "a")
 
     model = OrbitNet(cfg.model).to(device)
     n_params = sum(p.numel() for p in model.parameters())
@@ -355,7 +368,7 @@ def main() -> None:
 
     log(f"\nExIt complete. Total time: {time.time() - t_start:.0f}s")
     logger.close()
-    logf.close()
+    _log_state["f"].close()
 
 
 if __name__ == "__main__":

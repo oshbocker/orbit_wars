@@ -34,6 +34,7 @@ class V2TransitionBatch:
     returns: torch.Tensor            # [N]
     advantages: torch.Tensor         # [N]
     values: torch.Tensor             # [N]
+    pair_features: torch.Tensor | None = None  # [N, P, P, pf] (v3; None if disabled)
 
 
 def v2_ppo_update(
@@ -65,6 +66,7 @@ def v2_ppo_update(
     rm = batch.reachability_mask.to(device).bool()
     ti = batch.target_indices.to(device)
     fi = batch.frac_indices.to(device)
+    pairf = batch.pair_features.to(device) if batch.pair_features is not None else None
     old_log_prob = batch.log_prob.to(device)
     returns = batch.returns.to(device)
     advantages = batch.advantages.to(device)
@@ -83,7 +85,8 @@ def v2_ppo_update(
         for start in range(0, N, minibatch_size):
             idx = order[start:start + minibatch_size]
 
-            output = model(pf[idx], gf[idx], pm[idx], om[idx], rm[idx])
+            output = model(pf[idx], gf[idx], pm[idx], om[idx], rm[idx],
+                           pairf[idx] if pairf is not None else None)
 
             new_log_prob, entropy = action_log_prob_and_entropy(
                 output, om[idx], ti[idx], fi[idx],

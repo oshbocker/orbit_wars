@@ -17,6 +17,17 @@ class V2EnvConfig:
     # Discrete ship-fraction bins for the factored fraction head (decoupled from
     # target selection). len(ship_fractions) must equal model.n_fractions.
     ship_fractions: list[float] = field(default_factory=lambda: [0.25, 0.5, 0.75, 1.0])
+    # ── v3 Tier-1 feature flags (default off → identical to the existing agent) ──
+    # Pairwise (source->target) features: travel_time, required-ships-on-arrival,
+    # intercept-valid. Feeds OrbitNet's pair head so the fraction head can size
+    # fleets correctly. Adds a [P,P,pair_feat_dim] tensor to V2Features.
+    use_pair_features: bool = False
+    pair_feat_dim: int = 3
+    # Comet targeting: predict comet future positions from their known paths,
+    # include comets as viable targets in the reachability mask, and add comet
+    # planet features (is_comet, steps_to_expiry). Adds 2 dims to planet features
+    # (so set model.planet_feat_dim=24 when enabled).
+    comet_targeting: bool = False
     # Reachability viability: a target is attackable if src.ships >=
     # takeover_margin * (effective_garrison + 1). 1.0 = "capturable by sending
     # 100%" (matches the submission agent); the old 2.0 ("capturable with 50%")
@@ -33,6 +44,10 @@ class V2ModelConfig:
     planet_feat_dim: int = 22
     global_feat_dim: int = 8
     n_fractions: int = 4  # number of discrete ship-fraction bins (factored fraction head)
+    # v3: must mirror env.use_pair_features / env.pair_feat_dim (the model needs
+    # them at construction; load_v2_config syncs them from the env section).
+    use_pair_features: bool = False
+    pair_feat_dim: int = 3
 
 
 @dataclass(slots=True)
@@ -149,6 +164,13 @@ class V2Config:
     imitation: V2ImitationConfig = field(default_factory=V2ImitationConfig)
     exit: V2ExItConfig = field(default_factory=V2ExItConfig)
 
+    def __post_init__(self) -> None:
+        # OrbitNet reads pair-feature flags off cfg.model, but configs set them
+        # in the env section — keep them in sync so any V2Config (constructed or
+        # loaded) builds a model matching its features.
+        self.model.use_pair_features = self.env.use_pair_features
+        self.model.pair_feat_dim = self.env.pair_feat_dim
+
 
 def load_v2_config(path: str | Path) -> V2Config:
     config_path = Path(path)
@@ -169,6 +191,9 @@ def v2_config_from_dict(data: dict[str, Any]) -> V2Config:
     _update_dataclass(cfg.eval, data.get("eval", {}))
     _update_dataclass(cfg.imitation, data.get("imitation", {}))
     _update_dataclass(cfg.exit, data.get("exit", {}))
+    # Sync v3 pair-feature flags env -> model (model needs them at construction).
+    cfg.model.use_pair_features = cfg.env.use_pair_features
+    cfg.model.pair_feat_dim = cfg.env.pair_feat_dim
     return cfg
 
 

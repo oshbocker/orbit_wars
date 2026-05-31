@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from src.features import BOARD_SIZE, SUN_X, SUN_Y, fleet_speed, passes_through_sun
+from src.features import BOARD_SIZE, SUN_X, SUN_Y, fleet_speed, intercept_pos, passes_through_sun
 from src.game_types import GameState, PlanetState
 
 from .config import V2EnvConfig
@@ -14,6 +14,10 @@ from .state import IncomingFleetInfo, compute_incoming_fleets
 
 PLANET_FEAT_DIM = 22
 GLOBAL_FEAT_DIM = 8
+
+# Normalization constants for pairwise features.
+_MAX_ETA = 100.0   # travel times are clipped/normalized against this
+_SHIP_LOG = 7.0    # log1p ship-count normalizer (matches planet features)
 
 
 @dataclass
@@ -25,17 +29,75 @@ class V2Features:
     reachability_mask: np.ndarray  # [max_planets, max_planets] bool — can fleet from i reach j
     planet_ids: list[int]          # planet_id per slot (-1 if empty)
     planet_states: list[PlanetState | None]  # state per slot
+    pair_features: np.ndarray | None = None  # [P, P, pair_feat_dim] (v3; None if disabled)
+
+
+def predict_comet_positions(
+    comets_data, step: int,
+) -> dict[int, tuple[float, float, int]]:
+    """Map comet planet_id -> (predicted_x, predicted_y, steps_to_expiry).
+
+    Uses the comet group's precomputed path + current path_index from the
+    observation. The engine advances path_index by 1 each turn and places the
+    comet at paths[i][path_index]; so next turn's position is the next path entry.
+    Returns {} if no usable comet data.
+    """
+    out: dict[int, tuple[float, float, int]] = {}
+    if not comets_data:
+        return out
+    groups = comets_data if isinstance(comets_data, list) else list(comets_data)
+    for group in groups:
+        pids = _g(group, "planet_ids", None)
+        paths = _g(group, "paths", None)
+        path_index = _g(group, "path_index", None)
+        if pids is None or paths is None or path_index is None:
+            continue
+        idx = int(path_index)
+        next_idx = idx + 1  # position the comet will occupy next turn
+        for i, pid in enumerate(pids):
+            if i >= len(paths):
+                continue
+            path = paths[i]
+            n = len(path)
+            steps_left = max(0, n - idx)
+            if 0 <= next_idx < n:
+                px, py = float(path[next_idx][0]), float(path[next_idx][1])
+            elif 0 <= idx < n:
+                px, py = float(path[idx][0]), float(path[idx][1])
+            else:
+                continue
+            out[int(pid)] = (px, py, steps_left)
+    return out
+
+
+def _g(obj, key, default):
+    if hasattr(obj, key):
+        return getattr(obj, key)
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return default
 
 
 def encode_features(
     state: GameState,
     cfg: V2EnvConfig,
     comet_ids: list[int] | None = None,
+    comets_data=None,
 ) -> V2Features:
-    """Encode full game state into V2 feature tensors."""
+    """Encode full game state into V2 feature tensors.
+
+    comets_data: raw obs["comets"] group list. Required for comet_targeting so
+    we can predict comet future positions and make them viable targets.
+    """
     P = cfg.max_planets
     _comet_set: set[int] = set(comet_ids) if comet_ids else set()
     player = state.player
+    feat_dim = PLANET_FEAT_DIM + (2 if cfg.comet_targeting else 0)
+
+    # v3: predicted comet positions {pid: (x, y, steps_to_expiry)} for targeting.
+    comet_pred: dict[int, tuple[float, float, int]] = {}
+    if cfg.comet_targeting and comets_data is not None:
+        comet_pred = predict_comet_positions(comets_data, state.step)
 
     # Compute incoming fleets
     incoming = compute_incoming_fleets(state, player)
@@ -50,7 +112,7 @@ def encode_features(
             enemy_ids.append(f.owner)
 
     # Planet features [P, 22]
-    planet_features = np.zeros((P, PLANET_FEAT_DIM), dtype=np.float32)
+    planet_features = np.zeros((P, feat_dim), dtype=np.float32)
     planet_mask = np.zeros(P, dtype=bool)
     own_mask = np.zeros(P, dtype=bool)
     planet_ids: list[int] = [-1] * P
@@ -82,7 +144,7 @@ def encode_features(
         # Incoming fleet info
         info = incoming.get(planet.id, IncomingFleetInfo())
 
-        planet_features[slot] = [
+        base = [
             1.0,                                                    # 0: exists
             1.0 if planet.is_orbiting else 0.0,                     # 1: orbiting
             own[0], own[1], own[2], own[3],                         # 2-5: ownership one-hot
@@ -103,12 +165,22 @@ def encode_features(
             info.eta[2] / 100.0 if info.ships[2] > 0 else 0.0,     # 20: enemy2 fleet ETA
             info.eta[3] / 100.0 if info.ships[3] > 0 else 0.0,     # 21: enemy3 fleet ETA
         ]
+        if cfg.comet_targeting:
+            is_comet = planet.id in _comet_set
+            steps_left = comet_pred.get(planet.id, (0.0, 0.0, 0))[2] if is_comet else 0
+            base.append(1.0 if is_comet else 0.0)                  # 22: is_comet
+            base.append(min(steps_left, 40) / 40.0)                # 23: steps to expiry
+        planet_features[slot] = base
 
     # Reachability mask [P, P]: True if sending from i to j is a valid action.
     # Combines: (1) sun avoidance, (2) takeover viability, (3) arrival time.
     # Own planets (reinforcement) bypass viability — always valid if reachable.
     reachability_mask = np.zeros((P, P), dtype=bool)
     steps_remaining = max(0, 498 - state.step)
+    # v3: pair feature tensor [P, P, pair_feat_dim] = (travel_time, required_ships, valid)
+    pair_features = None
+    if cfg.use_pair_features:
+        pair_features = np.zeros((P, P, cfg.pair_feat_dim), dtype=np.float32)
 
     for i in range(P):
         src = planet_states[i]
@@ -126,39 +198,48 @@ def encode_features(
             if tgt is None:
                 continue
 
-            # Skip comets as targets (unpredictable elliptical orbits)
-            if tgt.id in _comet_set:
-                continue
+            is_comet = tgt.id in _comet_set
 
-            # (1) Sun check
-            if passes_through_sun(src.x, src.y, tgt.x, tgt.y):
+            # Target aim point: comets/orbiting use predicted future position.
+            if is_comet:
+                if not cfg.comet_targeting or tgt.id not in comet_pred:
+                    continue  # comets only targetable when comet_targeting is on
+                tx, ty, _ = comet_pred[tgt.id]
+            else:
+                tx, ty = tgt.x, tgt.y
+
+            # (1) Sun check (against the aim point)
+            if passes_through_sun(src.x, src.y, tx, ty):
                 continue
 
             # (2) Arrival time: fleet must arrive before game ends
-            dist = math.hypot(src.x - tgt.x, src.y - tgt.y)
+            dist = math.hypot(src.x - tx, src.y - ty)
             eta = dist / speed if speed > 0 else 999.0
             if eta > steps_remaining:
                 continue
 
-            # Own planets: reinforcement is always valid
-            if tgt.owner == player:
-                reachability_mask[i, j] = True
-                continue
-
-            # (3) Takeover viability for enemy/neutral targets
-            # Garrison growth: enemy planets produce, neutrals don't
+            # Garrison growth on arrival: enemy/comet planets produce, neutrals don't
             prod_growth = tgt.production * math.ceil(eta) if tgt.owner >= 0 else 0.0
-
-            # Account for friendly fleets already en route to this target
             tgt_info = incoming.get(tgt.id, IncomingFleetInfo())
-            friendly_incoming = tgt_info.ships[0]  # own team's incoming ships
-
-            # Viability: attackable if we can capture at the configured margin.
-            # takeover_margin=1.0 means "capturable by sending 100%" (matches the
-            # submission agent); higher values demand more headroom.
+            friendly_incoming = tgt_info.ships[0]
             effective_garrison = tgt.ships + prod_growth - friendly_incoming
-            if src.ships >= cfg.takeover_margin * (effective_garrison + 1):
+            required_ships = max(1.0, effective_garrison + 1.0)
+
+            # Determine reachability/viability
+            if tgt.owner == player:
+                reachable = True  # reinforcement always valid if it arrives
+            else:
+                reachable = src.ships >= cfg.takeover_margin * (effective_garrison + 1)
+            if reachable:
                 reachability_mask[i, j] = True
+
+            # (v3) Pair features — recorded for every arrival-feasible pair so the
+            # network sees travel cost + required force even for marginal targets.
+            if pair_features is not None:
+                pair_features[i, j, 0] = min(eta, _MAX_ETA) / _MAX_ETA
+                pair_features[i, j, 1] = math.log1p(required_ships) / _SHIP_LOG
+                if cfg.pair_feat_dim > 2:
+                    pair_features[i, j, 2] = 1.0 if reachable else 0.0
 
     # Global features [8]
     my_ships = 0.0
@@ -210,4 +291,5 @@ def encode_features(
         reachability_mask=reachability_mask,
         planet_ids=planet_ids,
         planet_states=planet_states,
+        pair_features=pair_features,
     )

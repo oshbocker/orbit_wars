@@ -87,7 +87,8 @@ class V2OrbitWarsEnv:
         self.prev_state = None
 
         comet_ids = _get_comet_ids(self.last_obs)
-        return encode_features(state, self.cfg.env, comet_ids=comet_ids)
+        return encode_features(state, self.cfg.env, comet_ids=comet_ids,
+                               comets_data=_get_comets_data(self.last_obs))
 
     def step(self, player_moves: list[list[float | int]]) -> V2StepResult:
         """Step environment with player's moves."""
@@ -140,7 +141,8 @@ class V2OrbitWarsEnv:
         )
 
         comet_ids = _get_comet_ids(self.last_obs)
-        features = encode_features(new_state, self.cfg.env, comet_ids=comet_ids)
+        features = encode_features(new_state, self.cfg.env, comet_ids=comet_ids,
+                                   comets_data=_get_comets_data(self.last_obs))
         info = {
             "learner_player": self.learner_player,
             "num_players": self.num_players,
@@ -175,6 +177,14 @@ def _terminal_reward_multi(states: list[Any], learner_player: int) -> float:
     if pr > 0.0 and any(o > 0.0 for o in others):
         return 0.0  # tie
     return pr
+
+
+def _get_comets_data(obs: Any) -> Any:
+    if hasattr(obs, "comets"):
+        return getattr(obs, "comets", None)
+    if isinstance(obs, dict):
+        return obs.get("comets")
+    return None
 
 
 def _get_comet_ids(obs: Any) -> list[int] | None:
