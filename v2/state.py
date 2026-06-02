@@ -127,14 +127,17 @@ def _segment_circle_hit(
 def compute_incoming_fleets(
     state: GameState,
     player: int,
+    enemy_order: list[int] | None = None,
 ) -> dict[int, IncomingFleetInfo]:
     """For each planet, aggregate all incoming fleets by relative team.
 
     Team 0 = player's own fleets
-    Teams 1-3 = enemies (ordered by first encounter)
+    Teams 1-3 = enemies. If `enemy_order` is given (v4 Tier 2.5 stable ordering),
+    enemies map to slots by that canonical list so the team indices match the
+    planet ownership one-hot; otherwise slots are assigned by first encounter.
     """
     result: dict[int, IncomingFleetInfo] = {}
-    enemy_ids: list[int] = []
+    enemy_ids: list[int] = list(enemy_order) if enemy_order else []
 
     for fleet in state.fleets:
         target, eta = predict_fleet_destination(

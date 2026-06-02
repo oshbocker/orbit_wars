@@ -20,7 +20,7 @@ from .config import V2Config, load_v2_config
 from .env import V2OrbitWarsEnv
 from .features import V2Features, encode_features
 from .model import OrbitNet, OrbitNetOutput
-from .ppo import V2TransitionBatch, v2_ppo_update
+from .ppo import V2TransitionBatch, ValueNorm, v2_aux_phase, v2_ppo_update
 
 
 def parse_args() -> argparse.Namespace:
@@ -304,6 +304,7 @@ def collect_rollout(
     device: torch.device,
     next_seed: int,
     scheduler: V2MixedScheduler | None = None,
+    value_norm: object | None = None,
 ) -> tuple[V2TransitionBatch, list[V2Features], int, dict[str, float]]:
     """Collect rollout: ONE forward pass per env per step."""
     P = cfg.env.max_planets
@@ -406,6 +407,8 @@ def collect_rollout(
     import math as _math
 
     def _real(v: float) -> float:
+        if value_norm is not None:
+            return float(value_norm.denormalize(v))
         if not cfg.ppo.value_symlog:
             return v
         return _math.copysign(_math.expm1(abs(v)), v)
@@ -625,6 +628,18 @@ def main() -> None:
     save_dir = Path(cfg.save_dir)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.ppo.lr)
 
+    # Tier 0.3: PopArt/ValueNorm running return normalizer (sequential only).
+    value_norm = None
+    if cfg.ppo.popart:
+        if cfg.ppo.value_symlog:
+            raise ValueError("ppo.popart and ppo.value_symlog are mutually exclusive — pick one.")
+        if cfg.ppo.num_workers > 0:
+            raise ValueError("ppo.popart currently requires num_workers=0 (sequential).")
+        value_norm = ValueNorm(cfg.ppo.popart_beta)
+        log(f"  PopArt value normalization on (beta={cfg.ppo.popart_beta})")
+    if cfg.ppo.aux_epochs > 0 and not cfg.model.aux_value_head:
+        log("  WARNING: ppo.aux_epochs>0 but model.aux_value_head=false — aux phase is a no-op.")
+
     # ── Imitation learning phases ──────────────────────────────────────────
     demo_buffer = None
 
@@ -728,7 +743,10 @@ def main() -> None:
         # Re-collect demos if imitation is active at resume point
         if cfg.imitation.enabled and demo_buffer is None:
             decay_frac = start_update / max(cfg.imitation.coef_decay_updates, 1)
-            coef_at_resume = cfg.imitation.coef_start * max(0.0, 1.0 - decay_frac)
+            coef_at_resume = max(
+                cfg.imitation.coef_floor,
+                cfg.imitation.coef_start * max(0.0, 1.0 - decay_frac),
+            )
             if coef_at_resume > 0.0:
                 log(f"  Loading demos for imitation (coef={coef_at_resume:.3f})...")
                 demo_buffer = _load_or_collect_demos(cfg, log)
@@ -751,7 +769,8 @@ def main() -> None:
     else:
         _train_sequential(cfg, model, optimizer, logger, save_dir, device, log,
                           envs, features_per_env, next_seed, scheduler,
-                          sp_opponent, start_update, demo_buffer, log_eval_row)
+                          sp_opponent, start_update, demo_buffer, log_eval_row,
+                          value_norm)
 
     logger.close()
     _log_state["f"].close()
@@ -773,6 +792,7 @@ def _train_sequential(
     start_update: int,
     demo_buffer: object | None = None,
     log_eval_row: Any = None,
+    value_norm: object | None = None,
 ) -> None:
     """Original sequential training loop."""
     t_start = time.time()
@@ -785,14 +805,17 @@ def _train_sequential(
 
         batch, features_per_env, next_seed, stats = collect_rollout(
             envs, features_per_env, model, cfg, device, next_seed,
-            scheduler=scheduler,
+            scheduler=scheduler, value_norm=value_norm,
         )
 
         # Compute imitation coefficient (linear decay)
         imitation_coef = 0.0
         if cfg.imitation.enabled and demo_buffer is not None:
             decay_frac = update / max(cfg.imitation.coef_decay_updates, 1)
-            imitation_coef = cfg.imitation.coef_start * max(0.0, 1.0 - decay_frac)
+            imitation_coef = max(
+                cfg.imitation.coef_floor,  # Tier 0.1: persistent anchor (never decays to 0)
+                cfg.imitation.coef_start * max(0.0, 1.0 - decay_frac),
+            )
 
         metrics = v2_ppo_update(
             model, optimizer, batch,
@@ -806,7 +829,22 @@ def _train_sequential(
             demo_buffer=demo_buffer,
             imitation_coef=imitation_coef,
             value_symlog=cfg.ppo.value_symlog,
+            value_norm=value_norm,
         )
+
+        # Tier 1.1: PPG auxiliary value phase (no-op unless aux_epochs>0 and the
+        # model has an aux value head). Runs every aux_every updates.
+        if cfg.ppo.aux_epochs > 0 and update % max(1, cfg.ppo.aux_every) == 0:
+            aux_metrics = v2_aux_phase(
+                model, optimizer, batch,
+                aux_epochs=cfg.ppo.aux_epochs,
+                beta_clone=cfg.ppo.aux_beta_clone,
+                minibatch_size=cfg.ppo.minibatch_size,
+                device=device,
+                value_symlog=cfg.ppo.value_symlog,
+                value_norm=value_norm,
+            )
+            metrics.update(aux_metrics)
 
         # Sync self-play opponent periodically
         if update % cfg.self_play_update_interval == 0:
@@ -884,7 +922,10 @@ def _train_parallel(
             imitation_coef = 0.0
             if cfg.imitation.enabled and demo_buffer is not None:
                 decay_frac = update / max(cfg.imitation.coef_decay_updates, 1)
-                imitation_coef = cfg.imitation.coef_start * max(0.0, 1.0 - decay_frac)
+                imitation_coef = max(
+                cfg.imitation.coef_floor,  # Tier 0.1: persistent anchor (never decays to 0)
+                cfg.imitation.coef_start * max(0.0, 1.0 - decay_frac),
+            )
 
             metrics = v2_ppo_update(
                 model, optimizer, batch,

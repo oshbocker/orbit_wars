@@ -1,11 +1,17 @@
 """Run a trained checkpoint vs an opponent and export game_replay.html.
 
-Supports both V1 (TransformerPolicy) and V2 (OrbitNet) checkpoints.
+Supports V1 (TransformerPolicy), V2 (OrbitNet) and V3 (OrbitNet + pair/comet
+features) checkpoints. V3 uses the same OrbitNet code path as V2 — it just needs
+the v3 config so feature dims (24-dim planets, pair features) match the weights.
 
 Usage:
     # V2 checkpoint vs apex (default)
     uv run python scripts/replay.py \
         --checkpoint outputs/checkpoints/v2_default/ckpt_last.pt
+
+    # V3 checkpoint vs apex (defaults to configs/v3_features.yaml)
+    uv run python scripts/replay.py \
+        --checkpoint outputs/checkpoints/v3_a100/ckpt_last.pt --v3
 
     # V1 checkpoint vs apex
     uv run python scripts/replay.py \
@@ -45,6 +51,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--v1", action="store_true",
         help="Use V1 TransformerPolicy instead of V2 OrbitNet",
+    )
+    parser.add_argument(
+        "--v3", action="store_true",
+        help="V3 OrbitNet checkpoint (defaults config to configs/v3_features.yaml)",
     )
     parser.add_argument(
         "--opponent", type=str, default="apex",
@@ -94,7 +104,8 @@ def load_v1_agent(ckpt_path: Path, config_path: str, device: torch.device):
     return make_eval_agent(policy, cfg, device)
 
 
-def load_v2_agent(ckpt_path: Path, config_path: str, device: torch.device):
+def load_v2_agent(ckpt_path: Path, config_path: str, device: torch.device,
+                  label: str = "V2"):
     from v2.config import load_v2_config
     from v2.model import OrbitNet
     from v2.train import make_v2_eval_agent
@@ -105,7 +116,7 @@ def load_v2_agent(ckpt_path: Path, config_path: str, device: torch.device):
     model.load_state_dict(ckpt["model"])
     model.eval()
     update = ckpt.get("update", "?")
-    print(f"Loaded V2 checkpoint: {ckpt_path} (update {update})")
+    print(f"Loaded {label} checkpoint: {ckpt_path} (update {update})")
     return make_v2_eval_agent(model, cfg, device)
 
 
@@ -122,6 +133,10 @@ def main() -> None:
         config_path = args.config or "configs/transformer_mixed.yaml"
         rl_agent = load_v1_agent(ckpt_path, config_path, device)
         agent_label = "V1 RL"
+    elif args.v3:
+        config_path = args.config or "configs/v3_features.yaml"
+        rl_agent = load_v2_agent(ckpt_path, config_path, device, label="V3")
+        agent_label = "V3 RL"
     else:
         config_path = args.config or "configs/v2_default.yaml"
         rl_agent = load_v2_agent(ckpt_path, config_path, device)

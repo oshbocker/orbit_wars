@@ -149,6 +149,30 @@ def action_log_prob_and_entropy(
     return log_probs, entropies
 
 
+def _ship_count(src, tgt, frac_bin: int, cfg: V2EnvConfig) -> int:
+    """Ships to send for a chosen (source, target, fraction-bin).
+
+    Default: bin is a fraction of the source garrison (v2/v3 behavior).
+    v4 Tier 2.1 (requirement_relative_fractions): the bin is a MULTIPLE of the
+    estimated capture cost (required_ships = garrison + production-on-arrival + 1),
+    capped at the source garrison — so the policy can actually size fleets to win
+    a fight instead of under-committing. Fixes the "ineffective attacks" passivity.
+    """
+    if not cfg.requirement_relative_fractions:
+        fracs = cfg.ship_fractions
+        b = max(0, min(len(fracs) - 1, frac_bin))
+        return int(math.floor(src.ships * fracs[b]))
+
+    mults = cfg.req_fraction_multipliers
+    b = max(0, min(len(mults) - 1, frac_bin))
+    dist = math.hypot(src.x - tgt.x, src.y - tgt.y)
+    speed = fleet_speed(src.ships)  # reference (upper-bound) speed; src.ships >= sent
+    eta = dist / speed if speed > 0 else 999.0
+    prod_growth = tgt.production * math.ceil(eta) if tgt.owner >= 0 else 0.0
+    required = max(1.0, tgt.ships + prod_growth + 1.0)
+    return int(min(src.ships, math.ceil(required * mults[b])))
+
+
 def decode_sampled_actions(
     sampled: V2SampledAction,
     output: OrbitNetOutput,
@@ -180,9 +204,7 @@ def decode_sampled_actions(
 
         # Ship fraction: dedicated fraction head (decoupled from target selection)
         frac_bin = int(sampled.frac_indices[0, i].item())
-        frac_bin = max(0, min(len(cfg.ship_fractions) - 1, frac_bin))
-        frac = cfg.ship_fractions[frac_bin]
-        ships = int(math.floor(src.ships * frac))
+        ships = _ship_count(src, tgt, frac_bin, cfg)
         if ships < cfg.min_ships_to_send:
             continue
 
@@ -264,8 +286,7 @@ def decode_actions(
             fbin = int(frac_row.argmax().item())
         else:
             fbin = int(Categorical(logits=frac_row).sample().item())
-        fbin = max(0, min(len(fracs) - 1, fbin))
-        ships = int(math.floor(src.ships * fracs[fbin]))
+        ships = _ship_count(src, tgt, fbin, cfg)
         if ships < cfg.min_ships_to_send:
             continue
 

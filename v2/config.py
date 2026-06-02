@@ -33,6 +33,32 @@ class V2EnvConfig:
     # 100%" (matches the submission agent); the old 2.0 ("capturable with 50%")
     # was over-conservative and masked many of apex's real targets.
     takeover_margin: float = 1.0
+    # ── v4 ceiling flags (default off → byte-identical to v2/v3) ──────────────
+    # Tier 2.2: rotate/reflect the board to a canonical frame (own home at a
+    # fixed angle + fixed chirality) so symmetric starts collapse to one case.
+    canonical_rotation: bool = False
+    # Tier 2.3: per-planet timeline features — defense margin (garrison +
+    # own_incoming − enemy_incoming), time-to-flip, and reaction-time race
+    # (my_t vs enemy_t). Adds 3 planet dims.
+    timeline_features: bool = False
+    # Tier 2.4: flag planets whose garrison was just depleted by a launch
+    # (their id appears as a recent fleet from_planet_id). Adds 1 planet dim.
+    depletion_feature: bool = False
+    # Tier 2.5: order the relative enemy slots by a STABLE key (total ships,
+    # desc) instead of first-encounter order, so "enemy1" = biggest threat.
+    stable_enemy_order: bool = False
+    # Tier 1.3: richer global features — centrality, best-single-enemy framing,
+    # in-flight ship share. Adds dims to the global vector (set
+    # model.global_feat_dim to match: 8 + 4 = 12).
+    rich_global_features: bool = False
+    # Tier 2.1: size fraction bins relative to the computed required_ships
+    # (capture cost) instead of as a fraction of the source garrison. Fixes the
+    # "ineffective attacks" passivity. When on, the n_fractions bins are read as
+    # MULTIPLES of required_ships from req_fraction_multipliers (len must match
+    # model.n_fractions), capped at the source garrison.
+    requirement_relative_fractions: bool = False
+    req_fraction_multipliers: list[float] = field(
+        default_factory=lambda: [1.0, 1.5, 2.0, 3.0])
 
 
 @dataclass(slots=True)
@@ -48,6 +74,14 @@ class V2ModelConfig:
     # them at construction; load_v2_config syncs them from the env section).
     use_pair_features: bool = False
     pair_feat_dim: int = 3
+    # ── v4 ceiling flags (default off) ──
+    # Tier 1.1: a second value head on the shared trunk for the PPG auxiliary
+    # value phase (lets the critic train hard without dragging the actor trunk).
+    aux_value_head: bool = False
+    # Tier 1.2 / 0.4: per-(source→target) shot-success head predicting
+    # P(we still own the target N turns after arrival). Trained as an auxiliary
+    # loss and reused as a rejection filter at decode time (the "shot validator").
+    shot_success_head: bool = False
 
 
 @dataclass(slots=True)
@@ -67,6 +101,22 @@ class V2PPOConfig:
     num_workers: int = 0  # 0 = sequential (backward-compat), >0 = parallel subprocess workers
     ent_coef_end: float = -1.0  # <0 = constant ent_coef; >=0 = linearly anneal ent_coef -> ent_coef_end
     value_symlog: bool = False  # symlog-transform value targets (scale-robust value learning; DreamerV3)
+    # ── v4 ceiling flags (default off) ──
+    # Tier 0.3: PopArt-style running normalization of value targets (handles the
+    # DRIFTING return scale that symlog doesn't). Use INSTEAD of value_symlog.
+    popart: bool = False
+    popart_beta: float = 3e-4   # EMA rate for the running return mean/var
+    # Tier 1.1: PPG auxiliary value phase. After the policy phase, run aux_epochs
+    # of value-only optimization on the same buffer, with a policy-clone KL term
+    # (weight aux_beta_clone) freezing the action distribution. 0 = disabled.
+    aux_epochs: int = 0
+    aux_beta_clone: float = 1.0
+    aux_every: int = 1          # run the aux phase every N updates
+    # Tier 1.2: weight on the shot-success auxiliary loss (needs model.shot_success_head).
+    shot_aux_coef: float = 0.0
+    # Tier 3.1: collect rollouts via the batched fast_env instead of the Kaggle
+    # harness (major throughput win; required for affordable long rollouts).
+    use_batched_env: bool = False
 
 
 @dataclass(slots=True)
@@ -107,6 +157,14 @@ class V2ImitationConfig:
     bc_skip_steps: int = 0
     bc_cache_path: str = ""  # if set, pickle-cache demos here and reuse across runs
     bc_match_tolerance_deg: float = 90.0  # angular tolerance for matching an apex launch to a target slot
+    # ── v4 ceiling flags (default off) ──
+    # Tier 0.1: floor the imitation coefficient so the BC/expert anchor never
+    # decays fully to 0. A persistent pull toward a competent reference is what
+    # stops self-play from forgetting how to beat the script (DeepNash lesson).
+    coef_floor: float = 0.0
+    # Tier 3.3: optional path to extra BC/value demonstrations distilled from
+    # top-leaderboard replays (stronger teacher than apex alone).
+    bc_replay_path: str = ""
 
 
 @dataclass(slots=True)
@@ -128,6 +186,14 @@ class V2ExItConfig:
     opponent: str = "apex"
     sample_collect: bool = True      # sample (vs argmax) during self-play collection
     search_workers: int = 0          # >1 = parallelize the (CPU-bound) search across processes
+    # ── v4 ceiling flags (default off) ──
+    # Tier 3.2: score search leaves with OrbitNet's value head instead of the
+    # handcrafted heuristic eval (requires a trustworthy value head — do Tier 1
+    # first). Runs candidate rollouts on the batched fast_env with an in-sim
+    # opponent (two_player_search) so the search reflects real opposition.
+    neural_value_leaves: bool = False
+    use_batched_env: bool = False
+    two_player_search: bool = True
 
 
 @dataclass(slots=True)

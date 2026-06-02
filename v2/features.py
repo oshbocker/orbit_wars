@@ -78,6 +78,42 @@ def _g(obj, key, default):
     return default
 
 
+def _apply_canonical_rotation(
+    planet_features: np.ndarray,
+    planet_mask: np.ndarray,
+    own_mask: np.ndarray,
+    board: float,
+) -> None:
+    """v4 Tier 2.2: rotate (and chirality-flip) the position columns so the
+    player's own centroid sits at a canonical angle. Symmetric starts then map
+    to the same feature layout — collapsing the 4-fold/mirror symmetry the net
+    would otherwise have to learn separately. Only the position columns the net
+    SEES change (x=7, y=8, sin=10, cos=11); the action is a discrete target index
+    whose real launch angle is computed from true positions at decode, so no
+    inversion is needed. Operates in-place. No-op if we own nothing.
+    """
+    exist = planet_mask
+    own = planet_mask & own_mask
+    if not exist.any() or not own.any():
+        return
+    xs = planet_features[:, 7] * board - SUN_X
+    ys = planet_features[:, 8] * board - SUN_Y
+    ox = float(xs[own].mean()); oy = float(ys[own].mean())
+    phi = -math.atan2(oy, ox)
+    c, s = math.cos(phi), math.sin(phi)
+    rx = c * xs - s * ys
+    ry = s * xs + c * ys
+    # Deterministic chirality: keep the bulk of planets on +y.
+    if float(ry[exist].sum()) < 0.0:
+        ry = -ry
+    dist = np.hypot(rx, ry)
+    safe = dist > 0.1
+    planet_features[exist, 7] = (rx[exist] + SUN_X) / board
+    planet_features[exist, 8] = (ry[exist] + SUN_Y) / board
+    planet_features[exist, 10] = np.where(safe, ry / np.maximum(dist, 1e-6), 0.0)[exist]
+    planet_features[exist, 11] = np.where(safe, rx / np.maximum(dist, 1e-6), 0.0)[exist]
+
+
 def encode_features(
     state: GameState,
     cfg: V2EnvConfig,
@@ -92,24 +128,50 @@ def encode_features(
     P = cfg.max_planets
     _comet_set: set[int] = set(comet_ids) if comet_ids else set()
     player = state.player
-    feat_dim = PLANET_FEAT_DIM + (2 if cfg.comet_targeting else 0)
+    # Planet feature width: base + comet(2) + timeline(3) + depletion(1), in that
+    # order. model.planet_feat_dim must match (v4 ceiling = 22+2+3+1 = 28).
+    feat_dim = (PLANET_FEAT_DIM
+                + (2 if cfg.comet_targeting else 0)
+                + (3 if cfg.timeline_features else 0)
+                + (1 if cfg.depletion_feature else 0))
 
     # v3: predicted comet positions {pid: (x, y, steps_to_expiry)} for targeting.
     comet_pred: dict[int, tuple[float, float, int]] = {}
     if cfg.comet_targeting and comets_data is not None:
         comet_pred = predict_comet_positions(comets_data, state.step)
 
-    # Compute incoming fleets
-    incoming = compute_incoming_fleets(state, player)
-
-    # Build relative enemy ID mapping
+    # Build relative enemy ID mapping. v4 Tier 2.5: optionally order enemies by
+    # total ships (desc) so "enemy1" is consistently the biggest threat; else
+    # keep first-encounter order (byte-identical to v2/v3).
     enemy_ids: list[int] = []
-    for p in state.planets:
-        if p.owner >= 0 and p.owner != player and p.owner not in enemy_ids:
-            enemy_ids.append(p.owner)
-    for f in state.fleets:
-        if f.owner >= 0 and f.owner != player and f.owner not in enemy_ids:
-            enemy_ids.append(f.owner)
+    if cfg.stable_enemy_order:
+        totals: dict[int, float] = {}
+        for p in state.planets:
+            if p.owner >= 0 and p.owner != player:
+                totals[p.owner] = totals.get(p.owner, 0.0) + p.ships
+        for f in state.fleets:
+            if f.owner >= 0 and f.owner != player:
+                totals[f.owner] = totals.get(f.owner, 0.0) + f.ships
+        enemy_ids = sorted(totals, key=lambda o: -totals[o])
+    else:
+        for p in state.planets:
+            if p.owner >= 0 and p.owner != player and p.owner not in enemy_ids:
+                enemy_ids.append(p.owner)
+        for f in state.fleets:
+            if f.owner >= 0 and f.owner != player and f.owner not in enemy_ids:
+                enemy_ids.append(f.owner)
+
+    # Compute incoming fleets (consistent team mapping under stable ordering)
+    incoming = compute_incoming_fleets(
+        state, player, enemy_order=enemy_ids if cfg.stable_enemy_order else None)
+
+    # v4 Tier 2.3/2.4 precomputations
+    own_pos = [(p.x, p.y) for p in state.planets
+               if p.owner == player and p.ships > 0]
+    enemy_pos = [(p.x, p.y) for p in state.planets
+                 if p.owner >= 0 and p.owner != player]
+    from_set: set[int] = (
+        {f.from_planet_id for f in state.fleets} if cfg.depletion_feature else set())
 
     # Planet features [P, 22]
     planet_features = np.zeros((P, feat_dim), dtype=np.float32)
@@ -170,6 +232,28 @@ def encode_features(
             steps_left = comet_pred.get(planet.id, (0.0, 0.0, 0))[2] if is_comet else 0
             base.append(1.0 if is_comet else 0.0)                  # 22: is_comet
             base.append(min(steps_left, 40) / 40.0)                # 23: steps to expiry
+
+        # v4 Tier 2.3: timeline features — defense margin, time-to-flip, reaction race.
+        if cfg.timeline_features:
+            own_in = info.ships[0]
+            enemy_in = info.ships[1] + info.ships[2] + info.ships[3]
+            defense_margin = math.tanh((planet.ships + own_in - enemy_in) / 20.0)
+            enemy_etas = [info.eta[t] for t in (1, 2, 3) if info.ships[t] > 0]
+            threatened = enemy_in > (planet.ships + own_in)
+            time_to_flip = (min(enemy_etas) / 100.0) if (threatened and enemy_etas) else 1.0
+            my_d = min((math.hypot(ox - planet.x, oy - planet.y)
+                        for ox, oy in own_pos), default=200.0)
+            en_d = min((math.hypot(ex - planet.x, ey - planet.y)
+                        for ex, ey in enemy_pos), default=200.0)
+            reaction = math.tanh((en_d - my_d) / 30.0)
+            base.append(defense_margin)
+            base.append(time_to_flip)
+            base.append(reaction)
+
+        # v4 Tier 2.4: depletion — planet recently launched a fleet (low garrison).
+        if cfg.depletion_feature:
+            base.append(1.0 if planet.id in from_set else 0.0)
+
         planet_features[slot] = base
 
     # Reachability mask [P, P]: True if sending from i to j is a valid action.
@@ -272,7 +356,7 @@ def encode_features(
     if enemy_prod_totals:
         best_enemy_prod = max(enemy_prod_totals.values())
 
-    global_features = np.array([
+    global_list = [
         state.step / 500.0,                                          # 0: step
         state.angular_velocity / 0.05,                               # 1: angular velocity
         math.log1p(my_ships) / 10.0,                                 # 2: own ships (log)
@@ -281,7 +365,40 @@ def encode_features(
         best_enemy_prod / max(my_prod + best_enemy_prod, 1.0),       # 5: enemy prod fraction
         my_planets / max(cfg.max_planets, 1),                        # 6: own planets fraction
         total_planets / max(cfg.max_planets, 1),                     # 7: total planets fraction
-    ], dtype=np.float32)
+    ]
+
+    # v4 Tier 1.3: richer global features (centrality, best-single-enemy framing,
+    # in-flight share, player count) — the leaderboard-proven value-fn inputs.
+    if cfg.rich_global_features:
+        # Centrality: mean over a player's planets of max(0, 60-dist_center)/60.
+        cen_sum: dict[int, float] = {}
+        cen_cnt: dict[int, float] = {}
+        for p in state.planets:
+            if p.owner < 0:
+                continue
+            d = math.hypot(p.x - SUN_X, p.y - SUN_Y)
+            cen_sum[p.owner] = cen_sum.get(p.owner, 0.0) + max(0.0, 60.0 - d) / 60.0
+            cen_cnt[p.owner] = cen_cnt.get(p.owner, 0.0) + 1.0
+        own_cen = cen_sum.get(player, 0.0) / max(cen_cnt.get(player, 0.0), 1.0)
+        enemy_cen = max(
+            (cen_sum[o] / max(cen_cnt[o], 1.0) for o in cen_sum if o != player),
+            default=0.0,
+        )
+        # In-flight ship share (fleets only).
+        own_inflight = sum(f.ships for f in state.fleets if f.owner == player)
+        all_inflight = sum(f.ships for f in state.fleets if f.owner >= 0)
+        inflight_share = own_inflight / max(all_inflight, 1.0)
+        # Player count indicator (0 for 2p, 1 for 4p) from distinct live owners.
+        owners = {p.owner for p in state.planets if p.owner >= 0}
+        owners |= {f.owner for f in state.fleets if f.owner >= 0}
+        n_players_ind = min(1.0, max(0.0, (len(owners) - 2) / 2.0))
+        global_list += [own_cen, enemy_cen, inflight_share, n_players_ind]  # 8-11
+
+    global_features = np.array(global_list, dtype=np.float32)
+
+    # v4 Tier 2.2: canonicalize the position columns the network sees.
+    if cfg.canonical_rotation:
+        _apply_canonical_rotation(planet_features, planet_mask, own_mask, cfg.board_size)
 
     return V2Features(
         planet_features=planet_features,

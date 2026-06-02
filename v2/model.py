@@ -16,6 +16,8 @@ class OrbitNetOutput:
     logits: torch.Tensor        # [B, max_planets, max_planets+1] (hold + targets)
     value: torch.Tensor         # [B]
     frac_logits: torch.Tensor   # [B, max_planets, max_planets, n_fractions] per (source->target) ship-fraction
+    aux_value: torch.Tensor | None = None   # [B] PPG auxiliary value head (v4 Tier 1.1)
+    shot_logits: torch.Tensor | None = None  # [B, P, P] logit P(own target N turns after arrival) (v4 Tier 1.2/0.4)
 
 
 class OrbitNet(nn.Module):
@@ -91,6 +93,24 @@ class OrbitNet(nn.Module):
             nn.Linear(d, 1),
         )
 
+        # v4 Tier 1.1: PPG auxiliary value head on the shared trunk. Lets the
+        # aux phase train value features into the trunk while a KL-clone term
+        # holds the policy fixed — decoupling critic depth from actor overfitting.
+        self.aux_value_head = None
+        if getattr(cfg, "aux_value_head", False):
+            self.aux_value_head = nn.Sequential(
+                nn.Linear(d, d), nn.ReLU(), nn.Linear(d, 1),
+            )
+
+        # v4 Tier 1.2/0.4: per-(source->target) shot-success head. Predicts
+        # P(we still own the target N turns after arrival); trained as an aux
+        # loss and reused as a rejection filter at decode ("shot validator").
+        self.shot_success_head = None
+        if getattr(cfg, "shot_success_head", False):
+            self.shot_success_head = nn.Sequential(
+                nn.Linear(pair_in, d), nn.ReLU(), nn.Linear(d, 1),
+            )
+
         self._init_output_heads()
 
     def _init_output_heads(self) -> None:
@@ -104,6 +124,13 @@ class OrbitNet(nn.Module):
         # Zero-init fraction head -> uniform fraction distribution at start.
         nn.init.zeros_(self.frac_mlp[-1].weight)
         nn.init.zeros_(self.frac_mlp[-1].bias)
+        # Zero-init v4 aux heads (aux value -> 0; shot logit -> 0 => P=0.5 prior).
+        if self.aux_value_head is not None:
+            nn.init.zeros_(self.aux_value_head[-1].weight)
+            nn.init.zeros_(self.aux_value_head[-1].bias)
+        if self.shot_success_head is not None:
+            nn.init.zeros_(self.shot_success_head[-1].weight)
+            nn.init.zeros_(self.shot_success_head[-1].bias)
 
     def forward(
         self,
@@ -189,4 +216,14 @@ class OrbitNet(nn.Module):
         pooled = (x * mask_float).sum(dim=1) / mask_float.sum(dim=1).clamp(min=1.0)  # [B, d]
         value = self.value_head(pooled).squeeze(-1)  # [B]
 
-        return OrbitNetOutput(logits=logits, value=value, frac_logits=frac_logits)
+        # v4 auxiliary heads (None unless enabled in config)
+        aux_value = None
+        if self.aux_value_head is not None:
+            aux_value = self.aux_value_head(pooled).squeeze(-1)  # [B]
+        shot_logits = None
+        if self.shot_success_head is not None:
+            # reuse pair_input [B,P,P,2d+pf] built above for the pair/frac heads
+            shot_logits = self.shot_success_head(pair_input).squeeze(-1)  # [B, P, P]
+
+        return OrbitNetOutput(logits=logits, value=value, frac_logits=frac_logits,
+                              aux_value=aux_value, shot_logits=shot_logits)
