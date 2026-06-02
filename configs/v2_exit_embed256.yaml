@@ -1,0 +1,60 @@
+# ExIt capacity A/B — arm B (embed_dim=256, 2x width).
+#
+# IDENTICAL to v2_exit_embed128.yaml except model.embed_dim and run_name. Shares
+# the same demo cache (bc_cache_path) and seed so the only difference vs arm A is
+# network width. See configs/v2_exit_embed128.yaml for the experiment rationale.
+run_name: v2_exit_embed256
+seed: 42
+device: auto
+save_dir: outputs/checkpoints
+log_dir: outputs/logs
+checkpoint_every: 5
+opponent: apex
+
+env:
+  max_planets: 40
+  allocation_threshold: 0.05
+  min_ships_to_send: 1
+  ship_fractions: [0.25, 0.5, 0.75, 1.0]
+
+model:
+  embed_dim: 256            # ◄── 2x arm A; everything else identical
+  n_heads: 4
+  n_layers: 3
+  ff_dim: 256
+  planet_feat_dim: 22
+  global_feat_dim: 8
+  n_fractions: 4
+
+eval:
+  eval_every: 5
+  eval_games: 15
+  eval_opponents: [apex, random]
+
+imitation:
+  enabled: true
+  bc_expert: apex
+  bc_games: 150
+  bc_demo_opponent: random
+  bc_epochs: 50
+  bc_lr: 0.001
+  bc_batch_size: 256
+  bc_cache_path: experiments/demos_apex_exit_ab.pkl
+
+exit:
+  enabled: true
+  iterations: 30
+  games_per_iter: 8
+  search_depth: 12
+  search_candidates: 10
+  search_temperature: 1.0
+  train_epochs: 4
+  train_batch_size: 256
+  train_lr: 0.0003
+  value_loss_coef: 0.5
+  max_grad_norm: 0.5
+  dataset_max_iters: 3
+  four_player_prob: 0.0
+  opponent: apex
+  sample_collect: true
+  search_workers: 6

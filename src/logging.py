@@ -32,23 +32,40 @@ class TrainLogger:
 
         self.writer = SummaryWriter(log_dir=str(self.log_path))
 
-        # CSV
+        # CSV. Metric keys can vary across updates (e.g. the PPG aux phase only
+        # runs every aux_every updates, adding aux_value_loss/aux_kl), so the
+        # header is the running UNION of all keys seen: when a new key first
+        # appears we expand the header and rewrite the file. Rows are kept in
+        # memory for that (rare) rewrite. All metrics also go to TensorBoard, so
+        # nothing is lost regardless.
         self._csv_path = self.log_path / "metrics.csv"
+        self._csv_fieldnames: list[str] = ["update"]
+        self._csv_rows: list[dict] = []
         self._csv_file = open(self._csv_path, "w", newline="")  # noqa: SIM115
-        self._csv_writer: csv.DictWriter | None = None
+        self._csv_writer = csv.DictWriter(
+            self._csv_file, fieldnames=self._csv_fieldnames, extrasaction="ignore")
+        self._csv_writer.writeheader()
 
     def log_update(self, update: int, metrics: dict[str, float]) -> None:
         for key, value in metrics.items():
             self.writer.add_scalar(f"train/{key}", value, update)
 
-        # Init CSV header on first call
-        if self._csv_writer is None:
-            fieldnames = ["update"] + sorted(metrics.keys())
-            self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=fieldnames)
-            self._csv_writer.writeheader()
-
         row = {"update": update, **metrics}
-        self._csv_writer.writerow(row)
+        self._csv_rows.append(row)
+
+        new_keys = [k for k in metrics if k not in self._csv_fieldnames]
+        if new_keys:
+            # Expand header (keep "update" first, rest sorted) and rewrite the file.
+            self._csv_fieldnames = ["update"] + sorted(
+                set(self._csv_fieldnames[1:]) | set(new_keys))
+            self._csv_file.close()
+            self._csv_file = open(self._csv_path, "w", newline="")
+            self._csv_writer = csv.DictWriter(
+                self._csv_file, fieldnames=self._csv_fieldnames, extrasaction="ignore")
+            self._csv_writer.writeheader()
+            self._csv_writer.writerows(self._csv_rows)
+        else:
+            self._csv_writer.writerow(row)
         self._csv_file.flush()
 
     def log_eval(self, update: int, results: list[EvalResult]) -> None:
