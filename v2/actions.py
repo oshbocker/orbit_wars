@@ -280,6 +280,13 @@ def decode_actions(
         if tgt is None or tgt.id == src.id:
             continue
 
+        # Tier 0.4: shot-validator rejection — drop launches the shot head deems
+        # unlikely to succeed (P(own target later) < threshold). Inference-time
+        # only; never used in the training rollout (would desync log_probs).
+        if cfg.shot_reject_threshold > 0.0 and output.shot_logits is not None:
+            if float(torch.sigmoid(output.shot_logits[0, i, j])) < cfg.shot_reject_threshold:
+                continue
+
         # Ship fraction from the dedicated head (argmax in eval, sample in train)
         frac_row = frac_logits[i, j]  # [K]
         if deterministic:

@@ -17,10 +17,12 @@ from src.opponents import ApexOpponent, OpponentPolicy, build_opponent
 
 from .actions import V2SampledAction, decode_actions, decode_sampled_actions, sample_actions
 from .config import V2Config, load_v2_config
-from .env import V2OrbitWarsEnv
+from .env import V2FastEnv, V2OrbitWarsEnv
 from .features import V2Features, encode_features
 from .model import OrbitNet, OrbitNetOutput
-from .ppo import V2TransitionBatch, ValueNorm, v2_aux_phase, v2_ppo_update
+from .ppo import (
+    V2TransitionBatch, ValueNorm, v2_aux_phase, v2_ppo_update, v2_shot_aux_update,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -333,14 +335,21 @@ def collect_rollout(
         (scheduler.last_name() if is_pfsp else None) for _ in envs
     ]
 
+    # v4 Tier 1.2: per-step records for shot-success labeling (only if needed).
+    collect_shot = (model.shot_success_head is not None
+                    and cfg.ppo.shot_aux_coef > 0.0)
+    shot_records: list[list] = [[] for _ in envs]
+
+    has_pair = features_per_env[0].pair_features is not None
+
     for _step_i in range(cfg.ppo.rollout_steps):
         next_features = []
 
-        for env_idx, env in enumerate(envs):
+        # Store features for every env, recording each one's buffer index.
+        idx_e: list[int] = []
+        for env_idx in range(len(envs)):
             feat = features_per_env[env_idx]
-
-            # Store features
-            idx = len(all_pf)
+            idx_e.append(len(all_pf))
             all_pf.append(feat.planet_features)
             all_gf.append(feat.global_features)
             all_pm.append(feat.planet_mask)
@@ -348,37 +357,65 @@ def collect_rollout(
             all_rm.append(feat.reachability_mask)
             if feat.pair_features is not None:
                 all_pairf.append(feat.pair_features)
+            value_indices_per_env[env_idx].append(idx_e[env_idx])
 
-            # Forward pass
-            with torch.inference_mode():
-                pf_t = torch.from_numpy(feat.planet_features).unsqueeze(0).to(device)
-                gf_t = torch.from_numpy(feat.global_features).unsqueeze(0).to(device)
-                pm_t = torch.from_numpy(feat.planet_mask).unsqueeze(0).to(device)
-                om_t = torch.from_numpy(feat.own_mask).unsqueeze(0).to(device)
-                rm_t = torch.from_numpy(feat.reachability_mask).unsqueeze(0).to(device)
-                output = model(pf_t, gf_t, pm_t, om_t, rm_t, _pair_tensor(feat, device))
+        # ONE batched forward + sample across all envs (Tier 3.1 throughput win).
+        with torch.inference_mode():
+            pf_b = torch.from_numpy(np.stack([f.planet_features for f in features_per_env])).to(device)
+            gf_b = torch.from_numpy(np.stack([f.global_features for f in features_per_env])).to(device)
+            pm_b = torch.from_numpy(np.stack([f.planet_mask for f in features_per_env])).to(device)
+            om_b = torch.from_numpy(np.stack([f.own_mask for f in features_per_env])).to(device)
+            rm_b = torch.from_numpy(np.stack([f.reachability_mask for f in features_per_env])).to(device)
+            pair_b = (torch.from_numpy(np.stack([f.pair_features for f in features_per_env])).to(device)
+                      if has_pair else None)
+            output = model(pf_b, gf_b, pm_b, om_b, rm_b, pair_b)
+            sampled = sample_actions(output, om_b, deterministic=False)
 
-                sampled = sample_actions(output, om_t, deterministic=False)
+        ti_cpu = sampled.target_indices.cpu().numpy()
+        fi_cpu = sampled.frac_indices.cpu().numpy()
+        lp_cpu = sampled.log_prob.cpu().numpy()
+        val_cpu = output.value.cpu().numpy()
 
-            all_ti.append(sampled.target_indices[0].cpu().numpy())
-            all_fi.append(sampled.frac_indices[0].cpu().numpy())
-            all_lp.append(float(sampled.log_prob[0].cpu()))
-            all_values.append(float(output.value[0].cpu()))
-            value_indices_per_env[env_idx].append(idx)
+        for env_idx, env in enumerate(envs):
+            feat = features_per_env[env_idx]
+            all_ti.append(ti_cpu[env_idx])
+            all_fi.append(fi_cpu[env_idx])
+            all_lp.append(float(lp_cpu[env_idx]))
+            all_values.append(float(val_cpu[env_idx]))
 
-            # Decode the sampled actions (not a fresh sample) so the
-            # executed moves match the log_probs stored in the PPO buffer.
+            # Per-env slice of the batched output/sample for decoding (keeps the
+            # decode helpers' [0]-indexing intact).
+            e = env_idx
+            out_i = OrbitNetOutput(
+                logits=output.logits[e:e + 1], value=output.value[e:e + 1],
+                frac_logits=output.frac_logits[e:e + 1],
+                aux_value=(output.aux_value[e:e + 1] if output.aux_value is not None else None),
+                shot_logits=(output.shot_logits[e:e + 1] if output.shot_logits is not None else None),
+            )
+            sa_i = V2SampledAction(
+                target_indices=sampled.target_indices[e:e + 1],
+                frac_indices=sampled.frac_indices[e:e + 1],
+                log_prob=sampled.log_prob[e:e + 1], entropy=sampled.entropy[e:e + 1],
+            )
             state = env.last_state
-            moves = decode_sampled_actions(sampled, output, feat, state, cfg.env)
+            moves = decode_sampled_actions(sa_i, out_i, feat, state, cfg.env)
             result = env.step(moves)
 
             running_rewards[env_idx] += result.reward
             rewards_per_env[env_idx].append(result.reward)
             dones_per_env[env_idx].append(result.done)
 
+            # v4 Tier 1.2: record launches + ownership for shot-success labeling.
+            if collect_shot:
+                ti_np = ti_cpu[env_idx]
+                launches = [(i, int(ti_np[i]) - 1) for i in range(P)
+                            if feat.own_mask[i] and ti_np[i] > 0]
+                owners = {ps.id: ps.owner for ps in feat.planet_states if ps is not None}
+                shot_records[env_idx].append(
+                    (idx_e[env_idx], state.player, owners, launches, result.done))
+
             if result.done:
                 episode_rewards.append(running_rewards[env_idx])
-                # PFSP: record win/loss vs the opponent this env just faced.
                 if is_pfsp:
                     scheduler.update_result(
                         active_opp_name[env_idx], running_rewards[env_idx] > 0.0)
@@ -396,6 +433,29 @@ def collect_rollout(
                 next_features.append(result.features)
 
         features_per_env = next_features
+
+    # v4 Tier 1.2: build shot-success labels from the recorded trajectories.
+    shot_idx: list[int] = []
+    shot_src: list[int] = []
+    shot_tgt: list[int] = []
+    shot_lab: list[float] = []
+    if collect_shot:
+        H = max(1, cfg.ppo.shot_horizon)
+        for recs in shot_records:
+            n = len(recs)
+            for t in range(n):
+                t2 = t + H
+                if t2 >= n:
+                    continue
+                if any(recs[k][4] for k in range(t, t2)):  # episode boundary in window
+                    continue
+                m_idx, player_t, _own, launches_t, _done = recs[t]
+                owners_future = recs[t2][2]
+                for (s_slot, tg_slot) in launches_t:
+                    shot_idx.append(m_idx)
+                    shot_src.append(s_slot)
+                    shot_tgt.append(tg_slot)
+                    shot_lab.append(1.0 if owners_future.get(tg_slot, -1) == player_t else 0.0)
 
     # Bootstrap final values
     next_values = _bootstrap_values(model, features_per_env, device)
@@ -458,6 +518,10 @@ def collect_rollout(
             values=torch.tensor(all_values, dtype=torch.float32),
             pair_features=(torch.from_numpy(np.array(all_pairf, dtype=np.float32))
                            if all_pairf else None),
+            shot_idx=(torch.tensor(shot_idx, dtype=torch.long) if shot_idx else None),
+            shot_src=(torch.tensor(shot_src, dtype=torch.long) if shot_idx else None),
+            shot_tgt=(torch.tensor(shot_tgt, dtype=torch.long) if shot_idx else None),
+            shot_label=(torch.tensor(shot_lab, dtype=torch.float32) if shot_idx else None),
         )
 
     stats = {
@@ -701,7 +765,11 @@ def main() -> None:
     features_per_env: list = []
     next_seed = cfg.seed
     if cfg.ppo.num_workers == 0:
-        envs = [V2OrbitWarsEnv(cfg, rule_based_opponent, env_index=idx)
+        # Tier 3.1: fast standalone sim (no Kaggle harness) when enabled.
+        env_cls = V2FastEnv if cfg.ppo.use_batched_env else V2OrbitWarsEnv
+        if cfg.ppo.use_batched_env:
+            log("  Using V2FastEnv (standalone fast_env sim) for rollouts")
+        envs = [env_cls(cfg, rule_based_opponent, env_index=idx)
                 for idx in range(cfg.ppo.num_envs)]
         for env in envs:
             if scheduler is not None:
@@ -845,6 +913,18 @@ def _train_sequential(
                 value_norm=value_norm,
             )
             metrics.update(aux_metrics)
+
+        # Tier 1.2: train the shot-success head on outcome labels (no-op unless
+        # shot_aux_coef>0 and the model has a shot head).
+        if cfg.ppo.shot_aux_coef > 0.0:
+            shot_metrics = v2_shot_aux_update(
+                model, optimizer, batch,
+                coef=cfg.ppo.shot_aux_coef,
+                epochs=cfg.ppo.shot_aux_epochs,
+                minibatch_size=cfg.ppo.minibatch_size,
+                device=device,
+            )
+            metrics.update(shot_metrics)
 
         # Sync self-play opponent periodically
         if update % cfg.self_play_update_interval == 0:

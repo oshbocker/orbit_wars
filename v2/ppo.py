@@ -99,6 +99,13 @@ class V2TransitionBatch:
     advantages: torch.Tensor         # [N]
     values: torch.Tensor             # [N]
     pair_features: torch.Tensor | None = None  # [N, P, P, pf] (v3; None if disabled)
+    # v4 Tier 1.2: shot-success labels. Parallel arrays referencing buffer rows:
+    # at row shot_idx[k] the launch (shot_src[k] -> shot_tgt[k]) had outcome
+    # shot_label[k] = 1 if we owned the target shot_horizon steps later.
+    shot_idx: torch.Tensor | None = None     # [M] long
+    shot_src: torch.Tensor | None = None     # [M] long
+    shot_tgt: torch.Tensor | None = None     # [M] long
+    shot_label: torch.Tensor | None = None   # [M] float
 
 
 def v2_ppo_update(
@@ -215,6 +222,66 @@ def v2_ppo_update(
             updates += 1
 
     return {k: v / max(updates, 1) for k, v in metrics.items()}
+
+
+def v2_shot_aux_update(
+    model: OrbitNet,
+    optimizer: torch.optim.Optimizer,
+    batch: V2TransitionBatch,
+    *,
+    coef: float,
+    epochs: int,
+    minibatch_size: int,
+    device: torch.device,
+) -> dict[str, float]:
+    """Train the shot-success head (Tier 1.2/0.4) on rollout outcome labels.
+
+    Binary cross-entropy over (buffer-row, source, target) launches with label
+    = "did we still own the target shot_horizon steps later". A dense, balanced
+    signal vs sparse reward; the same head doubles as the decode-time rejection
+    filter. No-op without a shot head, labels, or coef.
+    """
+    if (coef <= 0.0 or model.shot_success_head is None
+            or batch.shot_idx is None or batch.shot_idx.numel() == 0):
+        return {"shot_loss": 0.0, "shot_acc": 0.0}
+
+    pf = batch.planet_features.to(device)
+    gf = batch.global_features.to(device)
+    pm = batch.planet_mask.to(device).bool()
+    om = batch.own_mask.to(device).bool()
+    rm = batch.reachability_mask.to(device).bool()
+    pairf = batch.pair_features.to(device) if batch.pair_features is not None else None
+    s_idx = batch.shot_idx.to(device)
+    s_src = batch.shot_src.to(device)
+    s_tgt = batch.shot_tgt.to(device)
+    s_lab = batch.shot_label.to(device).float()
+
+    M = s_idx.shape[0]
+    bce = torch.nn.functional.binary_cross_entropy_with_logits
+    metrics = {"shot_loss": 0.0, "shot_acc": 0.0}
+    steps = 0
+    mb = min(M, max(1, minibatch_size))
+    for _ in range(max(1, epochs)):
+        order = torch.randperm(M, device=device)
+        for start in range(0, M, mb):
+            sel = order[start:start + mb]
+            rows = s_idx[sel]
+            # Unique buffer rows in this minibatch -> one forward each.
+            uniq, inv = torch.unique(rows, return_inverse=True)
+            out = model(pf[uniq], gf[uniq], pm[uniq], om[uniq], rm[uniq],
+                        pairf[uniq] if pairf is not None else None)
+            logit = out.shot_logits[inv, s_src[sel], s_tgt[sel]]  # [m]
+            loss = coef * bce(logit, s_lab[sel])
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+            optimizer.step()
+            with torch.no_grad():
+                acc = ((logit > 0).float() == s_lab[sel]).float().mean()
+            metrics["shot_loss"] += float(loss.detach().cpu())
+            metrics["shot_acc"] += float(acc.cpu())
+            steps += 1
+    return {k: v / max(steps, 1) for k, v in metrics.items()}
 
 
 def v2_aux_phase(

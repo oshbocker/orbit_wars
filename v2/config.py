@@ -59,6 +59,10 @@ class V2EnvConfig:
     requirement_relative_fractions: bool = False
     req_fraction_multipliers: list[float] = field(
         default_factory=lambda: [1.0, 1.5, 2.0, 3.0])
+    # Tier 0.4: at decode, reject a launch if the shot-success head's P(own
+    # target N turns later) is below this threshold. 0.0 = never reject (the head
+    # still trains as an aux signal but does not gate actions). ~0.4 ≈ konbu17.
+    shot_reject_threshold: float = 0.0
 
 
 @dataclass(slots=True)
@@ -105,7 +109,7 @@ class V2PPOConfig:
     # Tier 0.3: PopArt-style running normalization of value targets (handles the
     # DRIFTING return scale that symlog doesn't). Use INSTEAD of value_symlog.
     popart: bool = False
-    popart_beta: float = 3e-4   # EMA rate for the running return mean/var
+    popart_beta: float = 0.01    # per-UPDATE EMA rate for running return mean/var
     # Tier 1.1: PPG auxiliary value phase. After the policy phase, run aux_epochs
     # of value-only optimization on the same buffer, with a policy-clone KL term
     # (weight aux_beta_clone) freezing the action distribution. 0 = disabled.
@@ -114,6 +118,8 @@ class V2PPOConfig:
     aux_every: int = 1          # run the aux phase every N updates
     # Tier 1.2: weight on the shot-success auxiliary loss (needs model.shot_success_head).
     shot_aux_coef: float = 0.0
+    shot_horizon: int = 10      # label = own target this many steps after the launch decision
+    shot_aux_epochs: int = 1    # passes over the shot-label set per update
     # Tier 3.1: collect rollouts via the batched fast_env instead of the Kaggle
     # harness (major throughput win; required for affordable long rollouts).
     use_batched_env: bool = False
