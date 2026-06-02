@@ -277,6 +277,16 @@ class V2PFSPScheduler:
                 e["wins"] += 1.0 if win else 0.0
                 break
 
+    def apply_deltas(self, deltas: dict) -> None:
+        """Fold per-opponent (wins, games) deltas (e.g. from parallel workers)
+        into the central pool. Unknown names are ignored (snapshot may have been
+        evicted by the FIFO cap)."""
+        for e in self.pool:
+            d = deltas.get(e["name"])
+            if d is not None:
+                e["wins"] += d[0]
+                e["games"] += d[1]
+
     def pool_summary(self) -> str:
         return ", ".join(f"{e['name']}:{self._win_rate(e):.0%}({int(e['games'])})"
                          for e in self.pool)
@@ -697,8 +707,6 @@ def main() -> None:
     if cfg.ppo.popart:
         if cfg.ppo.value_symlog:
             raise ValueError("ppo.popart and ppo.value_symlog are mutually exclusive — pick one.")
-        if cfg.ppo.num_workers > 0:
-            raise ValueError("ppo.popart currently requires num_workers=0 (sequential).")
         value_norm = ValueNorm(cfg.ppo.popart_beta)
         log(f"  PopArt value normalization on (beta={cfg.ppo.popart_beta})")
     if cfg.ppo.aux_epochs > 0 and not cfg.model.aux_value_head:
@@ -825,15 +833,10 @@ def main() -> None:
     log(f"\n=== PPO training (updates {start_update}..{cfg.ppo.total_updates}, "
         f"{remaining} remaining) ===")
 
-    if cfg.ppo.num_workers > 0 and cfg.pfsp_enabled:
-        raise ValueError(
-            "pfsp_enabled requires num_workers=0 (sequential): the PFSP pool holds "
-            "live in-process opponent models that can't be sent to subprocess workers."
-        )
-
     if cfg.ppo.num_workers > 0:
         _train_parallel(cfg, model, optimizer, logger, save_dir, device, log,
-                        start_update, demo_buffer, log_eval_row)
+                        start_update, demo_buffer, log_eval_row,
+                        scheduler, value_norm, sp_opponent)
     else:
         _train_sequential(cfg, model, optimizer, logger, save_dir, device, log,
                           envs, features_per_env, next_seed, scheduler,
@@ -980,23 +983,40 @@ def _train_parallel(
     start_update: int,
     demo_buffer: object | None = None,
     log_eval_row: Any = None,
+    scheduler: "V2MixedScheduler | V2PFSPScheduler | None" = None,
+    value_norm: object | None = None,
+    sp_opponent: "V2SelfPlayOpponent | None" = None,
 ) -> None:
-    """Parallel training loop using subprocess workers."""
+    """Parallel training loop using subprocess workers (v4-complete).
+
+    Mirrors `_train_sequential`: PopArt value-norm, the PPG aux phase, the
+    shot-success aux update, self-play sync and PFSP snapshotting all run in this
+    (central) process. Workers only roll out; their per-opponent win/game deltas
+    are folded back into the central PFSP scheduler so the broadcast sampling
+    weights stay globally consistent.
+    """
     from .parallel import ParallelRolloutCollector
 
     num_workers = cfg.ppo.num_workers
     log(f"  Parallel mode: {num_workers} workers")
 
     collector = ParallelRolloutCollector(cfg, num_workers)
-    # Send initial weights to workers
-    collector.sync_weights(model)
+    # Initial broadcast: weights (+ PopArt stats + PFSP pool/stats).
+    collector.sync(model, value_norm, scheduler)
 
     t_start = time.time()
     try:
         for update in range(start_update, cfg.ppo.total_updates + 1):
             t_update = time.time()
 
-            batch, stats = collector.collect(update)
+            if scheduler is not None:
+                scheduler.set_update(update)
+
+            batch, stats, pfsp_deltas = collector.collect(update)
+
+            # Fold worker PFSP results into the central pool before snapshotting.
+            if isinstance(scheduler, V2PFSPScheduler) and pfsp_deltas:
+                scheduler.apply_deltas(pfsp_deltas)
 
             # Compute imitation coefficient (linear decay)
             imitation_coef = 0.0
@@ -1019,10 +1039,41 @@ def _train_parallel(
                 demo_buffer=demo_buffer,
                 imitation_coef=imitation_coef,
                 value_symlog=cfg.ppo.value_symlog,
+                value_norm=value_norm,
             )
 
-            # Sync weights to workers
-            collector.sync_weights(model)
+            # Tier 1.1: PPG auxiliary value phase (every aux_every updates).
+            if cfg.ppo.aux_epochs > 0 and update % max(1, cfg.ppo.aux_every) == 0:
+                metrics.update(v2_aux_phase(
+                    model, optimizer, batch,
+                    aux_epochs=cfg.ppo.aux_epochs,
+                    beta_clone=cfg.ppo.aux_beta_clone,
+                    minibatch_size=cfg.ppo.minibatch_size,
+                    device=device,
+                    value_symlog=cfg.ppo.value_symlog,
+                    value_norm=value_norm,
+                ))
+
+            # Tier 1.2: train the shot-success head on outcome labels.
+            if cfg.ppo.shot_aux_coef > 0.0:
+                metrics.update(v2_shot_aux_update(
+                    model, optimizer, batch,
+                    coef=cfg.ppo.shot_aux_coef,
+                    epochs=cfg.ppo.shot_aux_epochs,
+                    minibatch_size=cfg.ppo.minibatch_size,
+                    device=device,
+                ))
+
+            # Sync self-play opponent periodically (non-PFSP MixedScheduler path).
+            if sp_opponent is not None and update % cfg.self_play_update_interval == 0:
+                sp_opponent.sync_from(model)
+
+            # PFSP: periodically freeze a snapshot of the current policy.
+            if isinstance(scheduler, V2PFSPScheduler):
+                scheduler.maybe_snapshot(model)
+
+            # Broadcast updated weights (+ PopArt stats + PFSP pool/stats) to workers.
+            collector.sync(model, value_norm, scheduler)
 
             all_metrics = {**stats, **metrics}
             logger.log_update(update, all_metrics)
@@ -1048,6 +1099,8 @@ def _train_parallel(
                 for r in eval_results:
                     log(f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
                         f"T={r.tie_rate:.0%} (n={r.n_games})")
+                if isinstance(scheduler, V2PFSPScheduler):
+                    log(f"    PFSP pool: {scheduler.pool_summary()}")
                 log("")
 
             if update % cfg.checkpoint_every == 0 or update == cfg.ppo.total_updates:
