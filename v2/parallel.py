@@ -210,6 +210,12 @@ def _worker_fn(conn: mp.connection.Connection, worker_id: int, cfg_dict: dict) -
 
                 conn.send("ok")
 
+            elif cmd[0] == "poolinfo":
+                # Diagnostic: report this worker's PFSP pool (names + local games).
+                info = ([(e["name"], e["games"]) for e in scheduler.pool]
+                        if scheduler is not None and is_pfsp else [])
+                conn.send(info)
+
             elif cmd[0] == "shutdown":
                 break
     except Exception:
@@ -298,6 +304,12 @@ class ParallelRolloutCollector:
                 raise RuntimeError("A rollout worker crashed during collect().")
             results.append(r)
         return self._merge_transitions(results)
+
+    def debug_pools(self) -> list:
+        """Diagnostic: return each worker's PFSP pool (names + local game counts)."""
+        for conn in self._conns:
+            conn.send(("poolinfo",))
+        return [conn.recv() for conn in self._conns]
 
     def shutdown(self) -> None:
         for conn in self._conns:
