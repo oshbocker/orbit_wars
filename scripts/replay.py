@@ -7,6 +7,10 @@ just need their own config so feature dims match the weights (v3: 24-dim planets
 v4: 28-dim planets + rich globals).
 
 Usage:
+    # ExIt checkpoint vs apex (defaults to configs/v2_exit.yaml — base-v2 arch)
+    uv run python scripts/replay.py \
+        --checkpoint outputs/checkpoints/v2_exit_a100/ckpt_last.pt --exit
+
     # V2 checkpoint vs apex (default)
     uv run python scripts/replay.py \
         --checkpoint outputs/checkpoints/v2_default/ckpt_last.pt
@@ -65,6 +69,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--v4", action="store_true",
         help="V4 OrbitNet checkpoint (defaults config to configs/v4_ceiling.yaml)",
+    )
+    parser.add_argument(
+        "--exit", action="store_true",
+        help="ExIt checkpoint (base-v2 OrbitNet; defaults config to configs/v2_exit.yaml)",
     )
     parser.add_argument(
         "--opponent", type=str, default="apex",
@@ -151,6 +159,10 @@ def main() -> None:
         config_path = args.config or "configs/v3_features.yaml"
         rl_agent = load_v2_agent(ckpt_path, config_path, device, label="V3")
         agent_label = "V3 RL"
+    elif args.exit:
+        config_path = args.config or "configs/v2_exit.yaml"
+        rl_agent = load_v2_agent(ckpt_path, config_path, device, label="ExIt")
+        agent_label = "ExIt RL"
     else:
         config_path = args.config or "configs/v2_default.yaml"
         rl_agent = load_v2_agent(ckpt_path, config_path, device)
