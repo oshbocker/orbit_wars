@@ -1,0 +1,73 @@
+# Phase 5 — Neural-Value ExIt (Tier 3.2).
+#
+# Same base-v2 OrbitNet architecture as configs/v2_exit.yaml (embed 128,
+# planet_feat_dim 22, n_fractions 4) so it can WARM-START from a v2_exit_a100
+# checkpoint. The only algorithmic change is exit.neural_value_leaves: true —
+# search leaves are scored by OrbitNet's value head instead of the handcrafted
+# evaluate_state, giving a stronger expert (the move that should break the
+# heuristic-search plateau the standard ExIt run hit at ~iter 15).
+#
+# IMPORTANT: only meaningful warm-started from a checkpoint with a TRAINED value
+# head (neural search on a random/weak critic = garbage targets). Launch with:
+#   python -m v2.exit_train --config configs/v2_exit_neural.yaml \
+#       --resume outputs/checkpoints/v2_exit_a100/ckpt_000010.pt
+# (--resume loads weights and SKIPS BC pretrain.)
+run_name: v2_exit_neural
+seed: 42
+device: auto
+save_dir: outputs/checkpoints
+log_dir: outputs/logs
+checkpoint_every: 5
+opponent: apex
+
+env:
+  max_planets: 40
+  allocation_threshold: 0.05
+  min_ships_to_send: 1
+  ship_fractions: [0.25, 0.5, 0.75, 1.0]
+
+model:
+  embed_dim: 128
+  n_heads: 4
+  n_layers: 3
+  ff_dim: 256
+  planet_feat_dim: 22
+  global_feat_dim: 8
+  n_fractions: 4
+
+eval:
+  eval_every: 5
+  eval_games: 20
+  eval_opponents: [apex, random]
+
+# BC config is present but SKIPPED when --resume is given (warm-start path).
+imitation:
+  enabled: true
+  bc_expert: apex
+  bc_games: 150
+  bc_demo_opponent: random
+  bc_epochs: 50
+  bc_lr: 0.001
+  bc_batch_size: 256
+  bc_cache_path: experiments/demos_apex_exit_ab.pkl
+
+exit:
+  enabled: true
+  iterations: 40
+  games_per_iter: 8
+  search_depth: 12
+  search_candidates: 10
+  search_temperature: 1.0
+  train_epochs: 4
+  train_batch_size: 256
+  train_lr: 0.0003
+  value_loss_coef: 0.5
+  max_grad_norm: 0.5
+  dataset_max_iters: 3
+  four_player_prob: 0.0
+  opponent: apex
+  sample_collect: true
+  search_workers: 6        # parallel CPU search (set ~vCPU count on Colab)
+  collect_workers: 6       # parallel game collection (the ExIt bottleneck)
+  collect_fast_env: true   # engine-faithful standalone sim (no Kaggle harness)
+  neural_value_leaves: true  # ◄── Phase 5: score search leaves with the value head

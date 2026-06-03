@@ -127,6 +127,21 @@ def download_all(remote: str) -> None:
     print("Done.")
 
 
+def download_run_all_ckpts(remote: str, run_name: str) -> None:
+    """Download EVERY checkpoint file of a single run (the whole run dir)."""
+    src = f"{remote}:{DRIVE_BASE}/{run_name}/"
+    dst = LOCAL_BASE / run_name
+    dst.mkdir(parents=True, exist_ok=True)
+
+    print(f"Downloading all checkpoints of {run_name}: {src} -> {dst}/")
+    result = subprocess.run(["rclone", "copy", "--progress", src, str(dst)])
+    if result.returncode != 0:
+        print(f"Error: rclone copy failed (exit code {result.returncode})")
+        sys.exit(1)
+    files = sorted(p.name for p in dst.glob("ckpt_*.pt"))
+    print(f"Done. {len(files)} checkpoint file(s) in {dst}/")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Download trained checkpoints from Google Drive via rclone.",
@@ -142,6 +157,10 @@ def main() -> None:
     parser.add_argument(
         "--all", action="store_true",
         help="Download all checkpoint runs",
+    )
+    parser.add_argument(
+        "--all-ckpts", action="store_true",
+        help="Download EVERY checkpoint file of --run (the whole run dir)",
     )
     parser.add_argument(
         "--list", action="store_true",
@@ -166,6 +185,8 @@ def main() -> None:
         list_run_checkpoints(args.remote, args.run)
     elif args.all:
         download_all(args.remote)
+    elif args.all_ckpts:
+        download_run_all_ckpts(args.remote, args.run)
     else:
         download_run(args.remote, args.run, args.ckpt)
 

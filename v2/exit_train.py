@@ -222,7 +222,7 @@ def collect_games(
 
 # ── Phase 2: search improvement ──────────────────────────────────────────────
 
-def _search_record(rec: StepRecord, env_cfg, exit_cfg) -> V2ExItSample:
+def _search_record(rec: StepRecord, env_cfg, exit_cfg, value_model=None) -> V2ExItSample:
     """Run per-planet search for one recorded step (picklable worker)."""
     feats = rec.features
     P = env_cfg.max_planets
@@ -236,7 +236,7 @@ def _search_record(rec: StepRecord, env_cfg, exit_cfg) -> V2ExItSample:
         tp, fp = search_improve_planet(
             state=rec.game_state, features=feats,
             sim_state=rec.sim_state, player=rec.player, source_slot=i,
-            env_cfg=env_cfg, exit_cfg=exit_cfg,
+            env_cfg=env_cfg, exit_cfg=exit_cfg, value_model=value_model,
         )
         target_probs[i] = tp
         frac_probs[i] = fp
@@ -250,21 +250,62 @@ def _search_record(rec: StepRecord, env_cfg, exit_cfg) -> V2ExItSample:
     )
 
 
-def search_improve(records: list[StepRecord], cfg: V2Config) -> list[V2ExItSample]:
+# ── Parallel search workers (neural-value leaves need the model in-worker) ───
+_SW: dict = {}
+
+
+def _search_init(cfg_dict: dict, state_dict: dict | None) -> None:
+    import os
+
+    os.environ["OMP_NUM_THREADS"] = "1"
+    torch.set_num_threads(1)
+    from .config import v2_config_from_dict
+    cfg = v2_config_from_dict(cfg_dict)
+    _SW["env"] = cfg.env
+    _SW["exit"] = cfg.exit
+    if state_dict is not None:
+        model = OrbitNet(cfg.model)
+        model.load_state_dict(state_dict)
+        model.eval()
+        _SW["model"] = model
+    else:
+        _SW["model"] = None
+
+
+def _search_worker(rec: StepRecord) -> V2ExItSample:
+    return _search_record(rec, _SW["env"], _SW["exit"], _SW.get("model"))
+
+
+def search_improve(
+    records: list[StepRecord], cfg: V2Config, model: OrbitNet | None = None,
+) -> list[V2ExItSample]:
     """Search-improve all recorded decisions. Search is CPU-bound and
     embarrassingly parallel; with exit.search_workers>1 it fans out across
-    processes (the main A100-box efficiency lever, since the GPU is idle here)."""
+    processes (the main A100-box efficiency lever, since the GPU is idle here).
+
+    When exit.neural_value_leaves is set, `model` is supplied so leaves are scored
+    by OrbitNet's value head (Tier 3.2). In parallel mode the model's weights are
+    broadcast to workers via the pool initializer; workers score leaves on CPU.
+    """
+    use_neural = getattr(cfg.exit, "neural_value_leaves", False) and model is not None
     workers = cfg.exit.search_workers
+
     if workers and workers > 1 and len(records) > 1:
         from concurrent.futures import ProcessPoolExecutor
-        from functools import partial
-        fn = partial(_search_record, env_cfg=cfg.env, exit_cfg=cfg.exit)
+
+        from .config import v2_config_to_dict
+        sd = {k: v.cpu() for k, v in model.state_dict().items()} if use_neural else None
         try:
-            with ProcessPoolExecutor(max_workers=workers) as ex:
-                return list(ex.map(fn, records, chunksize=4))
+            with ProcessPoolExecutor(
+                max_workers=workers, initializer=_search_init,
+                initargs=(v2_config_to_dict(cfg), sd),
+            ) as ex:
+                return list(ex.map(_search_worker, records, chunksize=4))
         except Exception as e:  # pragma: no cover - fall back to sequential
             print(f"  parallel search failed ({e}); falling back to sequential")
-    return [_search_record(r, cfg.env, cfg.exit) for r in records]
+
+    vm = model if use_neural else None
+    return [_search_record(r, cfg.env, cfg.exit, vm) for r in records]
 
 
 # ── Phase 3: supervised distillation ─────────────────────────────────────────
@@ -403,7 +444,7 @@ def main() -> None:
         t_collect = time.time() - t_it
 
         t_s = time.time()
-        new_samples = search_improve(records, cfg)
+        new_samples = search_improve(records, cfg, model)
         dataset.append(new_samples)
         all_samples = [s for batch in dataset for s in batch]
         t_search = time.time() - t_s
