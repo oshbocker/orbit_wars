@@ -58,3 +58,5 @@ exit:
   opponent: apex
   sample_collect: true
   search_workers: 6
+  collect_workers: 6     # parallelize the games (collection is the ExIt bottleneck)
+  collect_fast_env: true # engine-faithful standalone sim (no Kaggle harness overhead)

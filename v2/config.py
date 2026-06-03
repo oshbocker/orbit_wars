@@ -192,6 +192,10 @@ class V2ExItConfig:
     opponent: str = "apex"
     sample_collect: bool = True      # sample (vs argmax) during self-play collection
     search_workers: int = 0          # >1 = parallelize the (CPU-bound) search across processes
+    collect_workers: int = 0         # >1 = play the games of each iteration in parallel across
+                                     # processes (collection is the ExIt bottleneck, ~linear win)
+    collect_fast_env: bool = False   # collect games on the standalone fast_env (engine-faithful,
+                                     # no Kaggle harness overhead) instead of make("orbit_wars")
     # ── v4 ceiling flags (default off) ──
     # Tier 3.2: score search leaves with OrbitNet's value head instead of the
     # handcrafted heuristic eval (requires a trustworthy value head — do Tier 1

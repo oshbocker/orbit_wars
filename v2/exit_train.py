@@ -96,56 +96,125 @@ def _comet_ids(obs) -> list[int] | None:
 
 # ── Phase 1: collect games with the current policy ───────────────────────────
 
-def collect_games(
-    model: OrbitNet, cfg: V2Config, device: torch.device, n_games: int, seed: int,
-) -> tuple[list[StepRecord], list[float], float]:
-    from kaggle_environments import make
+def _policy_decide(model, cfg, device, obs0, game_records: list[StepRecord]):
+    """Run the policy on obs0, append a StepRecord, return player-0 moves."""
+    state = parse_observation(obs0)
+    features = encode_features(state, cfg.env, comet_ids=_comet_ids(obs0))
+    with torch.inference_mode():
+        pf = torch.from_numpy(features.planet_features).unsqueeze(0).to(device)
+        gf = torch.from_numpy(features.global_features).unsqueeze(0).to(device)
+        pm = torch.from_numpy(features.planet_mask).unsqueeze(0).to(device)
+        om = torch.from_numpy(features.own_mask).unsqueeze(0).to(device)
+        rm = torch.from_numpy(features.reachability_mask).unsqueeze(0).to(device)
+        output = model(pf, gf, pm, om, rm)
+        sampled = sample_actions(output, om, deterministic=not cfg.exit.sample_collect)
+    if features.own_mask.any():
+        game_records.append(StepRecord(
+            features=features, sim_state=build_sim_state(state),
+            game_state=state, player=state.player, step=state.step,
+        ))
+    return decode_sampled_actions(sampled, output, features, state, cfg.env)
 
+
+def play_single_game(
+    model: OrbitNet, cfg: V2Config, device: torch.device, seed: int,
+) -> tuple[list[StepRecord], float]:
+    """Play ONE game of the policy (player 0) vs apex (player 1). Returns
+    (records, outcome). Backend = fast_env (cfg.exit.collect_fast_env) or Kaggle."""
     from agents.apex import agent as apex_agent
 
-    records: list[StepRecord] = []
-    outcomes: list[float] = []
-    sample = cfg.exit.sample_collect
-
-    for gi in range(n_games):
-        env = make("orbit_wars", configuration={"seed": seed + gi}, debug=False)
+    game_records: list[StepRecord] = []
+    if cfg.exit.collect_fast_env:
+        from .fast_env import FastOrbitWars
+        sim = FastOrbitWars(num_agents=2, seed=seed)
+        while not sim.done:
+            obs0, obs1 = sim.observation(0), sim.observation(1)
+            moves = _policy_decide(model, cfg, device, obs0, game_records)
+            opp_moves = apex_agent(obs1) or []
+            sim.step([moves, list(opp_moves)])
+        reward = sim.rewards[0]
+    else:
+        from kaggle_environments import make
+        env = make("orbit_wars", configuration={"seed": seed}, debug=False)
         env.reset(num_agents=2)
         states = env.step([[], []])
         done = False
-        game_records: list[StepRecord] = []
-
         while not done:
             obs0 = _extract_obs(states[0])
             obs1 = _extract_obs(states[1])
-            state = parse_observation(obs0)
-            features = encode_features(state, cfg.env, comet_ids=_comet_ids(obs0))
-
-            with torch.inference_mode():
-                pf = torch.from_numpy(features.planet_features).unsqueeze(0).to(device)
-                gf = torch.from_numpy(features.global_features).unsqueeze(0).to(device)
-                pm = torch.from_numpy(features.planet_mask).unsqueeze(0).to(device)
-                om = torch.from_numpy(features.own_mask).unsqueeze(0).to(device)
-                rm = torch.from_numpy(features.reachability_mask).unsqueeze(0).to(device)
-                output = model(pf, gf, pm, om, rm)
-                sampled = sample_actions(output, om, deterministic=not sample)
-
-            if features.own_mask.any():
-                game_records.append(StepRecord(
-                    features=features, sim_state=build_sim_state(state),
-                    game_state=state, player=state.player, step=state.step,
-                ))
-
-            moves = decode_sampled_actions(sampled, output, features, state, cfg.env)
+            moves = _policy_decide(model, cfg, device, obs0, game_records)
             opp_moves = apex_agent(obs1) or []
             states = env.step([moves, list(opp_moves)])
             done = _extract_status(states[0]) != "ACTIVE"
-
         reward = states[0]["reward"] if isinstance(states[0], dict) else states[0].reward
-        outcome = max(-1.0, min(1.0, float(reward) if reward is not None else 0.0))
+
+    outcome = max(-1.0, min(1.0, float(reward) if reward is not None else 0.0))
+    for r in game_records:
+        r.outcome = outcome
+    return game_records, outcome
+
+
+# ── Parallel collection workers (collection is the ExIt bottleneck) ──────────
+_CW: dict = {}
+
+
+def _collect_init(cfg_dict: dict, state_dict: dict) -> None:
+    import os
+
+    os.environ["OMP_NUM_THREADS"] = "1"
+    torch.set_num_threads(1)
+    from .config import v2_config_from_dict
+    cfg = v2_config_from_dict(cfg_dict)
+    model = OrbitNet(cfg.model)
+    model.load_state_dict(state_dict)
+    model.eval()
+    _CW["model"] = model
+    _CW["cfg"] = cfg
+    _CW["device"] = torch.device("cpu")
+
+
+def _collect_worker(seed: int) -> tuple[list[StepRecord], float]:
+    return play_single_game(_CW["model"], _CW["cfg"], _CW["device"], seed)
+
+
+def collect_games(
+    model: OrbitNet, cfg: V2Config, device: torch.device, n_games: int, seed: int,
+) -> tuple[list[StepRecord], list[float], float]:
+    """Play n_games of the current policy vs apex, recording per-decision
+    StepRecords for search improvement.
+
+    With cfg.exit.collect_workers>1 the (independent) games are played in parallel
+    across processes — collection is the ExIt wall-clock bottleneck, so this is
+    a near-linear speedup. Falls back to sequential on any pool error.
+    """
+    records: list[StepRecord] = []
+    outcomes: list[float] = []
+    seeds = [seed + gi for gi in range(n_games)]
+
+    workers = cfg.exit.collect_workers
+    if workers and workers > 1 and n_games > 1:
+        from concurrent.futures import ProcessPoolExecutor
+
+        from .config import v2_config_to_dict
+        sd = {k: v.cpu() for k, v in model.state_dict().items()}
+        try:
+            with ProcessPoolExecutor(
+                max_workers=workers, initializer=_collect_init,
+                initargs=(v2_config_to_dict(cfg), sd),
+            ) as ex:
+                for game_records, outcome in ex.map(_collect_worker, seeds):
+                    records.extend(game_records)
+                    outcomes.append(outcome)
+            win_rate = sum(1 for o in outcomes if o > 0) / max(len(outcomes), 1)
+            return records, outcomes, win_rate
+        except Exception as e:  # pragma: no cover - fall back to sequential
+            print(f"  parallel collection failed ({e}); falling back to sequential")
+            records, outcomes = [], []
+
+    for s in seeds:
+        game_records, outcome = play_single_game(model, cfg, device, s)
+        records.extend(game_records)
         outcomes.append(outcome)
-        for r in game_records:
-            r.outcome = outcome
-            records.append(r)
 
     win_rate = sum(1 for o in outcomes if o > 0) / max(len(outcomes), 1)
     return records, outcomes, win_rate

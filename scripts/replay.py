@@ -1,13 +1,19 @@
 """Run a trained checkpoint vs an opponent and export game_replay.html.
 
-Supports V1 (TransformerPolicy), V2 (OrbitNet) and V3 (OrbitNet + pair/comet
-features) checkpoints. V3 uses the same OrbitNet code path as V2 — it just needs
-the v3 config so feature dims (24-dim planets, pair features) match the weights.
+Supports V1 (TransformerPolicy), V2 (OrbitNet), V3 (OrbitNet + pair/comet
+features) and V4 (OrbitNet + v3 features + PopArt/PPG/shot-validator/rich
+representation) checkpoints. V3/V4 use the same OrbitNet code path as V2 — they
+just need their own config so feature dims match the weights (v3: 24-dim planets;
+v4: 28-dim planets + rich globals).
 
 Usage:
     # V2 checkpoint vs apex (default)
     uv run python scripts/replay.py \
         --checkpoint outputs/checkpoints/v2_default/ckpt_last.pt
+
+    # V4 checkpoint vs apex (defaults to configs/v4_ceiling.yaml)
+    uv run python scripts/replay.py \
+        --checkpoint outputs/checkpoints/v4_ceiling/ckpt_last.pt --v4
 
     # V3 checkpoint vs apex (defaults to configs/v3_features.yaml)
     uv run python scripts/replay.py \
@@ -55,6 +61,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--v3", action="store_true",
         help="V3 OrbitNet checkpoint (defaults config to configs/v3_features.yaml)",
+    )
+    parser.add_argument(
+        "--v4", action="store_true",
+        help="V4 OrbitNet checkpoint (defaults config to configs/v4_ceiling.yaml)",
     )
     parser.add_argument(
         "--opponent", type=str, default="apex",
@@ -133,6 +143,10 @@ def main() -> None:
         config_path = args.config or "configs/transformer_mixed.yaml"
         rl_agent = load_v1_agent(ckpt_path, config_path, device)
         agent_label = "V1 RL"
+    elif args.v4:
+        config_path = args.config or "configs/v4_ceiling.yaml"
+        rl_agent = load_v2_agent(ckpt_path, config_path, device, label="V4")
+        agent_label = "V4 RL"
     elif args.v3:
         config_path = args.config or "configs/v3_features.yaml"
         rl_agent = load_v2_agent(ckpt_path, config_path, device, label="V3")

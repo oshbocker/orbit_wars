@@ -4,17 +4,18 @@ Requires rclone configured with a 'gdrive' remote pointing to your Google Drive.
 See README / CLAUDE.md for setup instructions.
 
 Usage:
-    # Download latest checkpoint of the v3 A100 run (default)
-    uv run python scripts/download_checkpoint.py --run v3_a100
+    # Download latest checkpoint of the v4 ceiling run (default)
+    uv run python scripts/download_checkpoint.py --run v4_ceiling
 
     # List which checkpoint files exist for a run, then grab a specific one
-    uv run python scripts/download_checkpoint.py --run v3_a100 --list-ckpts
-    uv run python scripts/download_checkpoint.py --run v3_a100 --ckpt ckpt_000750.pt
+    uv run python scripts/download_checkpoint.py --run v4_ceiling --list-ckpts
+    uv run python scripts/download_checkpoint.py --run v4_ceiling --ckpt ckpt_000050.pt
 
     # Download the BC-only clone (update 0) to compare vs the PPO checkpoints
-    uv run python scripts/download_checkpoint.py --run v3_a100 --ckpt ckpt_000000.pt
+    uv run python scripts/download_checkpoint.py --run v4_ceiling --ckpt ckpt_000000.pt
 
-    # Download the older v2 PPO run
+    # Download an older run (v3 / v2 PPO)
+    uv run python scripts/download_checkpoint.py --run v3_a100
     uv run python scripts/download_checkpoint.py --run v2_ppo_a100
 
     # Download all checkpoints
@@ -39,7 +40,7 @@ DRIVE_BASE = "orbit_wars_outputs/checkpoints"
 LOCAL_BASE = Path("outputs/checkpoints")
 
 DEFAULT_REMOTE = "gdrive"
-DEFAULT_RUN = "v3_a100"
+DEFAULT_RUN = "v4_ceiling"
 
 
 def _check_rclone() -> None:
