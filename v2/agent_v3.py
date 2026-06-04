@@ -16,7 +16,9 @@ Resolution order for each artifact (first hit wins):
   checkpoint : $V2_CHECKPOINT, ./ckpt_last.pt, /kaggle_simulations/agent/ckpt_last.pt
   config     : $V2_CONFIG,    ./submission_config.yaml, /kaggle_simulations/agent/submission_config.yaml
 
-IMPORTANT: `agent()` must remain the LAST callable defined at module level.
+IMPORTANT: `agent()` must remain the LAST callable defined at module level —
+Kaggle's loader returns the last callable in the module namespace. The bundle
+packages are imported at top (before any `def`), so `agent` stays last.
 """
 from __future__ import annotations
 
@@ -26,27 +28,45 @@ from typing import Any
 
 # Ensure the bundled `v2/` and `src/` packages are importable. On Kaggle the
 # agent runs as `/kaggle_simulations/agent/main.py`, and that directory is NOT
-# automatically on sys.path — without this, `from v2.actions import ...` raises
-# `ModuleNotFoundError: No module named 'v2'`.
-# Kaggle runs the agent via `exec(code, env)`, so `__file__` is NOT defined in
-# that namespace — fall back to the known agent directory.
+# reliably on sys.path when our deferred imports run — without this, an import of
+# `v2.*`/`src.*` raises `ModuleNotFoundError: No module named 'v2'`.
+#
+# Kaggle's loader (kaggle_environments/agent.py `get_last_callable`) does:
+#     sys.path.append(os.path.dirname(path))   # adds /kaggle_simulations/agent
+#     exec(code_object, env)                   # runs THIS module body
+#     sys.path.pop()                           # ...then REMOVES it again
+# and it execs into a bare `env = {}`, so `__file__` is NOT defined here. Two
+# consequences we must defend against:
+#   1. The dir is already on sys.path during exec, so a `if _d not in sys.path`
+#      guard would no-op — then the trailing pop() orphans us and any import that
+#      runs LATER (e.g. lazily inside the first agent() call) fails. So we
+#      FORCE-insert at position 0; the pop() removes Kaggle's trailing copy and
+#      leaves ours intact.
+#   2. To be doubly safe, we import the bundle packages at module top-level
+#      (below), i.e. DURING exec while the path is guaranteed present, so they
+#      land in sys.modules and never need re-resolution after the pop().
 try:
     _AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
 except NameError:
     _AGENT_DIR = "/kaggle_simulations/agent"
-for _d in (_AGENT_DIR, "/kaggle_simulations/agent"):
-    if _d and _d not in sys.path:
-        sys.path.insert(0, _d)
+for _d in ("/kaggle_simulations/agent", _AGENT_DIR):
+    if _d:
+        sys.path.insert(0, _d)  # unconditional — survives Kaggle's sys.path.pop()
 
 import torch
 
-# Singleton state (loaded on first call).
+# Eagerly import the bundled packages NOW (during exec, while the agent dir is on
+# sys.path) so they are cached in sys.modules before Kaggle pops the path entry.
+from v2.actions import decode_actions as _decode
+from v2.features import encode_features as _encode
+from v2.model import OrbitNet
+from v2.config import V2Config, load_v2_config
+from src.game_types import parse_observation as _parse
+
+# Singleton state (model + config loaded on first call).
 _model = None
 _cfg = None
 _device = None
-_encode = None
-_decode = None
-_parse = None
 
 
 def _find(paths: list[str]) -> str | None:
@@ -58,8 +78,6 @@ def _find(paths: list[str]) -> str | None:
 
 def _resolve_config():
     """Load the V2Config matching the trained checkpoint, or a sane default."""
-    from v2.config import V2Config, load_v2_config
-
     cfg_path = _find([
         os.environ.get("V2_CONFIG", ""),
         "submission_config.yaml",
@@ -73,15 +91,9 @@ def _resolve_config():
 
 
 def _init() -> None:
-    global _model, _cfg, _device, _encode, _decode, _parse
+    global _model, _cfg, _device
     _device = torch.device("cpu")
 
-    from v2.actions import decode_actions
-    from v2.features import encode_features
-    from v2.model import OrbitNet
-    from src.game_types import parse_observation
-
-    _encode, _decode, _parse = encode_features, decode_actions, parse_observation
     _cfg = _resolve_config()
 
     ckpt_path = _find([
