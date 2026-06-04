@@ -21,10 +21,11 @@ Optionally BC-pretrains from apex first (imitation.enabled) for a warm start.
 from __future__ import annotations
 
 import argparse
+import math
 import random
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -32,9 +33,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from src.game_types import parse_observation
+from src.game_types import FleetState, parse_observation
 from src.logging import TrainLogger
-from src.simulator import build_sim_state
+from src.simulator import add_fleet_event, build_sim_state
 
 from .actions import decode_sampled_actions, sample_actions
 from .config import V2Config, load_v2_config
@@ -58,6 +59,38 @@ class StepRecord:
     player: int
     step: int
     outcome: float = 0.0    # filled after the game ends
+    # Two-player search (Tier 3.2): the opponent's (apex) launches this turn,
+    # mapped to SimState schedule entries (from_id, target_id, ships, travel_time).
+    # Replayed in search so the lookahead evaluates moves against a real response
+    # instead of a passive opponent. Empty unless exit.two_player_search.
+    opp_events: list = field(default_factory=list)
+
+
+def _map_opp_moves(opp_moves: list, game_state: Any) -> list:
+    """Map opponent apex moves [(from_id, angle, ships)] to SimState schedule
+    entries (from_id, target_id, ships, travel_time), using true geometry from
+    the (full-information) game state to ray-cast each launch to its target."""
+    from .state import predict_fleet_destination
+
+    by_id = {p.id: p for p in game_state.planets}
+    out: list = []
+    for mv in opp_moves:
+        try:
+            from_id, angle, ships = int(mv[0]), float(mv[1]), int(mv[2])
+        except (TypeError, ValueError, IndexError):
+            continue
+        fp = by_id.get(from_id)
+        if fp is None or ships <= 0:
+            continue
+        sx = fp.x + (fp.radius + 0.1) * math.cos(angle)
+        sy = fp.y + (fp.radius + 0.1) * math.sin(angle)
+        vf = FleetState(id=-1, owner=fp.owner, x=sx, y=sy, angle=angle,
+                        from_planet_id=from_id, ships=ships)
+        tgt, eta = predict_fleet_destination(
+            vf, game_state.planets, game_state.step, game_state.angular_velocity)
+        if tgt is not None and math.isfinite(eta):
+            out.append((from_id, int(tgt.id), ships, float(eta)))
+    return out
 
 
 @dataclass
@@ -124,13 +157,23 @@ def play_single_game(
     from agents.apex import agent as apex_agent
 
     game_records: list[StepRecord] = []
+    two_player = cfg.exit.two_player_search
+
+    def _record_opp(n_before: int, opp_moves: list) -> None:
+        # If _policy_decide appended a record this turn, attach the opponent's
+        # mapped launches so search can replay them (two-player one-ply).
+        if two_player and len(game_records) > n_before and opp_moves:
+            game_records[-1].opp_events = _map_opp_moves(opp_moves, game_records[-1].game_state)
+
     if cfg.exit.collect_fast_env:
         from .fast_env import FastOrbitWars
         sim = FastOrbitWars(num_agents=2, seed=seed)
         while not sim.done:
             obs0, obs1 = sim.observation(0), sim.observation(1)
+            n0 = len(game_records)
             moves = _policy_decide(model, cfg, device, obs0, game_records)
             opp_moves = apex_agent(obs1) or []
+            _record_opp(n0, opp_moves)
             sim.step([moves, list(opp_moves)])
         reward = sim.rewards[0]
     else:
@@ -142,8 +185,10 @@ def play_single_game(
         while not done:
             obs0 = _extract_obs(states[0])
             obs1 = _extract_obs(states[1])
+            n0 = len(game_records)
             moves = _policy_decide(model, cfg, device, obs0, game_records)
             opp_moves = apex_agent(obs1) or []
+            _record_opp(n0, opp_moves)
             states = env.step([moves, list(opp_moves)])
             done = _extract_status(states[0]) != "ACTIVE"
         reward = states[0]["reward"] if isinstance(states[0], dict) else states[0].reward
@@ -230,12 +275,22 @@ def _search_record(rec: StepRecord, env_cfg, exit_cfg, value_model=None) -> V2Ex
     target_probs = np.zeros((P, P + 1), dtype=np.float32)
     frac_probs = np.zeros((P, P, K), dtype=np.float32)
 
+    # Two-player search: inject the opponent's turn-1 response (its actual apex
+    # launches this step) into the base state, so EVERY candidate (and hold) is
+    # evaluated against a real opponent instead of a passive one.
+    base_sim = rec.sim_state
+    if getattr(exit_cfg, "two_player_search", False) and getattr(rec, "opp_events", None):
+        base_sim = rec.sim_state.copy()
+        for from_id, tgt_id, ships, tt in rec.opp_events:
+            if from_id in base_sim.planet_owner and tgt_id in base_sim.planet_owner:
+                add_fleet_event(base_sim, from_id, tgt_id, ships, tt)
+
     for i in range(P):
         if not feats.own_mask[i]:
             continue
         tp, fp = search_improve_planet(
             state=rec.game_state, features=feats,
-            sim_state=rec.sim_state, player=rec.player, source_slot=i,
+            sim_state=base_sim, player=rec.player, source_slot=i,
             env_cfg=env_cfg, exit_cfg=exit_cfg, value_model=value_model,
         )
         target_probs[i] = tp

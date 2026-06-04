@@ -227,3 +227,23 @@ class OrbitNet(nn.Module):
 
         return OrbitNetOutput(logits=logits, value=value, frac_logits=frac_logits,
                               aux_value=aux_value, shot_logits=shot_logits)
+
+    def value_only(
+        self,
+        planet_features: torch.Tensor,    # [B, P, F]
+        global_features: torch.Tensor,    # [B, G]
+        planet_mask: torch.Tensor,        # [B, P] bool
+    ) -> torch.Tensor:
+        """Value head only (trunk -> masked mean pool -> value), skipping the
+        O(P^2) pairwise output heads. ~30-100x cheaper than forward() on CPU —
+        used to score ExIt search leaves (Tier 3.2) where only the value matters."""
+        x = self.planet_embed(planet_features)
+        g = self.global_embed(global_features)
+        x = x + g.unsqueeze(1)
+        key_padding_mask = ~planet_mask
+        for block in self.transformer_blocks:
+            x = block(x, key_padding_mask=key_padding_mask)
+        x = self.final_ln(x)
+        mask_float = planet_mask.float().unsqueeze(-1)
+        pooled = (x * mask_float).sum(dim=1) / mask_float.sum(dim=1).clamp(min=1.0)
+        return self.value_head(pooled).squeeze(-1)

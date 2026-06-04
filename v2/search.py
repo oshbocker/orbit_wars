@@ -66,7 +66,13 @@ def _reconstruct_leaf_state(
 def _batch_neural_values(
     value_model, env_cfg: V2EnvConfig, leaf_states: list[GameState],
 ) -> list[float]:
-    """Score leaf GameStates with OrbitNet's value head in one batched forward."""
+    """Score leaf GameStates with OrbitNet's value head in one batched pass.
+
+    Uses `value_only` (trunk -> pool -> value), which skips the O(P^2) pairwise
+    output heads — those dominate a full forward and are irrelevant to the value,
+    so this is ~30-100x faster on CPU (the difference between a viable and an
+    unviable neural-search ExIt run).
+    """
     import numpy as _np
     import torch
 
@@ -75,13 +81,9 @@ def _batch_neural_values(
     pf = torch.from_numpy(_np.stack([f.planet_features for f in feats])).to(dev)
     gf = torch.from_numpy(_np.stack([f.global_features for f in feats])).to(dev)
     pm = torch.from_numpy(_np.stack([f.planet_mask for f in feats])).to(dev)
-    om = torch.from_numpy(_np.stack([f.own_mask for f in feats])).to(dev)
-    rm = torch.from_numpy(_np.stack([f.reachability_mask for f in feats])).to(dev)
-    pair = (torch.from_numpy(_np.stack([f.pair_features for f in feats])).to(dev)
-            if feats and feats[0].pair_features is not None else None)
     with torch.inference_mode():
-        out = value_model(pf, gf, pm, om, rm, pair)
-    return out.value.detach().cpu().numpy().astype(float).tolist()
+        vals = value_model.value_only(pf, gf, pm)
+    return vals.detach().cpu().numpy().astype(float).tolist()
 
 
 def _masked_softmax(scores: np.ndarray, temperature: float) -> np.ndarray:
