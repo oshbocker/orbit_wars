@@ -21,7 +21,22 @@ IMPORTANT: `agent()` must remain the LAST callable defined at module level.
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
+
+# Ensure the bundled `v2/` and `src/` packages are importable. On Kaggle the
+# agent runs as `/kaggle_simulations/agent/main.py`, and that directory is NOT
+# automatically on sys.path — without this, `from v2.actions import ...` raises
+# `ModuleNotFoundError: No module named 'v2'`.
+# Kaggle runs the agent via `exec(code, env)`, so `__file__` is NOT defined in
+# that namespace — fall back to the known agent directory.
+try:
+    _AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    _AGENT_DIR = "/kaggle_simulations/agent"
+for _d in (_AGENT_DIR, "/kaggle_simulations/agent"):
+    if _d and _d not in sys.path:
+        sys.path.insert(0, _d)
 
 import torch
 
@@ -48,6 +63,7 @@ def _resolve_config():
     cfg_path = _find([
         os.environ.get("V2_CONFIG", ""),
         "submission_config.yaml",
+        os.path.join(_AGENT_DIR, "submission_config.yaml"),
         "/kaggle_simulations/agent/submission_config.yaml",
     ])
     if cfg_path is not None:
@@ -71,6 +87,7 @@ def _init() -> None:
     ckpt_path = _find([
         os.environ.get("V2_CHECKPOINT", ""),
         "ckpt_last.pt",
+        os.path.join(_AGENT_DIR, "ckpt_last.pt"),
         "/kaggle_simulations/agent/ckpt_last.pt",
     ])
     if ckpt_path is None:

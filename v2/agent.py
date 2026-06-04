@@ -7,10 +7,25 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 from typing import Any
 
 import numpy as np
 import torch
+
+# Ensure the bundled `v2/` package is importable. On Kaggle the agent runs as
+# `/kaggle_simulations/agent/main.py`, and that directory is NOT automatically
+# on sys.path — without this, `from v2.model import ...` raises
+# `ModuleNotFoundError: No module named 'v2'`.
+# Kaggle runs the agent via `exec(code, env)`, so `__file__` is NOT defined in
+# that namespace — fall back to the known agent directory.
+try:
+    _AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    _AGENT_DIR = "/kaggle_simulations/agent"
+for _d in (_AGENT_DIR, "/kaggle_simulations/agent"):
+    if _d and _d not in sys.path:
+        sys.path.insert(0, _d)
 
 # ── Inline constants (avoid importing src at submission time) ──────────────
 _BOARD_SIZE = 100.0
@@ -212,6 +227,7 @@ def _init_model():
     if not os.path.exists(ckpt_path):
         # Try common locations
         for candidate in [
+            os.path.join(_AGENT_DIR, "ckpt_last.pt"),
             "/kaggle_simulations/agent/ckpt_last.pt",
             "outputs/checkpoints/v2_default/ckpt_last.pt",
         ]:
