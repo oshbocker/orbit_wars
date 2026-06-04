@@ -207,6 +207,14 @@ class V2ExItConfig:
     # when implemented (2026-06-04) it DEGRADED the 77% agent (too-sparse one-ply
     # opponent biases the search toward passivity). Opt in only for experiments.
     two_player_search: bool = False
+    # Phase 1 (2026-06-04): every-step in-sim rollout opponent — the principled
+    # fix vs the sparse turn-1 version above. During each candidate's lookahead,
+    # ALL players (symmetric: opponents AND our own continuation) launch via a
+    # cheap geometry-light rollout policy at every sim_step, so "hold" means
+    # playing on and aggression is scored against a real, persistent opponent.
+    # Default OFF — keeps the 77% agent byte-identical until validated @ n=60.
+    rollout_search: bool = False
+    rollout_self: bool = True       # include our own continuation in the rollout
 
 
 @dataclass(slots=True)

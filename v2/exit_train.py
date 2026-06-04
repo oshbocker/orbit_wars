@@ -142,8 +142,11 @@ def _policy_decide(model, cfg, device, obs0, game_records: list[StepRecord]):
         output = model(pf, gf, pm, om, rm)
         sampled = sample_actions(output, om, deterministic=not cfg.exit.sample_collect)
     if features.own_mask.any():
+        # Geometry (positions + neighbour lists) is needed only by the Phase 1
+        # every-step rollout opponent; skip the O(P^2) precompute otherwise.
+        with_geom = bool(getattr(cfg.exit, "rollout_search", False))
         game_records.append(StepRecord(
-            features=features, sim_state=build_sim_state(state),
+            features=features, sim_state=build_sim_state(state, with_geometry=with_geom),
             game_state=state, player=state.player, step=state.step,
         ))
     return decode_sampled_actions(sampled, output, features, state, cfg.env)

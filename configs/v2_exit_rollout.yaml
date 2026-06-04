@@ -1,0 +1,74 @@
+# Phase 1: every-step in-sim rollout opponent (AutoGo-informed stronger expert).
+# The principled fix vs the sparse turn-1 `two_player_search` (which degraded the
+# 77% agent): during each candidate's lookahead, ALL players launch via a cheap
+# geometry-light rollout policy at EVERY sim_step, so "hold" plays on and
+# aggression is scored against a persistent opponent.
+#
+# Recommended run: warm-start from the iter-20 checkpoint that produced 77%:
+#   python -m v2.exit_train --config configs/v2_exit_rollout.yaml \
+#       --resume outputs/checkpoints/v2_exit_a100/ckpt_000020.pt
+# (--resume loads weights and skips BC.) Gate on scripts/eval_fast.py n=60:
+# must hold >=77% vs apex before keeping rollout_search on.
+run_name: v2_exit_rollout
+seed: 42
+device: auto
+save_dir: outputs/checkpoints
+log_dir: outputs/logs
+checkpoint_every: 5
+opponent: apex
+
+env:
+  max_planets: 40
+  allocation_threshold: 0.05
+  min_ships_to_send: 1
+  ship_fractions: [0.25, 0.5, 0.75, 1.0]
+
+model:
+  embed_dim: 128
+  n_heads: 4
+  n_layers: 3
+  ff_dim: 256
+  planet_feat_dim: 22
+  global_feat_dim: 8
+  n_fractions: 4
+
+eval:
+  eval_every: 5
+  eval_games: 10
+  eval_opponents: [apex, random]
+
+# BC warm start (clone apex). Skipped automatically when --resume is passed.
+imitation:
+  enabled: true
+  bc_expert: apex
+  bc_games: 150
+  bc_demo_opponent: random
+  bc_epochs: 50
+  bc_lr: 0.001
+  bc_batch_size: 256
+  bc_cache_path: experiments/demos_apex.pkl
+
+exit:
+  enabled: true
+  iterations: 50
+  games_per_iter: 8
+  search_depth: 12
+  search_candidates: 10
+  search_temperature: 1.0
+  train_epochs: 4
+  train_batch_size: 256
+  train_lr: 0.0003
+  value_loss_coef: 0.5
+  max_grad_norm: 0.5
+  dataset_max_iters: 3
+  four_player_prob: 0.0
+  opponent: apex
+  sample_collect: true
+  # Phase 1 flags:
+  rollout_search: true      # every-step in-sim rollout opponent (the experiment)
+  rollout_self: true        # symmetric: our continuation also rolls out
+  two_player_search: false  # keep the failed sparse turn-1 version OFF
+  # Parallelism (the rollout makes search ~Nx heavier; fan out on Colab):
+  collect_fast_env: true    # engine-faithful standalone sim, no Kaggle harness
+  collect_workers: 0        # set to ~vCPU count on Colab (collection bottleneck)
+  search_workers: 0         # set to ~vCPU count on Colab (CPU-bound search)

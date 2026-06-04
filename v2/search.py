@@ -125,6 +125,16 @@ def search_improve_planet(
     K = len(fracs)
     use_neural = bool(getattr(exit_cfg, "neural_value_leaves", False)) and value_model is not None
 
+    # Phase 1: every-step in-sim rollout opponent. All present players (optionally
+    # incl. our own continuation) launch via the cheap rollout policy at each step,
+    # so "hold" plays on and aggression is scored against a persistent opponent.
+    rollout_players: list[int] | None = None
+    if bool(getattr(exit_cfg, "rollout_search", False)) and sim_state.planet_xy is not None:
+        owners = {o for o in sim_state.planet_owner.values() if o >= 0}
+        if not bool(getattr(exit_cfg, "rollout_self", True)):
+            owners.discard(player)
+        rollout_players = sorted(owners)
+
     target_scores = np.full(P + 1, NEG, dtype=np.float32)   # [hold, targets...]
     frac_scores = np.full((P, K), NEG, dtype=np.float32)
 
@@ -134,7 +144,7 @@ def search_improve_planet(
     # Hold baseline
     noop = sim_state.copy()
     for _ in range(exit_cfg.search_depth):
-        sim_step(noop)
+        sim_step(noop, rollout_players)
     leaves.append(("hold", -1, -1, noop))
 
     src = features.planet_states[source_slot]
@@ -158,7 +168,7 @@ def search_improve_planet(
                 sc = sim_state.copy()
                 add_fleet_event(sc, src.id, tgt.id, ships, tt)
                 for _ in range(exit_cfg.search_depth):
-                    sim_step(sc)
+                    sim_step(sc, rollout_players)
                 leaves.append(("frac", j, fb, sc))
 
     # Score all leaves (neural batched, or heuristic per-leaf).

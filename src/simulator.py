@@ -23,6 +23,12 @@ class SimState:
     fleet_events: list[tuple[int, int, int, int]]  # [(arrival_step, target_id, owner, ships)]
     current_step: int
     planet_ids: list[int]              # all planet ids (shared, not copied)
+    # Phase 1 (every-step in-sim rollout opponent): geometry, precomputed once at
+    # the search root and shared immutably across all candidate copies. Both are
+    # None on a positionless SimState — the geometry-free rollout policy is only
+    # available when these are populated (build_sim_state fills them).
+    planet_xy: dict[int, tuple[float, float]] | None = None      # root positions
+    neighbors: dict[int, list[int]] | None = None                # pid -> nearest pids
 
     def copy(self) -> SimState:
         return SimState(
@@ -32,11 +38,22 @@ class SimState:
             fleet_events=list(self.fleet_events),
             current_step=self.current_step,
             planet_ids=self.planet_ids,          # shared immutable
+            planet_xy=self.planet_xy,            # shared immutable
+            neighbors=self.neighbors,            # shared immutable
         )
 
 
-def build_sim_state(game_state: GameState, step: int | None = None) -> SimState:
-    """Construct SimState from a parsed GameState observation."""
+def build_sim_state(
+    game_state: GameState, step: int | None = None, with_geometry: bool = False,
+) -> SimState:
+    """Construct SimState from a parsed GameState observation.
+
+    With `with_geometry`, also precompute root planet positions and per-planet
+    nearest-neighbour lists (shared immutably across copies) so the every-step
+    rollout opponent (Phase 1) can pick targets and travel times without
+    re-running geometry each step. Orbiting planets use their *root* position
+    (an approximation the existing search already makes).
+    """
     planet_owner: dict[int, int] = {}
     planet_ships: dict[int, float] = {}
     planet_prod: dict[int, int] = {}
@@ -51,6 +68,17 @@ def build_sim_state(game_state: GameState, step: int | None = None) -> SimState:
     # Convert existing fleets to scheduled arrival events
     fleet_events = _build_fleet_schedule(game_state.fleets, game_state.planets, game_state.step)
 
+    planet_xy: dict[int, tuple[float, float]] | None = None
+    neighbors: dict[int, list[int]] | None = None
+    if with_geometry:
+        planet_xy = {p.id: (p.x, p.y) for p in game_state.planets}
+        neighbors = {}
+        for pid, (x, y) in planet_xy.items():
+            others = [(math.hypot(ox - x, oy - y), oid)
+                      for oid, (ox, oy) in planet_xy.items() if oid != pid]
+            others.sort()
+            neighbors[pid] = [oid for _, oid in others]
+
     return SimState(
         planet_owner=planet_owner,
         planet_ships=planet_ships,
@@ -58,6 +86,8 @@ def build_sim_state(game_state: GameState, step: int | None = None) -> SimState:
         fleet_events=fleet_events,
         current_step=step if step is not None else game_state.step,
         planet_ids=planet_ids,
+        planet_xy=planet_xy,
+        neighbors=neighbors,
     )
 
 
@@ -82,8 +112,81 @@ def _build_fleet_schedule(
     return schedule
 
 
-def sim_step(state: SimState) -> None:
-    """Advance simulation by 1 step: production, then fleet arrivals + combat."""
+# Rollout-opponent tuning (cheap greedy capture policy; calibrated loosely on
+# apex: launch when affordable, keep a small home reserve, favour cheap high-prod
+# captures). Deliberately simple — Phase 1's value is that the opponent acts at
+# EVERY step, not that it is apex-perfect.
+ROLLOUT_MAX_TARGETS = 6      # nearest planets considered per source planet
+ROLLOUT_MIN_SHIPS = 3        # don't launch from near-empty planets
+ROLLOUT_RESERVE = 1          # ships left behind after a launch
+
+
+def rollout_launches(
+    state: SimState, player: int, max_targets: int = ROLLOUT_MAX_TARGETS,
+) -> list[tuple[int, int, int, float]]:
+    """Cheap geometry-light launches for `player` from the current SimState.
+
+    For each owned planet, scan its nearest `max_targets` non-owned planets, score
+    each by (production / required_ships) where required accounts for garrison
+    growth over the flight, and launch at the single best affordable target.
+    Returns [(from_id, target_id, ships, travel_time)]. Requires geometry
+    (build_sim_state(..., with_geometry=True)); returns [] otherwise.
+    """
+    xy = state.planet_xy
+    nbrs = state.neighbors
+    if xy is None or nbrs is None:
+        return []
+    out: list[tuple[int, int, int, float]] = []
+    for pid in state.planet_ids:
+        if state.planet_owner[pid] != player:
+            continue
+        ships = state.planet_ships[pid]
+        if ships < ROLLOUT_MIN_SHIPS:
+            continue
+        available = int(ships) - ROLLOUT_RESERVE
+        if available <= 0:
+            continue
+        sx, sy = xy[pid]
+        best_tid = -1
+        best_need = 0
+        best_tt = 0.0
+        best_score = 0.0
+        for tid in nbrs[pid][:max_targets]:
+            if state.planet_owner[tid] == player:
+                continue
+            tx, ty = xy[tid]
+            if passes_through_sun(sx, sy, tx, ty):
+                continue
+            tt = travel_time(sx, sy, tx, ty, available)
+            garrison = state.planet_ships[tid]
+            # owned-by-enemy planets keep producing during the flight
+            grow = state.planet_prod[tid] * tt if state.planet_owner[tid] >= 0 else 0.0
+            need = int(garrison + grow) + 1
+            if need > available:
+                continue
+            score = state.planet_prod[tid] / float(need)
+            if score > best_score:
+                best_score = score
+                best_tid, best_need, best_tt = tid, need, tt
+        if best_tid >= 0:
+            out.append((pid, best_tid, best_need, best_tt))
+    return out
+
+
+def sim_step(state: SimState, rollout_players: list[int] | None = None) -> None:
+    """Advance simulation by 1 step: production, then fleet arrivals + combat.
+
+    When `rollout_players` is given, those players first launch fleets via the
+    cheap `rollout_launches` policy (engine order: launch -> production -> move ->
+    combat). This is the every-step in-sim opponent (Phase 1) that stops the
+    lookahead from overrating aggression. Default None reproduces the original
+    passive-opponent behaviour exactly.
+    """
+    if rollout_players:
+        for pl in rollout_players:
+            for from_id, tid, ships, tt in rollout_launches(state, pl):
+                add_fleet_event(state, from_id, tid, ships, tt)
+
     state.current_step += 1
 
     # Production for all owned planets
