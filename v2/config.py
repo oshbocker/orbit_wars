@@ -203,7 +203,10 @@ class V2ExItConfig:
     # opponent (two_player_search) so the search reflects real opposition.
     neural_value_leaves: bool = False
     use_batched_env: bool = False
-    two_player_search: bool = True
+    # Replay the opponent's turn-1 apex launch in the lookahead. Default OFF:
+    # when implemented (2026-06-04) it DEGRADED the 77% agent (too-sparse one-ply
+    # opponent biases the search toward passivity). Opt in only for experiments.
+    two_player_search: bool = False
 
 
 @dataclass(slots=True)

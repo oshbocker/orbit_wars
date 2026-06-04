@@ -498,6 +498,27 @@ Each `.pt` file contains `{"update": int, "policy": state_dict, "optimizer": sta
 | Population-based training | Train a league of agents, sample opponents |
 | Better features | Extend `src/features.py` (e.g. comet tracking, orbit prediction for targets) |
 
+## Current best agent & next-session plan: STRONGER EXPERT SEARCH (ExIt)
+
+**State (2026-06-04).** Best agent = **heuristic ExIt `v2_exit_a100/ckpt_000020.pt` (iter 20), 77% vs apex at n=60** (submitted). ExIt (search → distill) is the proven path; it plateaus ~70–77% with the current shallow expert.
+
+**Dead ends — do NOT repeat (all empirically confirmed):**
+- **Model-free PPO** (incl. the full v4_ceiling stack): structural credit-assignment stall, 0–10% vs apex / 100% vs random. More representation/critic/opponent machinery does not fix it.
+- **Neural-value search leaves** (`exit.neural_value_leaves`, Tier 3.2): *collapsed* the 77% agent to 0%. Cause: leaf states are reconstructed fleet-less (positionless `SimState`) → out-of-distribution for the value head, and `evaluate_state` (heuristic) already counts in-flight `fleet_events`, so the value head is a *worse* leaf scorer. Parked off. (`model.value_only` speedup kept.)
+- **Two-player one-ply search** (`exit.two_player_search`, committed): replays the opponent's actual apex turn-1 launch in the lookahead. Correct + cheap but it **DEGRADED** the warm-started 77% agent (`v2_exit_2p_a100`, n=60: 40% @ iter5, 43% @ iter10, never recovering to 77%). Likely mechanism: injecting the opponent makes aggressive candidates look worse → search biases toward passivity → more passive policy → worse vs apex (the exact failure mode). The sparse turn-1 opponent is the limitation — it needs an every-step opponent (#1 below). Flag defaults on in `V2ExItConfig`; **set `two_player_search: false` for the heuristic ExIt that produced the 77% agent.**
+
+**The lever = make the EXPERT (search) stronger.** Ranked options for the next session:
+1. **Every-step in-sim opponent** (the real fix vs the sparse turn-1 version). The gap is in `src/simulator.py`: `sim_step` advances production + fleet arrivals + combat but the **opponent never launches**, so lookahead overrates aggression. Have the opponent act at *every* search step — either reconstruct a positional state per step to run apex (positionless-`SimState` obstacle), or write a cheap geometry-free opponent heuristic that launches from `SimState` alone.
+2. **Joint / multi-planet search.** `search_improve_planet` is per-source greedy (one owned planet at a time); coordinated multi-planet plays are invisible. Do sequential search with state updated between planets, or a beam over joint actions.
+3. **Deeper search** (`exit.search_depth`↑, `search_candidates`↑): cheap, but pair with #1 — deeper lookahead with a passive opponent overestimates attacks.
+4. **Scale heuristic ExIt**: more `exit.iterations` + larger `exit.dataset_max_iters` (the 77% plateau is partly the short 3–4-iter data churn).
+
+**Separate track — answers the original "does a deeper net help?" question:** run the **embed-128 vs 256 capacity A/B in the ExIt regime** (capacity should help with good supervised-distillation targets, unlike PPO). Configs exist: `configs/v2_exit_embed128.yaml` / `v2_exit_embed256.yaml` (now with parallel collection); run on Colab via `scripts/run_embed_ab.py`.
+
+**Key files:** `v2/search.py` (`search_improve_planet`, `_make_dists`, neural-value helpers), `v2/exit_train.py` (collect→search→distill loop, `_search_record`, two-player `opp_events` wiring, parallel `collect_workers`/`search_workers`, `collect_fast_env`), `src/simulator.py` (`SimState` is positionless; `sim_step` has NO opponent moves — the gap to close), `configs/v2_exit.yaml`.
+
+**Eval/ops tooling:** `scripts/eval_fast.py` (fast_env, n=60, side-alternated, paired seeds — the reliable scorer; per-iter n=20 training evals are too noisy), `scripts/download_checkpoint.py --run <name> --all-ckpts`, `scripts/replay.py --exit`. Submission bundle: `v2/agent_v3.py` + `ckpt_last.pt` + `submission_config.yaml` + `v2/` + `src/` (built at `outputs/submissions/v2_exit_a100_bundle/`).
+
 ## Config System
 
 ### Transformer PPO configs (`src/`)
