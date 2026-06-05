@@ -345,7 +345,12 @@ def search_improve(
     by OrbitNet's value head (Tier 3.2). In parallel mode the model's weights are
     broadcast to workers via the pool initializer; workers score leaves on CPU.
     """
-    use_neural = getattr(cfg.exit, "neural_value_leaves", False) and model is not None
+    # The value model must reach the leaf scorer for BOTH the pure-neural swap
+    # (neural_value_leaves) and the Phase 3 blend (value_leaf_blend > 0).
+    wants_value = bool(getattr(cfg.exit, "neural_value_leaves", False)) or (
+        float(getattr(cfg.exit, "value_leaf_blend", 0.0)) > 0.0
+    )
+    use_neural = wants_value and model is not None
     workers = cfg.exit.search_workers
 
     if workers and workers > 1 and len(records) > 1:

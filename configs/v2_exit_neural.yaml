@@ -1,17 +1,24 @@
-# Phase 5 — Neural-Value ExIt (Tier 3.2).
+# Phase 3 — grounded learned value at search leaves (BLEND, not swap).
 #
 # Same base-v2 OrbitNet architecture as configs/v2_exit.yaml (embed 128,
-# planet_feat_dim 22, n_fractions 4) so it can WARM-START from a v2_exit_a100
-# checkpoint. The only algorithmic change is exit.neural_value_leaves: true —
-# search leaves are scored by OrbitNet's value head instead of the handcrafted
-# evaluate_state, giving a stronger expert (the move that should break the
-# heuristic-search plateau the standard ExIt run hit at ~iter 15).
+# planet_feat_dim 22, n_fractions 4) so it WARM-STARTS from a v2_exit_a100
+# checkpoint. Each candidate leaf is scored by a z-scored blend of evaluate_state
+# (heuristic) and OrbitNet's value head:
+#   score = (1 - value_leaf_blend)*z(heur) + value_leaf_blend*z(neural)
+#
+# A pure heuristic->neural SWAP (neural_value_leaves: true) collapsed the 77% agent
+# before — the value is grounded globally (corr w/ outcome 0.389) but too noisy to
+# rank near-equal sibling moves alone. So blend a small weight instead of swapping.
 #
 # IMPORTANT: only meaningful warm-started from a checkpoint with a TRAINED value
-# head (neural search on a random/weak critic = garbage targets). Launch with:
+# head (the value grounds via terminal MSE during ExIt). Launch with:
 #   python -m v2.exit_train --config configs/v2_exit_neural.yaml \
-#       --resume outputs/checkpoints/v2_exit_a100/ckpt_000010.pt
+#       --resume outputs/checkpoints/v2_exit_a100/ckpt_000020.pt
 # (--resume loads weights and SKIPS BC pretrain.)
+#
+# GATE: A/B value_leaf_blend in {0, 0.3, 0.5, 0.7} vs the w=0 control on the SAME
+# paired seeds (scripts/eval_fast.py, side-alternated, high n, MULTIPLE seed
+# batches — win-rate is seed-variant). Blend must beat w=0 on the same seeds.
 run_name: v2_exit_neural
 seed: 42
 device: auto
@@ -37,19 +44,14 @@ model:
 
 eval:
   eval_every: 5
-  eval_games: 20
+  eval_games: 40          # side-alternated + paired seeds (see run_periodic_eval)
   eval_opponents: [apex, random]
+  eval_seed: 20000        # shared with scripts/eval_fast.py -> directly comparable
+  eval_workers: 6         # CPU games ~20s each; set to ~vCPU count on Colab
 
-# BC config is present but SKIPPED when --resume is given (warm-start path).
+# Warm-started via --resume, so BC is skipped (kept off for clarity).
 imitation:
-  enabled: true
-  bc_expert: apex
-  bc_games: 150
-  bc_demo_opponent: random
-  bc_epochs: 50
-  bc_lr: 0.001
-  bc_batch_size: 256
-  bc_cache_path: experiments/demos_apex_exit_ab.pkl
+  enabled: false
 
 exit:
   enabled: true
@@ -70,4 +72,6 @@ exit:
   search_workers: 6        # parallel CPU search (set ~vCPU count on Colab)
   collect_workers: 6       # parallel game collection (the ExIt bottleneck)
   collect_fast_env: true   # engine-faithful standalone sim (no Kaggle harness)
-  neural_value_leaves: true  # ◄── Phase 5: score search leaves with the value head
+  # ── Phase 3 blend ──
+  neural_value_leaves: false  # false = blend path (not the pure-neural swap that collapsed before)
+  value_leaf_blend: 0.3       # A/B {0, 0.3, 0.5, 0.7}; 0 = pure-heuristic control

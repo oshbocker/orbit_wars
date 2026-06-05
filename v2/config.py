@@ -222,6 +222,15 @@ class V2ExItConfig:
     # Default OFF — keeps the 77% agent byte-identical until validated @ n=60.
     rollout_search: bool = False
     rollout_self: bool = True       # include our own continuation in the rollout
+    # Phase 3 (2026-06-05): grounded learned value at search leaves — BLEND, not
+    # swap. When >0 (and a value_model is supplied), each candidate leaf is scored
+    # by BOTH evaluate_state (heuristic) and OrbitNet's value head; the two are
+    # z-scored across the leaves of THIS source-planet decision and combined as
+    # `score = (1-w)*z(heur) + w*z(neural)`. w=0.0 = pure heuristic (bit-identical,
+    # the blend branch is not taken). A pure swap (neural_value_leaves) collapsed
+    # the 77% agent before — the value head is grounded globally (corr w/ outcome
+    # 0.389) but too noisy to rank near-equal siblings alone, so blend a small w.
+    value_leaf_blend: float = 0.0
 
 
 @dataclass(slots=True)

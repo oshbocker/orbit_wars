@@ -64,7 +64,24 @@ grounded (corr(pred_value, terminal_outcome) = **0.389**). BUT at the fine grain
 *sibling candidate moves from one position*, neural vs heuristic spearman ≈ 0.008 ± 0.421 —
 i.e. the value is fine globally but too noisy to rank near-equal candidates alone.
 
-### Phase 3 — Grounded learned value (the real win) — BLEND, NOT SWAP
+### Phase 3 — Grounded learned value (the real win) — BLEND, NOT SWAP — ✅ CODE DONE (2026-06-05), GATE PENDING (Colab)
+**Implemented:** `value_leaf_blend: float = 0.0` on `V2ExItConfig` (`v2/config.py`); blend
+branch in `search_improve_planet` (`v2/search.py`) scores every leaf of a source-planet
+decision with BOTH `evaluate_state` and the batched value head, z-scores each across that
+decision's leaves, and combines `score = (1-w)·z(heur) + w·z(neural)` before `_make_dists`;
+`search_improve` (`v2/exit_train.py`) now broadcasts the model to workers for the blend path
+too (`wants_value = neural_value_leaves or value_leaf_blend>0`). `configs/v2_exit_neural.yaml`
+repurposed: warm-start `v2_exit_a100/ckpt_000020.pt` via `--resume`, `imitation.enabled:false`,
+`neural_value_leaves:false`, `value_leaf_blend:0.3`, side-alternated eval (`eval_seed:20000`,
+`eval_workers:6`, `eval_games:40`). **Verified locally (cheap):** w=0 is BIT-IDENTICAL to the
+pure-heuristic path (target+frac arrays equal even with a model present); blend w=0.3 runs
+end-to-end (collect→search sequential AND parallel→distill), dists sum to 1, losses finite;
+pure-neural swap path still valid; Phase 2 test still passes. `/tmp/test_phase3.py`,
+`/tmp/test_phase3_e2e.py`. **GATE (not yet run — needs Colab):** A/B `value_leaf_blend ∈
+{0, 0.3, 0.5, 0.7}` warm-started from iter-20 via `scripts/eval_fast.py` (side-alternated,
+paired seeds, high n, MULTIPLE seed batches — win-rate is seed-variant); blend must beat the
+w=0 control on the SAME seeds to ship.
+
 The value head is **already** grounded: `play_single_game` runs to terminal and
 `train_epoch` already does `value_loss = MSE(out.value, terminal_outcome)`, so the plan's
 "force ~10% to terminal" is effectively at 100%. The remaining work is to *use* it at

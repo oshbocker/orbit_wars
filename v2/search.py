@@ -140,6 +140,10 @@ def search_improve_planet(
     fracs = env_cfg.ship_fractions
     K = len(fracs)
     use_neural = bool(getattr(exit_cfg, "neural_value_leaves", False)) and value_model is not None
+    blend_w = float(getattr(exit_cfg, "value_leaf_blend", 0.0))
+    # Phase 3 blend is the middle path: only when a positive weight is set, a model
+    # is supplied, and we are NOT in the pure-neural (swap) path.
+    use_blend = (blend_w > 0.0) and (value_model is not None) and (not use_neural)
 
     # Phase 1: every-step in-sim rollout opponent. All present players (optionally
     # incl. our own continuation) launch via the cheap rollout policy at each step,
@@ -188,10 +192,25 @@ def search_improve_planet(
                     sim_step(sc, rollout_players)
                 leaves.append(("frac", j, fb, sc))
 
-    # Score all leaves (neural batched, or heuristic per-leaf).
+    # Score all leaves: pure-neural (swap), blend, or heuristic per-leaf.
     if use_neural:
         leaf_states = [_reconstruct_leaf_state(state, lf, player) for (_, _, _, lf) in leaves]
         scores = _batch_neural_values(value_model, env_cfg, leaf_states)
+    elif use_blend:
+        # Score each leaf with BOTH the heuristic and OrbitNet's value head, then
+        # z-score each across THIS decision's leaves and combine scale-free. The
+        # z-scoring is what makes the two scorers commensurable (their raw ranges
+        # differ); it is applied per source-planet decision, never globally.
+        heur = np.asarray(
+            [evaluate_state(lf, player) for (_, _, _, lf) in leaves], dtype=np.float64,
+        )
+        leaf_states = [_reconstruct_leaf_state(state, lf, player) for (_, _, _, lf) in leaves]
+        neural = np.asarray(
+            _batch_neural_values(value_model, env_cfg, leaf_states), dtype=np.float64,
+        )
+        zh = (heur - heur.mean()) / (heur.std() + 1e-6)
+        zn = (neural - neural.mean()) / (neural.std() + 1e-6)
+        scores = ((1.0 - blend_w) * zh + blend_w * zn).tolist()
     else:
         scores = [evaluate_state(lf, player) for (_, _, _, lf) in leaves]
 
