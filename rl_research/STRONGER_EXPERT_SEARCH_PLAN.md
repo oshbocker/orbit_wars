@@ -21,9 +21,15 @@ This plan integrates lessons from Eric Jang's **AutoGo** (Apr 2026) — a from-s
 
 ## The plan (ordered; each gated on `scripts/eval_fast.py` n=60, side-alternated, paired seeds)
 
-### Phase 1 — Every-step in-sim rollout opponent (highest value ÷ risk) — IN PROGRESS
-The correct version of the two-player experiment. Make BOTH sides act at every lookahead step via a cheap, **geometry-free** rollout policy that launches from `SimState` (positions supplied as a precomputed distance matrix shared from the search root). Symmetric: after the candidate's first move, our continuation *and* opponents follow the rollout policy to depth — so "hold" means *playing on*, not freezing, and aggressive candidates are evaluated against real opposition. Default OFF (new flag, keep the 77% agent byte-identical until validated).
-- **Gate:** must hold ≥77% @ n=60 before keeping on.
+### Phase 1 — Every-step in-sim rollout opponent — ❌ CONFIRMED NEGATIVE (2026-06-05)
+Built + ran 60 ExIt iters warm-started from the 77% ckpt (`v2_exit_rollout_a100`). On the trusted scorer (`eval_fast.py`, n=60, side-alternated, paired): iters 10..60 = 37,33,37,40,45,57,33,43,58,50,48 → **mean ~45%, peak 58%, regressed the 77% agent and never recovered.** Same direction as the turn-1 version (→40%).
+
+**Diagnosis:** in the symmetric rollout, after a candidate move *our own* continuation is the cheap rollout heuristic, not our strong policy → candidates that need strong follow-up are undervalued → search biases to conservative moves → distills a more passive policy → loses to aggressive apex. The weak hand-coded rollout is the poison. **AutoGo lesson #3:** never evaluate leaves with a weak rollout — use a learned value. Phase 1 reintroduced exactly what AlphaZero deleted. Keep `rollout_search` default OFF; keep the code (`rollout_launches`/geometry reusable for Phase 3 data gen).
+
+**Process bug found:** in-training `run_periodic_eval` (n=20) showed 90–95% while eval_fast showed 33–58% on the same ckpts — it is NOT side-alternated/paired, so it inflated ~2× and was unreadable live (cost a blind 10.6h run).
+
+### Phase 1.5 — Fix the eval gate (do FIRST, ~30 min)
+Make `run_periodic_eval` mirror `eval_fast`: side-alternated + paired seeds, n≥40. Prevents another blind run.
 
 ### Phase 2 — Positional simulator (unblocks grounded neural value)
 `SimState` drops fleet x/y. Track fleet positions (or reconstruct leaf `GameState`s *with* fleets) so leaf features match the training distribution — prerequisite that kills the OOD failure mode behind the neural-value collapse.
