@@ -23,10 +23,9 @@ Usage:
     uv run python scripts/replay.py \
         --checkpoint outputs/checkpoints/v3_a100/ckpt_last.pt --v3
 
-    # V1 checkpoint vs apex
+    # ExIt checkpoint vs apex (defaults to configs/v2_exit.yaml)
     uv run python scripts/replay.py \
-        --checkpoint outputs/checkpoints/transformer_mixed/ckpt_last.pt \
-        --v1 --config configs/transformer_mixed.yaml
+        --checkpoint outputs/checkpoints/v2_exit_a100/ckpt_000020.pt --exit
 
     # V2 checkpoint vs hybrid with custom output
     uv run python scripts/replay.py \
@@ -148,8 +147,12 @@ def main() -> None:
         return
 
     if args.v1:
-        config_path = args.config or "configs/transformer_mixed.yaml"
-        rl_agent = load_v1_agent(ckpt_path, config_path, device)
+        # v1 transformer configs were pruned (see rl_research/EXPLORED_AND_ABANDONED.md);
+        # replaying an old v1 checkpoint now requires supplying its config explicitly.
+        if not args.config:
+            print("--v1 requires --config (v1 configs were removed from the repo).")
+            return
+        rl_agent = load_v1_agent(ckpt_path, args.config, device)
         agent_label = "V1 RL"
     elif args.v4:
         config_path = args.config or "configs/v4_ceiling.yaml"

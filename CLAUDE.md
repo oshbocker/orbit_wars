@@ -9,51 +9,40 @@ Kaggle Orbit Wars competition.
 
 ## Repository Structure
 
+> **Live effort = the v2 ExIt pipeline (`v2/`).** `src/` is now a library of shared
+> building blocks that `v2/` imports, **not** a standalone pipeline. The v1 transformer-PPO
+> training half and the legacy SB3 pipeline were pruned 2026-06-05 — their ideas and the
+> reasons we dropped them live in `rl_research/EXPLORED_AND_ABANDONED.md`.
+
 ```
 orbit_wars/
-├── src/                     # Transformer PPO pipeline (primary RL effort)
-│   ├── __init__.py
-│   ├── config.py            # TrainConfig dataclasses (env, model, ppo, reward, eval, imitation)
+├── v2/                      # OrbitNet + ExIt pipeline (PRIMARY effort) — see MEMORY.md for the file map
+│   ├── model.py             # OrbitNet (~552K params): attention over planets + pairwise head
+│   ├── search.py            # Per-planet lookahead search for ExIt (Phase-3 value blend lives here)
+│   ├── exit_train.py        # Expert Iteration: collect games → search-improve → distill
+│   ├── train.py             # PPO loop, MixedScheduler/PFSP, side-alternated periodic eval
+│   ├── env.py / fast_env.py # Kaggle env wrapper / engine-faithful standalone sim (batchable)
+│   ├── features.py state.py actions.py reward.py comet.py ppo.py imitation.py parallel.py
+│   ├── agent.py             # Self-contained inlined Kaggle submission agent
+│   └── agent_v3.py          # Submission agent that loads real encode/decode + bundled ckpt/config
+├── src/                     # Shared building blocks reused by v2/ (NOT a standalone pipeline)
 │   ├── game_types.py        # PlanetState, FleetState, GameState, parse_observation()
 │   ├── features.py          # Feature encoding, fleet transit, SourceDecision
-│   ├── policy.py            # TransformerPolicy (~493K params default)
-│   ├── ppo.py               # Factored PPO (target + fraction), clipped update, optional imitation loss
+│   ├── policy.py            # TransformerPolicy (v1 arch; TransformerBlock reused by v2)
+│   ├── ppo.py               # sample_actions (used by opponents); v1 ppo_update kept but inert
 │   ├── opponents.py         # Apex, Random, SelfPlay, Hybrid, Distilled opponents + _policy_act()
-│   ├── env.py               # Kaggle env wrapper (2/4-player, side alternation, mixed scheduling)
 │   ├── logging.py           # TrainLogger (TensorBoard + CSV), EvalResult, periodic eval
-│   ├── imitation.py         # DemonstrationBuffer, collect_demonstrations, BC loss, bc_pretrain
-│   └── train.py             # Training loop: BC pretrain → PPO + mixed 2p/4p self-play
-├── agents/                  # Agent implementations
-│   ├── apex.py              # Apex rule-based agent (benchmark)
-│   ├── hybrid.py            # Mission-based + timeline agent
-│   └── rl_agent.py          # SB3 model wrapper + submission export
-├── configs/                 # YAML experiment configs
-│   ├── transformer_ppo.yaml   # Transformer PPO default config (2000 updates, apex opponent)
-│   ├── transformer_dagger.yaml# DAgger: BC pretrain from apex + PPO with imitation decay (3000 updates)
-│   ├── transformer_mixed.yaml # Mixed: BC from apex + dense_relative reward + 2p/4p self-play (5000 updates)
-│   ├── ppo_default.yaml       # SB3 PPO vs apex (500k steps, legacy)
-│   └── ppo_selfplay.yaml      # SB3 self-play fine-tuning (legacy)
-├── envs/                    # Gymnasium wrappers (legacy SB3 pipeline)
-│   └── orbit_wars_env.py    # Single-agent env, obs/action encoding
-├── evaluation/              # Evaluation utilities
-│   └── evaluate.py          # run_games, head_to_head, benchmark
-├── notebooks/               # Exploratory Jupyter notebooks
-│   ├── explore.ipynb        # Main development notebook (Kaggle/Colab ready)
-│   ├── orbit_wars_rl.ipynb  # Previous iteration (reference)
-│   ├── train_colab.ipynb    # Google Colab training notebook (uses src.train)
-│   └── orbit-wars-reinforcement-learning-tutorial.ipynb  # Kaggle RL tutorial
-├── outputs/                 # .gitignored — all generated files go here
-│   ├── checkpoints/         # Model .pt files (ckpt_last.pt, ckpt_NNNNNN.pt)
-│   ├── logs/                # TensorBoard event files, CSV metrics, eval results
-│   └── submissions/         # Generated submission.py files
-├── scripts/                 # CLI entry points
-│   ├── train.py             # Train an agent (legacy SB3)
-│   ├── evaluate.py          # Head-to-head evaluation (legacy SB3)
-│   ├── replay.py            # Run a game and export game_replay.html
-│   ├── download_checkpoint.py  # Download checkpoints from Google Drive via rclone
-│   └── submit.py            # Generate Kaggle submission file
-├── training/                # Core training logic (legacy SB3, imported by scripts/train.py)
-│   └── train.py             # train(), load_config(), resolve_opponent()
+│   ├── simulator.py         # Lightweight positional forward sim (SimState, sim_step, evaluate_state)
+│   └── config.py            # TrainConfig dataclasses
+├── agents/                  # Rule-based agents (benchmarks)
+│   ├── apex.py              # Apex rule-based agent (THE benchmark)
+│   └── hybrid.py            # Mission-based + timeline agent
+├── configs/                 # YAML configs — v2_exit*.yaml are live; v2/v3/v4 PPO configs kept for reference
+├── evaluation/              # evaluate.py — run_games, head_to_head, print_results (used by v2 eval)
+├── notebooks/               # train_colab.ipynb (A100 v2 BC→ExIt) + explore.ipynb (scratch)
+├── rl_research/             # STRONGER_EXPERT_SEARCH_PLAN.md (live) + EXPLORED_AND_ABANDONED.md (graveyard)
+├── scripts/                 # eval_fast.py, replay.py, download_checkpoint.py, run_embed_ab.py, tests
+├── outputs/                 # .gitignored — checkpoints/, logs/, submissions/
 ├── pyproject.toml
 ├── requirements.txt
 └── .gitignore
@@ -61,20 +50,17 @@ orbit_wars/
 
 ## Common Commands
 
-### Transformer PPO (primary pipeline — `src/`)
+### v2 Expert Iteration (primary pipeline — `v2/`)
 
 ```bash
-# Train with default config (PPO vs apex, 2000 updates)
-uv run python -m src.train --config configs/transformer_ppo.yaml
+# ExIt: BC pretrain from apex → collect → search-improve → distill (the live effort)
+uv run python -m v2.exit_train --config configs/v2_exit.yaml
 
-# DAgger: BC pretrain from apex demos + PPO with imitation decay (3000 updates)
-uv run python -m src.train --config configs/transformer_dagger.yaml
+# v2 PPO (BC warm start → PPO + mixed self-play) — reference baseline
+uv run python -m v2.train --config configs/v2_default.yaml
 
-# Mixed: BC from apex + dense_relative reward + 2p/4p self-play (5000 updates)
-uv run python -m src.train --config configs/transformer_mixed.yaml
-
-# Train on Colab/Kaggle (no uv)
-python -m src.train --config configs/transformer_mixed.yaml
+# On Colab/Kaggle (no uv)
+python -m v2.exit_train --config configs/v2_exit.yaml
 ```
 
 ### Download checkpoints from Google Drive
@@ -97,62 +83,34 @@ rclone config
 
 **Download checkpoints:**
 ```bash
-# Download latest transformer_mixed checkpoint
+# Download latest checkpoint for the default run (v2_exit_a100)
 uv run python scripts/download_checkpoint.py
 
-# Download a specific run
-uv run python scripts/download_checkpoint.py --run transformer_dagger
-
-# Download all checkpoints
-uv run python scripts/download_checkpoint.py --all
+# Download a specific run / all its checkpoints
+uv run python scripts/download_checkpoint.py --run v2_exit_a100 --all-ckpts
 
 # List available checkpoints on Drive
 uv run python scripts/download_checkpoint.py --list
 ```
 
-### Evaluate a trained transformer checkpoint locally
+### Evaluate a trained checkpoint locally
 
 ```bash
-uv run python -c "
-import torch
-from src.config import load_train_config
-from src.policy import TransformerPolicy
-from src.logging import make_eval_agent
-from evaluation.evaluate import run_games, print_results
-
-cfg = load_train_config('configs/transformer_mixed.yaml')
-device = torch.device('cpu')
-policy = TransformerPolicy(cfg.model, cfg.env).to(device)
-ckpt = torch.load('outputs/checkpoints/transformer_mixed/ckpt_last.pt',
-                   map_location=device, weights_only=True)
-policy.load_state_dict(ckpt['policy'])
-policy.eval()
-
-agent = make_eval_agent(policy, cfg, device)
-
-from agents.apex import agent as apex
-print_results('rl', 'apex', run_games(agent, apex, n_games=20, verbose=True))
-"
+# Fast, side-alternated, paired-seed scorer (the reliable one — high variance, use games>=60).
+# Resolves outputs/checkpoints/<run>/ckpt_<iter>.pt. Local CPU ~20s/game → prefer Colab for high n.
+uv run python scripts/eval_fast.py \
+    --run v2_exit_a100 --config configs/v2_exit.yaml \
+    --iters 20 --opponent apex --games 60
 ```
 
 ### Replay a game with HTML export
 
 ```bash
-# Mixed checkpoint vs hybrid (default) — exports game_replay.html
-uv run python scripts/replay.py \
-    --checkpoint outputs/checkpoints/transformer_mixed/ckpt_last.pt
-
-# Dagger checkpoint vs apex with custom output
-uv run python scripts/replay.py \
-    --checkpoint outputs/checkpoints/transformer_dagger/ckpt_last.pt \
-    --config configs/transformer_dagger.yaml \
-    --opponent apex \
-    --output replay_vs_apex.html
-
-# Set seed for reproducible games, play as player 1
-uv run python scripts/replay.py \
-    --checkpoint outputs/checkpoints/transformer_mixed/ckpt_last.pt \
-    --seed 42 --side 1
+# ExIt checkpoint vs apex — exports game_replay.html
+uv run python scripts/replay.py --exit \
+    --checkpoint outputs/checkpoints/v2_exit_a100/ckpt_000020.pt \
+    --config configs/v2_exit.yaml \
+    --opponent apex --seed 42 --output replay_vs_apex.html
 ```
 
 ### Monitor training
@@ -161,68 +119,29 @@ uv run python scripts/replay.py \
 uv run tensorboard --logdir outputs/logs
 ```
 
-### Legacy SB3 Pipeline (scripts/)
-
-```bash
-# Train (default config: PPO vs apex, 500k steps)
-uv run python scripts/train.py
-
-# Train with a different config
-uv run python scripts/train.py --config configs/ppo_selfplay.yaml
-
-# Override specific values inline
-uv run python scripts/train.py --set training.total_timesteps=1000000 env.n_envs=8 training.device=cuda
-
-# Resume from a checkpoint
-uv run python scripts/train.py --resume outputs/checkpoints/ppo_default_20260501_120000/best_model.zip
-
-# Evaluate: trained model vs apex and random
-uv run python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip
-
-# Evaluate with a custom number of games
-uv run python scripts/evaluate.py --model outputs/checkpoints/<run>/best_model.zip --games 50
-
-# Full matrix: two models + apex + random
-uv run python scripts/evaluate.py \
-    --model outputs/checkpoints/run_a/best_model.zip:rl_v1 \
-    --model outputs/checkpoints/run_b/best_model.zip:rl_v2 \
-    --apex --random --games 30
-
-# Generate a submission (apex)
-uv run python scripts/submit.py --apex
-
-# Generate a submission (RL model) and verify it runs
-uv run python scripts/submit.py --model outputs/checkpoints/<run>/best_model.zip --verify
-```
-
 ## Environment Setup
 
-**Locally, always use `uv` to run Python scripts** (e.g. `uv run python scripts/train.py`). Do not use bare `python` or `python3`.
+**Locally, always use `uv` to run Python scripts** (e.g. `uv run python -m v2.exit_train ...`). Do not use bare `python` or `python3`.
 
 ```bash
 # Local (uv manages the virtualenv):
-uv run python scripts/train.py
+uv run python -m v2.exit_train --config configs/v2_exit.yaml
 
 # On Colab/Kaggle (no uv):
-pip install --upgrade "kaggle-environments>=1.28.0" "stable-baselines3[extra]>=2.3" gymnasium pyyaml tensorboard
+pip install --upgrade "kaggle-environments>=1.28.0" torch gymnasium pyyaml tensorboard
 ```
 
 ### Google Colab Workflow
 
-`notebooks/train_colab.ipynb` runs the DAgger pipeline on Colab GPU with Google Drive persistence.
+`notebooks/train_colab.ipynb` runs the v2 BC→ExIt pipeline on Colab GPU (A100/H100) with
+Google Drive persistence. The `PIPELINE` switch in the notebook selects which v2 stack to run.
+Cell order: Setup (mount Drive, clone, install) → GPU check → Config (loads a v2 config + GPU
+overrides) → Train → Generate Submission (`v2/agent_v3.py` bundle + checkpoint to Drive) →
+Evaluate → TensorBoard (last — can block downstream cells).
 
-**Cell order** (designed so submission happens immediately after training):
-1. Setup (mount Drive, clone repo, install deps)
-2. GPU Verification
-3. Experiment Config (loads `transformer_dagger.yaml`, applies H100 overrides)
-4. **Train** (demo collection → BC pretrain → PPO with imitation decay)
-5. **Generate Submission** (apex + hybrid + checkpoint copy to Drive)
-6. **Evaluate** (trained model vs apex and random, 20 games each)
-7. **TensorBoard** (last — can block downstream cell execution)
-
-**H100 Colab overrides** in the config cell: `num_envs=4`, `rollout_steps=128`, `total_updates=5000`, `eval_every=250`.
-
-**After Colab training**, download checkpoint from Drive with `uv run python scripts/download_checkpoint.py` (requires rclone — see "Download checkpoints from Google Drive" in Common Commands) and evaluate locally.
+**After Colab training**, download the checkpoint from Drive with
+`uv run python scripts/download_checkpoint.py` (requires rclone — see "Download checkpoints
+from Google Drive") and evaluate locally with `scripts/eval_fast.py`.
 
 ## Game Overview
 
@@ -313,9 +232,16 @@ def agent(obs, config=None) -> list:
 
 **Timing**: `actTimeout=1s` per step; `remainingOverageTime=60s` total banked overage.
 
-## Transformer PPO Design (`src/`)
+## Shared building blocks (`src/`) — legacy v1 design
 
-### Architecture
+> This describes the **v1 transformer-PPO** design. The v1 *training* pipeline was pruned
+> (see `rl_research/EXPLORED_AND_ABANDONED.md`); what remains in `src/` is a **library of
+> shared modules** imported by the live v2 pipeline (`game_types`, `features`, `policy`,
+> `ppo.sample_actions`, `opponents`, `logging`, `simulator`, `config`). The **live** model is
+> v2 OrbitNet (simultaneous all-planet, one forward pass per step) — its design and file map
+> live in `MEMORY.md` ("Key Files — V2 OrbitNet").
+
+### Architecture (v1, sequential — retained for the reused encoders/policy)
 
 Per-planet sequential decisions: for each turn, iterate over owned planets (most ships first). For each source planet, a transformer processes all valid targets and outputs a factored action (target selection + ship fraction).
 
@@ -361,21 +287,11 @@ Per-planet sequential decisions: for each turn, iterate over owned planets (most
 - `make_eval_agent(policy, cfg, device)` — creates a Kaggle-compatible `agent(obs, config)` callable from a policy (snapshots weights)
 - `run_periodic_eval(policy, cfg, device)` — runs eval games against all opponents in `cfg.eval.eval_opponents`, returns `list[EvalResult]`
 
-### Imitation Learning (`src/imitation.py`)
+### Imitation / BC
 
-**DAgger-style pipeline** for distilling an expert agent's strategy:
-
-```
-Phase 1: collect_demonstrations()  →  Expert (apex or hybrid) plays n games, records (SourceDecision, target_index, fraction_bin)
-Phase 2: bc_pretrain()             →  Supervised cross-entropy on expert demos (Adam, per-epoch shuffle)
-Phase 3: PPO + imitation loss      →  ppo_update() blends PPO loss + β * BC loss; β decays linearly to 0
-Phase 4: Mixed self-play            →  MixedScheduler blends rule-based + self-play; rule_based_prob decays linearly
-```
-
-- `DemonstrationBuffer` — parallel lists of numpy arrays for all 8 feature fields + 2 action labels
-- `collect_demonstrations(n_games, cfg, opponent_name)` — runs hybrid agent, maps moves to action space via angular matching (≤30° tolerance → NoOp if no match); validates targets against mask to avoid inf BC loss
-- `compute_bc_loss(policy, batch)` — cross-entropy on target selection + cross-entropy on fraction (masked for NoOp); clamps logits to -1e4 min to avoid inf from masked positions
-- `_map_to_action_space(angle, ships, src_ships, decision, env_cfg)` — finds closest target by angular difference, maps ship fraction to nearest bin
+BC-from-apex (DAgger-style: collect expert demos → supervised pretrain → PPO with a decaying
+imitation anchor) lives in the **v2** pipeline (`v2/imitation.py`). The v1 `src/imitation.py`
+was removed; see `rl_research/EXPLORED_AND_ABANDONED.md`.
 
 ### Opponents (`src/opponents.py`)
 
@@ -391,61 +307,10 @@ Phase 4: Mixed self-play            →  MixedScheduler blends rule-based + self
 
 Key config sections: `env`, `model`, `ppo`, `reward`, `eval`, `imitation`.
 
-**`configs/transformer_ppo.yaml`** — default PPO config (2000 updates, apex opponent, eval every 100)
-
-**`configs/transformer_dagger.yaml`** — DAgger config:
-```yaml
-imitation:
-  enabled: true
-  bc_expert: apex       # expert agent for demo collection (apex or hybrid)
-  bc_games: 200         # demo games from expert agent
-  bc_demo_opponent: random  # expert plays against this
-  bc_epochs: 50         # supervised pretraining epochs
-  bc_lr: 0.001
-  bc_batch_size: 256
-  coef_start: 0.5       # initial imitation loss weight
-  coef_decay_updates: 1000  # linear decay to 0
-  distilled_opponent: true  # use BC-pretrained model as training opponent
-  bc_skip_steps: 0        # include early-game behavior in demos
-
-eval:
-  eval_every: 100
-  eval_games: 10
-  eval_opponents: [apex, random]
-
-ppo:
-  total_updates: 3000
-  lr: 0.0001            # lower since starting from BC-pretrained weights
-
-reward:
-  reward_mode: dense_relative  # rewards gaining ship advantage over enemies
-  dense_ship_coef: 0.002
-  early_prod_bonus: 9.0       # 10x prod reward at step 0, decays to 1x
-  early_prod_bonus_steps: 50
-```
-
-**`configs/transformer_mixed.yaml`** — Full pipeline: BC from apex + dense_relative reward + mixed 2p/4p self-play:
-```yaml
-four_player_prob: 0.3         # 30% of episodes are 4-player
-rule_based_prob_start: 1.0    # start with all rule-based opponents
-rule_based_prob_end: 0.2      # end with mostly self-play
-rule_based_decay_updates: 2000  # linear decay over this many updates
-
-reward:
-  reward_mode: dense_relative
-  dense_ship_coef: 0.002
-  early_prod_bonus: 9.0       # 10x prod reward at step 0, decays to 1x
-  early_prod_bonus_steps: 50
-
-imitation:
-  bc_expert: apex             # clone apex behavior (faster than hybrid)
-  bc_games: 200
-  bc_epochs: 50
-  bc_skip_steps: 0            # include early-game behavior in demos
-
-ppo:
-  total_updates: 5000
-```
+The v1 transformer configs (`transformer_ppo/dagger/mixed.yaml`) were pruned — see
+`rl_research/EXPLORED_AND_ABANDONED.md`. Live configs are the **v2** ones
+(`configs/v2_exit*.yaml`); the `reward`/`imitation`/`eval` knobs above carry over to the v2
+config sections almost verbatim. See `MEMORY.md` for the per-config breakdown.
 
 ### Checkpoint format
 
@@ -456,20 +321,6 @@ outputs/checkpoints/<run_name>/
 ```
 
 Each `.pt` file contains `{"update": int, "policy": state_dict, "optimizer": state_dict}`.
-
-## Legacy Env Wrapper Design (`envs/orbit_wars_env.py`)
-
-**Observation** — `Box(683,)` float32:
-- `[0:3]` global: `step/500`, `angular_velocity/0.05`, `n_comets/4`
-- `[3:283]` 40 planet slots × 7 features: `is_mine`, `is_enemy`, `is_neutral`, `x/100`, `y/100`, `log1p(ships)/10`, `production/5`
-- `[283:683]` 80 fleet slots × 5 features: `is_mine`, `is_enemy`, `x/100`, `y/100`, `log1p(ships)/10`
-
-**Action** — `MultiDiscrete([12, 40, 4])`:
-- `own_slot`: which of my planets to send from (no-op if ≥ len(my_planets))
-- `target_slot`: target planet index
-- `frac_bin`: 0→25%, 1→50%, 2→75%, 3→100% of ships
-
-**Reward**: dense shaping (Δships × 0.001 + Δproduction × 0.005) + terminal ±1.
 
 ## Key Strategic Considerations
 
@@ -482,21 +333,20 @@ Each `.pt` file contains `{"update": int, "policy": state_dict, "optimizer": sta
 
 ## RL Development Roadmap
 
-1. **Apex** (done): rule-based agent in `agents/apex.py`
-2. **Hybrid** (done): mission-based + timeline agent in `agents/hybrid.py`
-3. **Transformer PPO vs apex** (done): `uv run python -m src.train --config configs/transformer_ppo.yaml`
-4. **Logging + periodic eval** (done): TensorBoard + CSV metrics, win rate tracking against baselines
-5. **DAgger / imitation learning** (done): BC pretrain from hybrid demos + PPO with decaying imitation loss: `uv run python -m src.train --config configs/transformer_dagger.yaml`
-6. **Mixed self-play + 4p** (done): `MixedScheduler` blends rule-based + self-play opponents with linear decay; supports 2p and 4p games via `four_player_prob`
-7. **Improve gradually**:
+Milestones reached, in order (the abandoned branches and *why* are in
+`rl_research/EXPLORED_AND_ABANDONED.md`):
 
-| Technique | How |
-|-----------|-----|
-| Larger network | Increase `model.embed_dim`, `model.n_layers`, `model.ff_dim` in YAML |
-| More targets | Increase `env.max_targets` (default 30) |
-| Dense reward | Set `reward.reward_mode: dense_relative` in config |
-| Population-based training | Train a league of agents, sample opponents |
-| Better features | Extend `src/features.py` (e.g. comet tracking, orbit prediction for targets) |
+1. **Apex / Hybrid** (done): rule-based benchmarks in `agents/`.
+2. **v1 transformer PPO + DAgger + mixed self-play** (done, then superseded by v2).
+3. **v2 OrbitNet** (done): simultaneous all-planet model, one forward pass/step.
+4. **Model-free PPO** (incl. v4_ceiling): **confirmed dead end** — structural credit-assignment
+   stall, 0–10% vs apex regardless of capacity/reward/opponent machinery.
+5. **Expert Iteration (ExIt)** (current): search → distill is the proven path; best agent =
+   `v2_exit_a100/ckpt_000020.pt`.
+
+**Now:** STRONGER EXPERT SEARCH — a *learned value blended into the search* (not a hand-coded
+opponent or rollout, both of which regressed the agent). See the next section and
+`rl_research/STRONGER_EXPERT_SEARCH_PLAN.md`.
 
 ## Current best agent & next-session plan: STRONGER EXPERT SEARCH (ExIt)
 
@@ -526,14 +376,10 @@ Each `.pt` file contains `{"update": int, "policy": state_dict, "optimizer": sta
 
 ## Config System
 
-### Transformer PPO configs (`src/`)
-
-Configs are plain YAML with nested sections: `env`, `model`, `ppo`, `reward`, `eval`, `imitation`.
-Loaded via `src.config.load_train_config()`. Override fields programmatically (no CLI `--set` for `src/`).
-
-Dataclasses in `src/config.py`: `EnvConfig`, `ModelConfig`, `PPOConfig`, `RewardConfig`, `EvalConfig`, `ImitationConfig`, `TrainConfig`.
-
-### Legacy SB3 configs (`scripts/`)
-
-Configs are plain YAML. Override any value with `--set key.subkey=value` on the CLI.
-Values are parsed by `yaml.safe_load` so you can pass lists: `--set training.net_arch=[512,512]`.
+Live configs are the **v2** ones: plain YAML with nested sections `env`, `model`, `ppo`,
+`reward`, `eval`, `imitation`, plus the ExIt `exit` block. Loaded via
+`v2.config.load_v2_config()`; dataclasses live in `v2/config.py` (`V2EnvConfig`,
+`V2ModelConfig`, `V2PPOConfig`, `V2RewardConfig`, `V2EvalConfig`, `V2ImitationConfig`,
+`V2ExItConfig`). Override fields programmatically (no CLI `--set`). `src/config.py` is retained
+only as a shared dependency of the reused `src/` modules. See `MEMORY.md` for the full
+per-config breakdown.

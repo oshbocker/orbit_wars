@@ -198,14 +198,14 @@ def ppo_update(
 
             loss = policy_loss + vf_coef * value_loss - ent_coef * entropy_mean
 
-            # Imitation loss blending
+            # Imitation loss blending (v1 BC path removed — see
+            # rl_research/EXPLORED_AND_ABANDONED.md; v2 has its own ppo/imitation)
             im_loss_val = 0.0
             if use_imitation:
-                from .imitation import compute_bc_loss
-                demo_batch = demo_buffer.sample_batch(minibatch_size, device)
-                im_loss = compute_bc_loss(policy, demo_batch)
-                loss = loss + imitation_coef * im_loss
-                im_loss_val = float(im_loss.detach().cpu())
+                raise NotImplementedError(
+                    "v1 imitation blending was removed with src/imitation.py; "
+                    "use the v2 pipeline (v2/ppo.py, v2/imitation.py)."
+                )
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
