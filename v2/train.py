@@ -600,28 +600,126 @@ def save_checkpoint(
     return run_dir / "ckpt_last.pt"
 
 
+_PEVAL: dict = {}
+
+
+def _peval_init(cfg_dict: dict, state_dict: dict, opponent: str) -> None:
+    import os
+
+    os.environ["OMP_NUM_THREADS"] = "1"
+    torch.set_num_threads(1)
+    from v2.config import v2_config_from_dict
+
+    cfg = v2_config_from_dict(cfg_dict)
+    model = OrbitNet(cfg.model)
+    model.load_state_dict(state_dict)
+    model.eval()
+    _PEVAL["rl"] = make_v2_eval_agent(model, cfg, torch.device("cpu"))
+    _PEVAL["opp"] = _get_eval_opponent(opponent)
+
+
+def _peval_game(args: tuple[int, int]) -> str:
+    """Play one (seed, side) game; return 'win'/'loss'/'tie' from RL's view."""
+    from v2.fast_env import FastOrbitWars
+
+    seed, side = args
+    sim = FastOrbitWars(num_agents=2, seed=seed)
+    rl, opp = _PEVAL["rl"], _PEVAL["opp"]
+    while not sim.done:
+        rl_moves = rl(sim.observation(side)) or []
+        opp_moves = opp(sim.observation(1 - side)) or []
+        acts: list = [None, None]
+        acts[side] = list(rl_moves)
+        acts[1 - side] = list(opp_moves)
+        sim.step(acts)
+    rr, orr = sim.rewards[side], sim.rewards[1 - side]
+    if rr > 0 and orr > 0:
+        return "tie"
+    return "win" if rr > 0 else "loss"
+
+
 def run_periodic_eval(
     model: OrbitNet,
     cfg: V2Config,
     device: torch.device,
 ) -> list[EvalResult]:
-    from evaluation.evaluate import run_games
+    """Side-alternated, paired-seed win-rate eval on the engine-faithful
+    FastOrbitWars — mirrors scripts/eval_fast.py (and shares its game loop, so
+    the in-training number is directly comparable to the trusted scorer).
 
-    eval_agent = make_v2_eval_agent(model, cfg, device)
+    The old implementation always played the RL agent as player 0 vs apex via the
+    Kaggle harness with no seed control: NOT side-alternated, NOT paired. With any
+    player-0 advantage it scored the favourable side every game and inflated the
+    win-rate ~2x (showed 90-95% live while eval_fast showed 33-58% on the same
+    ckpts). Here each game alternates which side the RL agent plays and uses a
+    fixed base seed (eval_seed=20000, shared with eval_fast), so the only variance
+    is the map seed. CPU games are slow (~20s each) so cfg.eval.eval_workers>1
+    fans them across processes.
+    """
+    from v2.fast_env import FastOrbitWars
+
+    n = cfg.eval.eval_games
+    base_seed = cfg.eval.eval_seed
+    jobs = [(base_seed + i, i % 2) for i in range(n)]   # alternate RL's side
+    workers = cfg.eval.eval_workers
     results: list[EvalResult] = []
 
-    for opp_name in cfg.eval.eval_opponents:
-        opp_callable = _get_eval_opponent(opp_name)
-        raw = run_games(eval_agent, opp_callable, n_games=cfg.eval.eval_games)
-        results.append(EvalResult(
-            opponent_name=opp_name,
-            win_rate=raw["win_rate"],
-            loss_rate=raw["loss_rate"],
-            tie_rate=raw["tie_rate"],
-            n_games=raw["n_games"],
-        ))
+    if workers and workers > 1 and n > 1:
+        from concurrent.futures import ProcessPoolExecutor
 
+        from v2.config import v2_config_to_dict
+        cfg_dict = v2_config_to_dict(cfg)
+        sd = {k: v.cpu() for k, v in model.state_dict().items()}
+        for opp_name in cfg.eval.eval_opponents:
+            try:
+                with ProcessPoolExecutor(
+                    max_workers=workers, initializer=_peval_init,
+                    initargs=(cfg_dict, sd, opp_name),
+                ) as ex:
+                    res = list(ex.map(_peval_game, jobs))
+            except Exception as e:  # pragma: no cover - fall back to sequential
+                print(f"  parallel eval failed ({e}); falling back to sequential")
+                res = _run_eval_sequential(model, cfg, device, opp_name, jobs)
+            results.append(_tally(opp_name, res, n))
+        return results
+
+    for opp_name in cfg.eval.eval_opponents:
+        res = _run_eval_sequential(model, cfg, device, opp_name, jobs)
+        results.append(_tally(opp_name, res, n))
     return results
+
+
+def _run_eval_sequential(
+    model: OrbitNet, cfg: V2Config, device: torch.device,
+    opp_name: str, jobs: list[tuple[int, int]],
+) -> list[str]:
+    from v2.fast_env import FastOrbitWars
+
+    rl = make_v2_eval_agent(model, cfg, device)
+    opp = _get_eval_opponent(opp_name)
+    out: list[str] = []
+    for seed, side in jobs:
+        sim = FastOrbitWars(num_agents=2, seed=seed)
+        while not sim.done:
+            rl_moves = rl(sim.observation(side)) or []
+            opp_moves = opp(sim.observation(1 - side)) or []
+            acts: list = [None, None]
+            acts[side] = list(rl_moves)
+            acts[1 - side] = list(opp_moves)
+            sim.step(acts)
+        rr, orr = sim.rewards[side], sim.rewards[1 - side]
+        out.append("tie" if (rr > 0 and orr > 0) else ("win" if rr > 0 else "loss"))
+    return out
+
+
+def _tally(opp_name: str, res: list[str], n: int) -> EvalResult:
+    return EvalResult(
+        opponent_name=opp_name,
+        win_rate=res.count("win") / max(n, 1),
+        loss_rate=res.count("loss") / max(n, 1),
+        tie_rate=res.count("tie") / max(n, 1),
+        n_games=n,
+    )
 
 
 def _get_eval_opponent(name: str) -> Any:

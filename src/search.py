@@ -112,7 +112,8 @@ def search_improve_with_player(
             actual_tt = travel_time(src_planet.x, src_planet.y, tgt_x, tgt_y, ships_to_send)
 
             sim_copy = sim_state.copy()
-            add_fleet_event(sim_copy, src_id, target_id, ships_to_send, actual_tt)
+            add_fleet_event(sim_copy, src_id, target_id, ships_to_send, actual_tt,
+                            src_xy=(src_planet.x, src_planet.y), dst_xy=(tgt_x, tgt_y))
 
             for _ in range(exit_cfg.search_depth):
                 sim_step(sim_copy)

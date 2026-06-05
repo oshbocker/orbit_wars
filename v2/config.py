@@ -146,6 +146,13 @@ class V2EvalConfig:
     eval_every: int = 100
     eval_games: int = 10
     eval_opponents: list[str] = field(default_factory=lambda: ["apex", "random"])
+    # Base map seed for periodic eval. Shared with scripts/eval_fast.py (20000)
+    # so in-training win-rates are directly comparable to the trusted scorer.
+    eval_seed: int = 20000
+    # Process workers for periodic eval (CPU games are slow: ~20s each). >1 fans
+    # the side-alternated games across processes like scripts/eval_fast.py. 0/1 =
+    # sequential. Set to ~vCPU count on Colab.
+    eval_workers: int = 0
 
 
 @dataclass(slots=True)

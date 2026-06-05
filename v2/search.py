@@ -15,11 +15,12 @@ from __future__ import annotations
 import numpy as np
 
 from src.features import intercept_pos, passes_through_sun, planet_pos_at
-from src.game_types import GameState, PlanetState
+from src.game_types import FleetState, GameState, PlanetState
 from src.simulator import (
     SimState,
     add_fleet_event,
     evaluate_state,
+    fleet_position_at,
     sim_step,
     travel_time,
 )
@@ -33,12 +34,17 @@ NEG = -1e9
 def _reconstruct_leaf_state(
     root_state: GameState, leaf_sim: SimState, player: int,
 ) -> GameState:
-    """Approximate GameState at a search leaf for neural-value scoring.
+    """Reconstruct GameState at a search leaf for neural-value scoring.
 
-    SimState is positionless, so geometry (x/y/radius/orbit) comes from the ROOT
-    GameState; ownership/ships/production come from the leaf SimState. Orbiting
-    planets are advanced to their leaf-step position. In-flight fleets are dropped
-    (a leaf value estimate — the planet ownership/garrison is the dominant signal).
+    SimState is positionless, so planet geometry (x/y/radius/orbit) comes from the
+    ROOT GameState; ownership/ships/production come from the leaf SimState.
+    Orbiting planets are advanced to their leaf-step position.
+
+    Phase 2 (positional simulator): in-flight fleets are now rebuilt with x/y/angle
+    from the geometry each fleet_event carries (`fleet_position_at`), so the leaf
+    GameState — and the features encoded from it — match the value head's training
+    distribution. Dropping fleets (the old behaviour) made leaves OOD and collapsed
+    the neural-value experiment 77%->0%; this is the prerequisite fix.
     """
     root_by_id = {p.id: p for p in root_state.planets}
     av = root_state.angular_velocity
@@ -57,8 +63,18 @@ def _reconstruct_leaf_state(
             is_orbiting=rp.is_orbiting, orbital_radius=rp.orbital_radius,
             initial_angle=rp.initial_angle,
         ))
+    fleets: list[FleetState] = []
+    for ev in leaf_sim.fleet_events:
+        pos = fleet_position_at(ev, leaf_sim.current_step)
+        if pos is None:
+            continue
+        fx, fy, fangle = pos
+        fleets.append(FleetState(
+            id=-1, owner=ev[2], x=fx, y=fy, angle=fangle,
+            from_planet_id=-1, ships=int(ev[3]),
+        ))
     return GameState(
-        step=leaf_sim.current_step, player=player, planets=planets, fleets=[],
+        step=leaf_sim.current_step, player=player, planets=planets, fleets=fleets,
         angular_velocity=av, planets_by_id={p.id: p for p in planets},
     )
 
@@ -166,7 +182,8 @@ def search_improve_planet(
                 ships = max(1, int(src_ships * frac))
                 tt = travel_time(src.x, src.y, tx, ty, ships)
                 sc = sim_state.copy()
-                add_fleet_event(sc, src.id, tgt.id, ships, tt)
+                add_fleet_event(sc, src.id, tgt.id, ships, tt,
+                                src_xy=(src.x, src.y), dst_xy=(tx, ty))
                 for _ in range(exit_cfg.search_depth):
                     sim_step(sc, rollout_players)
                 leaves.append(("frac", j, fb, sc))

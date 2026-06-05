@@ -20,7 +20,14 @@ class SimState:
     planet_owner: dict[int, int]       # {pid: owner} (-1 = neutral)
     planet_ships: dict[int, float]     # {pid: ships}
     planet_prod: dict[int, int]        # {pid: production} (shared, not copied)
-    fleet_events: list[tuple[int, int, int, int]]  # [(arrival_step, target_id, owner, ships)]
+    # In-flight fleets as scheduled arrivals. Phase 2 (positional simulator):
+    # each event carries the straight-line geometry of the fleet so a search-leaf
+    # position can be reconstructed in-distribution for the neural value head:
+    #   (arrival_step, target_id, owner, ships, launch_step, sx, sy, tx, ty)
+    # launch_step == -1 is the sentinel for "no geometry" (positionless legacy
+    # producers). Combat/scoring only ever read the first four fields, so the
+    # heuristic search path is bit-identical to the pre-geometry simulator.
+    fleet_events: list[tuple[int, int, int, int, int, float, float, float, float]]
     current_step: int
     planet_ids: list[int]              # all planet ids (shared, not copied)
     # Phase 1 (every-step in-sim rollout opponent): geometry, precomputed once at
@@ -95,9 +102,15 @@ def _build_fleet_schedule(
     fleets: list[FleetState],
     planets: list[PlanetState],
     step: int,
-) -> list[tuple[int, int, int, int]]:
-    """Convert existing fleets to (arrival_step, target_id, owner, ships) tuples."""
-    schedule: list[tuple[int, int, int, int]] = []
+) -> list[tuple[int, int, int, int, int, float, float, float, float]]:
+    """Convert existing fleets to scheduled-arrival events with geometry:
+    (arrival_step, target_id, owner, ships, launch_step, sx, sy, tx, ty).
+
+    The fleet's *current* position (f.x, f.y) is the segment start and the target
+    planet's position is the end, with launch_step = `step` — so linear
+    interpolation over [step, arrival] reproduces its straight-line motion (the
+    same discrete-arrival approximation the sim already makes)."""
+    schedule: list[tuple[int, int, int, int, int, float, float, float, float]] = []
     for f in fleets:
         best_planet: PlanetState | None = None
         best_eta = float("inf")
@@ -108,7 +121,8 @@ def _build_fleet_schedule(
                 best_planet = p
         if best_planet is not None:
             arrival = step + max(1, int(math.ceil(best_eta)))
-            schedule.append((arrival, best_planet.id, f.owner, int(f.ships)))
+            schedule.append((arrival, best_planet.id, f.owner, int(f.ships),
+                             step, f.x, f.y, best_planet.x, best_planet.y))
     return schedule
 
 
@@ -183,9 +197,12 @@ def sim_step(state: SimState, rollout_players: list[int] | None = None) -> None:
     passive-opponent behaviour exactly.
     """
     if rollout_players:
+        xy = state.planet_xy
         for pl in rollout_players:
             for from_id, tid, ships, tt in rollout_launches(state, pl):
-                add_fleet_event(state, from_id, tid, ships, tt)
+                src_xy = xy[from_id] if xy is not None else None
+                dst_xy = xy[tid] if xy is not None else None
+                add_fleet_event(state, from_id, tid, ships, tt, src_xy, dst_xy)
 
     state.current_step += 1
 
@@ -196,9 +213,9 @@ def sim_step(state: SimState, rollout_players: list[int] | None = None) -> None:
 
     # Collect arriving fleets this step
     arrivals: dict[int, dict[int, int]] = {}  # {target_id: {owner: total_ships}}
-    remaining_events: list[tuple[int, int, int, int]] = []
+    remaining_events: list[tuple[int, int, int, int, int, float, float, float, float]] = []
     for event in state.fleet_events:
-        arr_step, target_id, owner, ships = event
+        arr_step, target_id, owner, ships = event[0], event[1], event[2], event[3]
         if arr_step <= state.current_step:
             if target_id not in arrivals:
                 arrivals[target_id] = {}
@@ -245,11 +262,39 @@ def add_fleet_event(
     target_id: int,
     ships: int,
     travel_time: float,
+    src_xy: tuple[float, float] | None = None,
+    dst_xy: tuple[float, float] | None = None,
 ) -> None:
-    """Schedule a fleet arrival by deducting ships and adding an event."""
+    """Schedule a fleet arrival by deducting ships and adding an event.
+
+    When `src_xy` and `dst_xy` are given (the aim point used to compute
+    travel_time), the event carries the straight-line geometry so the fleet can
+    be reconstructed in-distribution at a search leaf (Phase 2). Without them the
+    event is positionless (launch_step = -1), matching the legacy behaviour."""
     state.planet_ships[src_id] = max(0, state.planet_ships[src_id] - ships)
     arrival = state.current_step + max(1, int(math.ceil(travel_time)))
-    state.fleet_events.append((arrival, target_id, state.planet_owner[src_id], ships))
+    if src_xy is not None and dst_xy is not None:
+        ls, (sx, sy), (tx, ty) = state.current_step, src_xy, dst_xy
+    else:
+        ls, sx, sy, tx, ty = -1, 0.0, 0.0, 0.0, 0.0
+    state.fleet_events.append(
+        (arrival, target_id, state.planet_owner[src_id], ships, ls, sx, sy, tx, ty))
+
+
+def fleet_position_at(
+    event: tuple[int, int, int, int, int, float, float, float, float], step: int,
+) -> tuple[float, float, float] | None:
+    """(x, y, angle) of an in-flight fleet event at `step`, or None if the event
+    carries no geometry (launch_step == -1). Fleets travel a straight line at
+    constant speed, so position is a linear interpolation along the segment —
+    used to rebuild in-distribution leaf GameStates for the neural value head."""
+    arr, _tid, _own, _sh, ls, sx, sy, tx, ty = event
+    if ls < 0:
+        return None
+    dur = max(1, arr - ls)
+    frac = (step - ls) / dur
+    frac = 0.0 if frac < 0.0 else (1.0 if frac > 1.0 else frac)
+    return sx + frac * (tx - sx), sy + frac * (ty - sy), math.atan2(ty - sy, tx - sx)
 
 
 def evaluate_state(state: SimState, player: int) -> float:
@@ -276,7 +321,7 @@ def evaluate_state(state: SimState, player: int) -> float:
 
     # Count fleet ships
     for event in state.fleet_events:
-        _, _, owner, ships = event
+        owner, ships = event[2], event[3]
         if owner == player:
             my_ships += ships
         elif owner >= 0:

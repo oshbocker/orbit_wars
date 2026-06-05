@@ -23,8 +23,10 @@ model:
 
 eval:
   eval_every: 5
-  eval_games: 10
+  eval_games: 40          # side-alternated + paired seeds (see run_periodic_eval)
   eval_opponents: [apex, random]
+  eval_seed: 20000        # shared with scripts/eval_fast.py -> directly comparable
+  eval_workers: 6         # CPU games ~20s each; set to ~vCPU count on Colab
 
 # BC warm start (clone apex), then improve by search.
 imitation:

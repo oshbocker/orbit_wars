@@ -500,7 +500,7 @@ Each `.pt` file contains `{"update": int, "policy": state_dict, "optimizer": sta
 
 ## Current best agent & next-session plan: STRONGER EXPERT SEARCH (ExIt)
 
-**State (2026-06-04).** Best agent = **heuristic ExIt `v2_exit_a100/ckpt_000020.pt` (iter 20), 77% vs apex at n=60** (submitted). ExIt (search → distill) is the proven path; it plateaus ~70–77% with the current shallow expert.
+**State (2026-06-05).** Best agent = **heuristic ExIt `v2_exit_a100/ckpt_000020.pt` (iter 20)** (submitted). ExIt (search → distill) is the proven path. **Eval-gate fix + Phase 2 DONE (2026-06-05).** ⚠️ **The "77% vs apex @ n=60" headline does NOT reproduce on the trusted side-alternated scorer:** at seed 20000 iter-20 is ~33% P0 / 13% P1 (≈23% combined), and win-rate is HIGH-VARIANCE across map seeds (33% on the 20000 batch vs 83% P0 on the 31000 batch). The two decode paths are identical (896 steps, 0 diffs → submitted agent == training policy, NOT a bug), so the spread is genuine map variance and the old non-alternated eval was inflating. **Re-measure the true baseline with high-n multi-seed `eval_fast` on Colab before trusting any number** (local CPU eval ~20s/game → too slow for n≥60).
 
 **Dead ends — do NOT repeat (all empirically confirmed):**
 - **Model-free PPO** (incl. the full v4_ceiling stack): structural credit-assignment stall, 0–10% vs apex / 100% vs random. More representation/critic/opponent machinery does not fix it.
@@ -510,19 +510,19 @@ Each `.pt` file contains `{"update": int, "policy": state_dict, "optimizer": sta
 
 **Full AutoGo-informed write-up: `rl_research/STRONGER_EXPERT_SEARCH_PLAN.md`.**
 
-**Process bug to fix FIRST:** in-training `run_periodic_eval` (n=20) is NOT side-alternated/paired → it showed 90–95% while `eval_fast` (n=60) showed 33–58% on the same ckpts (inflated ~2×, unreadable live, cost a blind 10.6h run). Make `run_periodic_eval` mirror `eval_fast` (side-alternated + paired seeds, n≥40).
+**Process bug — ✅ FIXED (2026-06-05):** in-training `run_periodic_eval` was NOT side-alternated/paired (always RL=P0 via the Kaggle harness) → inflated ~2×. Now mirrors `eval_fast`: `FastOrbitWars`, side-alternated, paired seeds (`eval_seed=20000`, shared → directly comparable), parallel via `eval_workers`. New `V2EvalConfig` fields `eval_seed`/`eval_workers`; `configs/v2_exit.yaml` → `eval_games: 40`, `eval_workers: 6`.
 
-**The lever = a LEARNED VALUE in the search (not a hand-coded opponent/rollout).** Corrected next-session sequence:
-1. **Eval-gate fix** (above, ~30 min) — unblocks readable runs.
-2. **Phase 2 — positional simulator.** `SimState` is positionless; add fleet x/y so search-leaf `GameState`s are in-distribution. Prerequisite for Phase 3 (else repeat the neural-value-leaves OOD collapse).
-3. **Phase 3 — grounded learned value.** Train the value head on REAL games played to terminal vs apex (+self-play; ~10% to terminal), then use it at SHALLOW leaves — opponent carried by the learned value, NOT a hand-coded rollout. This is the AutoGo-correct version and directly fixes why Phase 1/turn-1 failed.
+**The lever = a LEARNED VALUE in the search (not a hand-coded opponent/rollout).** Sequence:
+1. **Eval-gate fix** — ✅ DONE (see above).
+2. **Phase 2 — positional simulator** — ✅ DONE. `fleet_events` now carry geometry `(…, launch_step, sx, sy, tx, ty)`; `fleet_position_at` + `_reconstruct_leaf_state` rebuild in-distribution fleets at leaves. Heuristic path bit-identical (combat/scoring read only the first 4 fields). Readiness diagnostic on iter-20: OOD collapse FIXED (neural leaf std 0.765, not degenerate), value grounded (corr(pred,outcome)=0.389); BUT neural≈heuristic sibling-ranking corr ≈ 0.0 → value too noisy to rank near-equal candidates alone.
+3. **Phase 3 — grounded learned value: BLEND, NOT SWAP.** The value head is ALREADY grounded — `play_single_game` runs to terminal and `train_epoch` already does `value_loss = MSE(out.value, terminal_outcome)` (so "~10% to terminal" is effectively 100%). Remaining work = *use* it at leaves via a **z-scored blend** `score=(1-w)·z(heur)+w·z(neural)` behind a `value_leaf_blend` knob (small w, A/B-able), warm-start iter-20, gate on the fixed eval at high n. A pure swap is the trap (sibling ranking uncorrelated). Fixes both prior failures: OOD (Phase 2) + over-trusted value (blend).
 4. (later) **Joint / multi-planet search** + capacity A/B once the value is trustworthy.
 
 **Separate track — answers the original "does a deeper net help?" question:** run the **embed-128 vs 256 capacity A/B in the ExIt regime** (capacity should help with good supervised-distillation targets, unlike PPO). Configs exist: `configs/v2_exit_embed128.yaml` / `v2_exit_embed256.yaml` (now with parallel collection); run on Colab via `scripts/run_embed_ab.py`.
 
-**Key files:** `v2/search.py` (`search_improve_planet`, `_make_dists`, neural-value helpers), `v2/exit_train.py` (collect→search→distill loop, `_search_record`, two-player `opp_events` wiring, parallel `collect_workers`/`search_workers`, `collect_fast_env`), `src/simulator.py` (`SimState` is positionless; `sim_step` has NO opponent moves — the gap to close), `configs/v2_exit.yaml`.
+**Key files:** `v2/search.py` (`search_improve_planet`, `_make_dists`, neural-value helpers, `_reconstruct_leaf_state` now rebuilds in-distribution fleets — Phase 3 blend goes here), `v2/exit_train.py` (collect→search→distill; `_search_record`; `play_single_game` is P0-only vs apex, NOT side-alternated; parallel `collect_workers`/`search_workers`, `collect_fast_env`), `src/simulator.py` (`SimState`/`fleet_events` now POSITIONAL: `…, launch_step, sx, sy, tx, ty`; `fleet_position_at`; `add_fleet_event(…, src_xy, dst_xy)`; `sim_step` still has NO opponent — Phase 4(b)), `v2/train.py` (`run_periodic_eval` side-alternated/paired/parallel; `_peval_init`/`_peval_game`), `configs/v2_exit.yaml`.
 
-**Eval/ops tooling:** `scripts/eval_fast.py` (fast_env, n=60, side-alternated, paired seeds — the reliable scorer; per-iter n=20 training evals are too noisy), `scripts/download_checkpoint.py --run <name> --all-ckpts`, `scripts/replay.py --exit`. Submission bundle: `v2/agent_v3.py` + `ckpt_last.pt` + `submission_config.yaml` + `v2/` + `src/` (built at `outputs/submissions/v2_exit_a100_bundle/`).
+**Eval/ops tooling:** `scripts/eval_fast.py` (fast_env, side-alternated, paired seeds — the reliable scorer; ⚠️ win-rate is HIGH-VARIANCE across map seeds, use n≥60 and multiple seed batches; local CPU ~20s/game so run on Colab), `scripts/download_checkpoint.py --run <name> --all-ckpts`, `scripts/replay.py --exit`. Submission bundle: `v2/agent_v3.py` + `ckpt_last.pt` + `submission_config.yaml` + `v2/` + `src/` (built at `outputs/submissions/v2_exit_a100_bundle/`); bundle code == live (verified same).
 
 ## Config System
 
