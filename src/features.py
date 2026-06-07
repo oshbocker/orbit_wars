@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .config import EnvConfig
-from .game_types import FleetState, GameState, PlanetState, SUN_X, SUN_Y
+from .game_types import SUN_X, SUN_Y, FleetState, GameState, PlanetState
 
 # ── constants ────────────────────────────────────────────────────────────────
 
@@ -25,6 +25,7 @@ TARGET_SCALAR_DIM = 11
 
 # ── fleet physics ────────────────────────────────────────────────────────────
 
+
 def fleet_speed(ships: float) -> float:
     if ships <= 1:
         return 1.0
@@ -38,7 +39,7 @@ def passes_through_sun(x1: float, y1: float, x2: float, y2: float) -> bool:
     if a == 0:
         return False
     b = 2 * (fx * dx + fy * dy)
-    c = fx * fx + fy * fy - SUN_SAFE_RADIUS ** 2
+    c = fx * fx + fy * fy - SUN_SAFE_RADIUS**2
     disc = b * b - 4 * a * c
     if disc < 0:
         return False
@@ -103,11 +104,15 @@ def fleet_hits_planet(fleet: FleetState, planet: PlanetState) -> float | None:
     return t
 
 
-def planet_pos_at(planet: PlanetState, future_step: int, angular_velocity: float) -> tuple[float, float]:
+def planet_pos_at(
+    planet: PlanetState, future_step: int, angular_velocity: float
+) -> tuple[float, float]:
     if not planet.is_orbiting:
         return planet.x, planet.y
     angle = planet.initial_angle + angular_velocity * future_step
-    return SUN_X + planet.orbital_radius * math.cos(angle), SUN_Y + planet.orbital_radius * math.sin(angle)
+    return SUN_X + planet.orbital_radius * math.cos(
+        angle
+    ), SUN_Y + planet.orbital_radius * math.sin(angle)
 
 
 def aim_angle(src: PlanetState, tgt: PlanetState) -> float:
@@ -191,8 +196,14 @@ def safe_angle(src_x: float, src_y: float, dst_x: float, dst_y: float) -> tuple[
     r = SUN_SAFE_RADIUS + 3.0
     best_wp = None
     best_total = float("inf")
-    for offset in (math.pi / 2, -math.pi / 2, math.pi / 3, -math.pi / 3,
-                   2 * math.pi / 3, -2 * math.pi / 3):
+    for offset in (
+        math.pi / 2,
+        -math.pi / 2,
+        math.pi / 3,
+        -math.pi / 3,
+        2 * math.pi / 3,
+        -2 * math.pi / 3,
+    ):
         wp_a = a_src + offset
         wx = max(1.0, min(99.0, SUN_X + r * math.cos(wp_a)))
         wy = max(1.0, min(99.0, SUN_Y + r * math.sin(wp_a)))
@@ -210,9 +221,11 @@ def safe_angle(src_x: float, src_y: float, dst_x: float, dst_y: float) -> tuple[
 
 # ── fleet transit computation ────────────────────────────────────────────────
 
+
 @dataclass
 class TransitInfo:
     """Per-planet fleet transit aggregation."""
+
     enemy_ships: float = 0.0
     enemy_eta: float = 0.0
     friendly_ships: float = 0.0
@@ -222,6 +235,7 @@ class TransitInfo:
 @dataclass
 class FleetTransitState:
     """Mutable transit state, updated as sequential decisions are made."""
+
     transit: dict[int, TransitInfo] = field(default_factory=dict)
 
     def get(self, planet_id: int) -> TransitInfo:
@@ -262,17 +276,19 @@ def compute_fleet_transit(state: GameState) -> FleetTransitState:
 
 # ── feature encoding ─────────────────────────────────────────────────────────
 
+
 @dataclass
 class SourceDecision:
     """All features needed for one source planet's transformer decision."""
-    global_features: np.ndarray       # [GLOBAL_DIM]
-    source_scalars: np.ndarray        # [SOURCE_SCALAR_DIM]
-    source_position: np.ndarray       # [2]
-    knn_scalars: np.ndarray           # [K, KNN_SCALAR_DIM]
-    knn_positions: np.ndarray         # [K, 2]
-    target_scalars: np.ndarray        # [T, TARGET_SCALAR_DIM]
-    target_positions: np.ndarray      # [T, 2]
-    target_mask: np.ndarray           # [T+2] bool — CLS + NoOp + targets
+
+    global_features: np.ndarray  # [GLOBAL_DIM]
+    source_scalars: np.ndarray  # [SOURCE_SCALAR_DIM]
+    source_position: np.ndarray  # [2]
+    knn_scalars: np.ndarray  # [K, KNN_SCALAR_DIM]
+    knn_positions: np.ndarray  # [K, 2]
+    target_scalars: np.ndarray  # [T, TARGET_SCALAR_DIM]
+    target_positions: np.ndarray  # [T, 2]
+    target_mask: np.ndarray  # [T+2] bool — CLS + NoOp + targets
     # Metadata (not fed to network)
     target_planet_ids: list[int]
     target_angles: list[float]
@@ -315,17 +331,20 @@ def build_global_features(state: GameState) -> np.ndarray:
     max_s = max(my_ships, max(enemy_ships) if enemy_ships else 1.0, 1.0)
     max_p = max(my_prod, max(enemy_prod) if enemy_prod else 1.0, 1.0)
 
-    return np.array([
-        state.step / MAX_STEPS,
-        my_ships / max_s,
-        enemy_ships[0] / max_s,
-        enemy_ships[1] / max_s,
-        enemy_ships[2] / max_s,
-        my_prod / max_p,
-        enemy_prod[0] / max_p,
-        enemy_prod[1] / max_p,
-        enemy_prod[2] / max_p,
-    ], dtype=np.float32)
+    return np.array(
+        [
+            state.step / MAX_STEPS,
+            my_ships / max_s,
+            enemy_ships[0] / max_s,
+            enemy_ships[1] / max_s,
+            enemy_ships[2] / max_s,
+            my_prod / max_p,
+            enemy_prod[0] / max_p,
+            enemy_prod[1] / max_p,
+            enemy_prod[2] / max_p,
+        ],
+        dtype=np.float32,
+    )
 
 
 def _select_targets(
@@ -336,7 +355,7 @@ def _select_targets(
     """Select up to max_targets planets as target candidates, sorted by distance."""
     others = [p for p in state.planets if p.id != src.id]
     others.sort(key=lambda p: math.hypot(p.x - src.x, p.y - src.y))
-    return others[:env_cfg.max_targets]
+    return others[: env_cfg.max_targets]
 
 
 def _select_knn(
@@ -347,7 +366,7 @@ def _select_knn(
     """Select K nearest neighbor planets (any ownership)."""
     others = [p for p in state.planets if p.id != src.id]
     others.sort(key=lambda p: math.hypot(p.x - src.x, p.y - src.y))
-    return others[:env_cfg.k_neighbors]
+    return others[: env_cfg.k_neighbors]
 
 
 def encode_source_decision(
@@ -368,15 +387,18 @@ def encode_source_decision(
     src_transit = transit.get(src.id)
 
     # Source scalars
-    source_scalars = np.array([
-        src.radius / 5.0,
-        src.production / env_cfg.max_production,
-        math.log1p(src.ships) / 10.0,
-        math.log1p(src_transit.enemy_ships) / 10.0,
-        src_transit.enemy_eta / 50.0 if src_transit.enemy_ships > 0 else 0.0,
-        math.log1p(src_transit.friendly_ships) / 10.0,
-        src_transit.friendly_eta / 50.0 if src_transit.friendly_ships > 0 else 0.0,
-    ], dtype=np.float32)
+    source_scalars = np.array(
+        [
+            src.radius / 5.0,
+            src.production / env_cfg.max_production,
+            math.log1p(src.ships) / 10.0,
+            math.log1p(src_transit.enemy_ships) / 10.0,
+            src_transit.enemy_eta / 50.0 if src_transit.enemy_ships > 0 else 0.0,
+            math.log1p(src_transit.friendly_ships) / 10.0,
+            src_transit.friendly_eta / 50.0 if src_transit.friendly_ships > 0 else 0.0,
+        ],
+        dtype=np.float32,
+    )
 
     source_position = np.array([src.x / BOARD_SIZE, src.y / BOARD_SIZE], dtype=np.float32)
 
@@ -399,8 +421,8 @@ def encode_source_decision(
     target_positions = np.zeros((T, 2), dtype=np.float32)
     # Mask: [CLS, NoOp, Target_0, ..., Target_{T-1}]
     target_mask = np.zeros(T + 2, dtype=bool)
-    target_mask[0] = True   # CLS always valid
-    target_mask[1] = True   # NoOp always valid
+    target_mask[0] = True  # CLS always valid
+    target_mask[1] = True  # NoOp always valid
 
     target_planet_ids: list[int] = []
     target_angles: list[float] = []
@@ -411,7 +433,11 @@ def encode_source_decision(
             # Estimate ships to send (half of source) for speed estimate
             est_ships = max(1, src.ships // 2)
             tgt_x, tgt_y, _ = intercept_pos(
-                src, tgt, est_ships, state.step, state.angular_velocity,
+                src,
+                tgt,
+                est_ships,
+                state.step,
+                state.angular_velocity,
             )
         else:
             tgt_x, tgt_y = tgt.x, tgt.y
@@ -421,17 +447,19 @@ def encode_source_decision(
 
         target_positions[i] = [tgt_x / BOARD_SIZE, tgt_y / BOARD_SIZE]
         target_scalars[i] = [
-            1.0 if tgt.owner == -1 else 0.0,                               # neutral
-            1.0 if tgt.owner == state.player else 0.0,                      # friendly
-            1.0 if tgt.owner >= 0 and tgt.owner != state.player else 0.0,   # enemy
-            dist / BOARD_SIZE,                                               # distance
-            math.log1p(tgt.ships) / 10.0,                                   # ships
-            tgt.production / env_cfg.max_production,                         # production
-            math.log1p(tgt_transit.enemy_ships) / 10.0,                      # enemy transit
+            1.0 if tgt.owner == -1 else 0.0,  # neutral
+            1.0 if tgt.owner == state.player else 0.0,  # friendly
+            1.0 if tgt.owner >= 0 and tgt.owner != state.player else 0.0,  # enemy
+            dist / BOARD_SIZE,  # distance
+            math.log1p(tgt.ships) / 10.0,  # ships
+            tgt.production / env_cfg.max_production,  # production
+            math.log1p(tgt_transit.enemy_ships) / 10.0,  # enemy transit
             tgt_transit.enemy_eta / 50.0 if tgt_transit.enemy_ships > 0 else 0.0,  # enemy eta
-            math.log1p(tgt_transit.friendly_ships) / 10.0,                   # friendly transit
-            tgt_transit.friendly_eta / 50.0 if tgt_transit.friendly_ships > 0 else 0.0,  # friendly eta
-            1.0 if tgt.is_orbiting else 0.0,                                # orbiting
+            math.log1p(tgt_transit.friendly_ships) / 10.0,  # friendly transit
+            tgt_transit.friendly_eta / 50.0
+            if tgt_transit.friendly_ships > 0
+            else 0.0,  # friendly eta
+            1.0 if tgt.is_orbiting else 0.0,  # orbiting
         ]
 
         # Compute angle to intercept position (with sun avoidance)

@@ -1,4 +1,5 @@
 """Fleet destination prediction for V2 pipeline."""
+
 from __future__ import annotations
 
 import math
@@ -16,7 +17,7 @@ from src.features import (
     passes_through_sun,
     planet_pos_at,
 )
-from src.game_types import FleetState, GameState, PlanetState, SUN_X, SUN_Y
+from src.game_types import SUN_X, SUN_Y, FleetState, GameState, PlanetState
 
 _LOG1000 = math.log(1000)
 _ORBIT_MAX_STEPS = 100  # mirrors _orbiting_hit_check max_steps
@@ -25,6 +26,7 @@ _ORBIT_MAX_STEPS = 100  # mirrors _orbiting_hit_check max_steps
 @dataclass(slots=True)
 class IncomingFleetInfo:
     """Per-planet incoming fleet aggregation, indexed by relative team (0=own, 1-3=enemies)."""
+
     ships: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
     eta: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
 
@@ -111,8 +113,13 @@ def _orbiting_hit_check(
 
 
 def _segment_circle_hit(
-    x1: float, y1: float, x2: float, y2: float,
-    cx: float, cy: float, r: float,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    cx: float,
+    cy: float,
+    r: float,
 ) -> bool:
     """Check if line segment (x1,y1)→(x2,y2) intersects circle (cx,cy,r)."""
     sdx, sdy = x2 - x1, y2 - y1
@@ -146,7 +153,10 @@ def _compute_incoming_fleets_scalar(
 
     for fleet in state.fleets:
         target, eta = predict_fleet_destination(
-            fleet, state.planets, state.step, state.angular_velocity,
+            fleet,
+            state.planets,
+            state.step,
+            state.angular_velocity,
         )
         if target is None:
             continue
@@ -204,27 +214,30 @@ def _predict_destinations_batch(
     fsh = np.array([f.ships for f in fleets], dtype=np.float64)
     # fleet_speed, vectorized (ships<=1 -> 1.0).
     spd = np.where(
-        fsh <= 1.0, 1.0,
+        fsh <= 1.0,
+        1.0,
         1.0 + (MAX_SHIP_SPEED - 1.0) * (np.log(np.maximum(fsh, 1.0001)) / _LOG1000) ** 1.5,
     )
     dx = np.cos(fang) * spd
     dy = np.sin(fang) * spd
-    a = dx * dx + dy * dy            # [F]; >=1 since spd>=1
+    a = dx * dx + dy * dy  # [F]; >=1 since spd>=1
 
     # ── Planet arrays ────────────────────────────────────────────────────────
     px = np.array([p.x for p in planets], dtype=np.float64)
     py = np.array([p.y for p in planets], dtype=np.float64)
     prad = np.array([p.radius for p in planets], dtype=np.float64)
     orbiting = np.array([p.is_orbiting for p in planets], dtype=bool)
-    hit_r = prad + 0.5               # [Pn]
+    hit_r = prad + 0.5  # [Pn]
 
     eta_full = np.full((F, Pn), np.inf, dtype=np.float64)
 
     # ── Static planets: vectorized fleet_hits_planet ──────────────────────────
     stat = ~orbiting
     if stat.any():
-        sx = px[stat]; sy = py[stat]; sr = hit_r[stat]
-        fxp = fx[:, None] - sx[None, :]          # [F, Ns]
+        sx = px[stat]
+        sy = py[stat]
+        sr = hit_r[stat]
+        fxp = fx[:, None] - sx[None, :]  # [F, Ns]
         fyp = fy[:, None] - sy[None, :]
         b = 2.0 * (fxp * dx[:, None] + fyp * dy[:, None])
         c = fxp * fxp + fyp * fyp - sr[None, :] ** 2
@@ -248,13 +261,14 @@ def _predict_destinations_batch(
         d_edge = np.minimum(np.minimum(e1, e2), np.minimum(e3, e4))  # [F]
         ok &= ~(oob & (t > d_edge[:, None]))
         # Sun occlusion (SUN_RADIUS) before reaching the planet.
-        sfx = fx - SUN_X; sfy = fy - SUN_Y
+        sfx = fx - SUN_X
+        sfy = fy - SUN_Y
         sun_b = 2.0 * (sfx * dx + sfy * dy)
         sun_c = sfx * sfx + sfy * sfy - SUN_RADIUS * SUN_RADIUS
         sun_disc = sun_b * sun_b - 4.0 * a * sun_c
         sun_ok = sun_disc >= 0.0
         sun_sq = np.sqrt(np.where(sun_ok, sun_disc, 0.0))
-        sun_t = (-sun_b - sun_sq) / (2.0 * a)                       # [F]
+        sun_t = (-sun_b - sun_sq) / (2.0 * a)  # [F]
         sun_block = sun_ok[:, None] & (sun_t[:, None] > 0.0) & (sun_t[:, None] < t)
         ok &= ~sun_block
         stat_eta = np.where(ok, t, np.inf)
@@ -265,7 +279,7 @@ def _predict_destinations_batch(
     if orb_idx.size > 0:
         init_ang = np.array([planets[i].initial_angle for i in orb_idx], dtype=np.float64)
         orb_r = np.array([planets[i].orbital_radius for i in orb_idx], dtype=np.float64)
-        orb_hr = hit_r[orb_idx]                                     # [M]
+        orb_hr = hit_r[orb_idx]  # [M]
         tarr = np.arange(1, _ORBIT_MAX_STEPS + 1, dtype=np.float64)  # [T]
         # Planet positions at step + t - 1 (independent of fleet) -> [M, T].
         ang = init_ang[:, None] + state.angular_velocity * (state.step + tarr[None, :] - 1.0)
@@ -279,7 +293,7 @@ def _predict_destinations_batch(
         # First timestep where the fleet new-pos leaves the board (loop stops there).
         oob = (fnx < 0) | (fnx > BOARD_SIZE) | (fny < 0) | (fny > BOARD_SIZE)  # [F,T]
         oob_t = np.where(oob, tarr[None, :], np.inf)
-        first_oob = oob_t.min(axis=1)                               # [F]
+        first_oob = oob_t.min(axis=1)  # [F]
         # Segment-circle hit for every (fleet, orbiting-planet, timestep) -> [F,M,T].
         relx = fpx[:, None, :] - cpx[None, :, :]
         rely = fpy[:, None, :] - cpy[None, :, :]
@@ -298,8 +312,8 @@ def _predict_destinations_batch(
         )
         # Only timesteps strictly before the fleet leaves the board count.
         seg &= tarr[None, None, :] < first_oob[:, None, None]
-        any_hit = seg.any(axis=2)                                  # [F,M]
-        first_t = seg.argmax(axis=2)                               # [F,M] first True idx
+        any_hit = seg.any(axis=2)  # [F,M]
+        first_t = seg.argmax(axis=2)  # [F,M] first True idx
         orb_eta = np.where(any_hit, tarr[first_t], np.inf)
         eta_full[:, orb_idx] = orb_eta
 
@@ -313,18 +327,22 @@ def _predict_destinations_batch(
     safe_eta = np.where(valid, best_eta, 0.0)
     bhx = fx + dx * safe_eta
     bhy = fy + dy * safe_eta
-    pdx = bhx - fx; pdy = bhy - fy
+    pdx = bhx - fx
+    pdy = bhy - fy
     pa = pdx * pdx + pdy * pdy
-    psfx = fx - SUN_X; psfy = fy - SUN_Y
+    psfx = fx - SUN_X
+    psfy = fy - SUN_Y
     pb = 2.0 * (psfx * pdx + psfy * pdy)
-    pc = psfx * psfx + psfy * psfy - SUN_SAFE_RADIUS ** 2
+    pc = psfx * psfx + psfy * psfy - SUN_SAFE_RADIUS**2
     pdisc = pb * pb - 4.0 * pa * pc
     with np.errstate(invalid="ignore", divide="ignore"):
         psq = np.sqrt(np.where(pdisc >= 0.0, pdisc, 0.0))
         pt1 = (-pb - psq) / (2.0 * pa)
         pt2 = (-pb + psq) / (2.0 * pa)
     sun_hit = (
-        (pa > 0.0) & (pdisc >= 0.0) & valid
+        (pa > 0.0)
+        & (pdisc >= 0.0)
+        & valid
         & (
             ((pt1 >= 0.0) & (pt1 <= 1.0))
             | ((pt2 >= 0.0) & (pt2 <= 1.0))

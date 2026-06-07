@@ -1,4 +1,5 @@
 """Environment wrapper for V2 pipeline."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,8 +8,8 @@ from typing import Any
 from src.game_types import GameState, parse_observation
 from src.opponents import OpponentPolicy
 
-from .config import V2Config
 from .comet import comet_evacuation_moves
+from .config import V2Config
 from .features import V2Features, encode_features
 from .reward import compute_reward
 
@@ -57,6 +58,7 @@ class V2OrbitWarsEnv:
             self.num_players = 2
 
         from kaggle_environments import make
+
         configuration: dict[str, Any] = {}
         if seed is not None:
             configuration["seed"] = int(seed)
@@ -67,6 +69,7 @@ class V2OrbitWarsEnv:
             self.learner_player = (self.env_index + self.episode_index) % 2
         elif self.num_players == 4:
             import random as _rng
+
             self.learner_player = _rng.randint(0, 3)
         else:
             self.learner_player = 0
@@ -78,7 +81,8 @@ class V2OrbitWarsEnv:
         self.last_obs = _extract_observation(states[self.learner_player])
         self.last_opp_obs = [
             _extract_observation(states[i])
-            for i in range(self.num_players) if i != self.learner_player
+            for i in range(self.num_players)
+            if i != self.learner_player
         ]
         self.episode_index += 1
 
@@ -87,8 +91,9 @@ class V2OrbitWarsEnv:
         self.prev_state = None
 
         comet_ids = _get_comet_ids(self.last_obs)
-        return encode_features(state, self.cfg.env, comet_ids=comet_ids,
-                               comets_data=_get_comets_data(self.last_obs))
+        return encode_features(
+            state, self.cfg.env, comet_ids=comet_ids, comets_data=_get_comets_data(self.last_obs)
+        )
 
     def step(self, player_moves: list[list[float | int]]) -> V2StepResult:
         """Step environment with player's moves."""
@@ -121,7 +126,8 @@ class V2OrbitWarsEnv:
         self.last_obs = _extract_observation(player_state)
         self.last_opp_obs = [
             _extract_observation(states[i])
-            for i in range(self.num_players) if i != self.learner_player
+            for i in range(self.num_players)
+            if i != self.learner_player
         ]
 
         done = _extract_status(player_state) != "ACTIVE"
@@ -136,13 +142,21 @@ class V2OrbitWarsEnv:
         if done:
             terminal_reward = _terminal_reward_multi(states, self.learner_player)
         reward = compute_reward(
-            self.prev_state, new_state, new_state.player,
-            done, terminal_reward, self.cfg.reward,
+            self.prev_state,
+            new_state,
+            new_state.player,
+            done,
+            terminal_reward,
+            self.cfg.reward,
         )
 
         comet_ids = _get_comet_ids(self.last_obs)
-        features = encode_features(new_state, self.cfg.env, comet_ids=comet_ids,
-                                   comets_data=_get_comets_data(self.last_obs))
+        features = encode_features(
+            new_state,
+            self.cfg.env,
+            comet_ids=comet_ids,
+            comets_data=_get_comets_data(self.last_obs),
+        )
         info = {
             "learner_player": self.learner_player,
             "num_players": self.num_players,
@@ -173,8 +187,12 @@ class V2FastEnv:
         self.learner_player = 0
         self.num_players = 2
 
-    def reset(self, seed: int | None = None, num_players: int | None = None,
-              opponents: list[OpponentPolicy] | None = None) -> V2Features:
+    def reset(
+        self,
+        seed: int | None = None,
+        num_players: int | None = None,
+        opponents: list[OpponentPolicy] | None = None,
+    ) -> V2Features:
         from .fast_env import FastOrbitWars
 
         if opponents is not None:
@@ -185,23 +203,27 @@ class V2FastEnv:
             self.learner_player = (self.env_index + self.episode_index) % 2
         elif self.num_players == 4:
             import random as _rng
+
             self.learner_player = _rng.randint(0, 3)
         else:
             self.learner_player = 0
 
-        self.sim = FastOrbitWars(num_agents=self.num_players, seed=seed,
-                                 episode_steps=self.cfg.env.episode_steps)
+        self.sim = FastOrbitWars(
+            num_agents=self.num_players, seed=seed, episode_steps=self.cfg.env.episode_steps
+        )
         self.last_obs = self.sim.observation(self.learner_player)
-        self.last_opp_obs = [self.sim.observation(i)
-                             for i in range(self.num_players) if i != self.learner_player]
+        self.last_opp_obs = [
+            self.sim.observation(i) for i in range(self.num_players) if i != self.learner_player
+        ]
         self.episode_index += 1
 
         state = parse_observation(self.last_obs)
         self.last_state = state
         self.prev_state = None
         comet_ids = _get_comet_ids(self.last_obs)
-        return encode_features(state, self.cfg.env, comet_ids=comet_ids,
-                               comets_data=_get_comets_data(self.last_obs))
+        return encode_features(
+            state, self.cfg.env, comet_ids=comet_ids, comets_data=_get_comets_data(self.last_obs)
+        )
 
     def step(self, player_moves: list[list[float | int]]) -> V2StepResult:
         if self.sim is None:
@@ -226,8 +248,9 @@ class V2FastEnv:
         done = bool(res.done)
 
         self.last_obs = self.sim.observation(self.learner_player)
-        self.last_opp_obs = [self.sim.observation(i)
-                             for i in range(self.num_players) if i != self.learner_player]
+        self.last_opp_obs = [
+            self.sim.observation(i) for i in range(self.num_players) if i != self.learner_player
+        ]
 
         self.prev_state = self.last_state
         new_state = parse_observation(self.last_obs)
@@ -240,10 +263,15 @@ class V2FastEnv:
             others = [rl[i] for i in range(len(rl)) if i != self.learner_player]
             terminal_reward = 0.0 if (pr > 0.0 and any(o > 0.0 for o in others)) else pr
 
-        reward = compute_reward(self.prev_state, new_state, new_state.player,
-                                done, terminal_reward, self.cfg.reward)
-        features = encode_features(new_state, self.cfg.env, comet_ids=_get_comet_ids(self.last_obs),
-                                   comets_data=_get_comets_data(self.last_obs))
+        reward = compute_reward(
+            self.prev_state, new_state, new_state.player, done, terminal_reward, self.cfg.reward
+        )
+        features = encode_features(
+            new_state,
+            self.cfg.env,
+            comet_ids=_get_comet_ids(self.last_obs),
+            comets_data=_get_comets_data(self.last_obs),
+        )
         info = {"learner_player": self.learner_player, "num_players": self.num_players}
         return V2StepResult(features=features, reward=reward, done=done, info=info)
 
@@ -251,7 +279,7 @@ class V2FastEnv:
 def _extract_observation(state: Any) -> Any:
     if isinstance(state, dict):
         return state.get("observation")
-    return getattr(state, "observation")
+    return state.observation
 
 
 def _extract_status(state: Any) -> str:

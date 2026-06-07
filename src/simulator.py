@@ -3,13 +3,14 @@
 Used by the ExIt search to evaluate candidate actions by simulating
 the game state forward N steps without running the full Kaggle environment.
 """
+
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from .features import fleet_speed, passes_through_sun, fleet_hits_planet, BOARD_SIZE, MAX_SHIP_SPEED
-from .game_types import GameState, PlanetState, FleetState, SUN_X, SUN_Y
+from .features import fleet_hits_planet, fleet_speed, passes_through_sun
+from .game_types import FleetState, GameState, PlanetState
 
 MAX_STEPS = 500
 
@@ -17,9 +18,10 @@ MAX_STEPS = 500
 @dataclass
 class SimState:
     """Lightweight simulation state for forward projection."""
-    planet_owner: dict[int, int]       # {pid: owner} (-1 = neutral)
-    planet_ships: dict[int, float]     # {pid: ships}
-    planet_prod: dict[int, int]        # {pid: production} (shared, not copied)
+
+    planet_owner: dict[int, int]  # {pid: owner} (-1 = neutral)
+    planet_ships: dict[int, float]  # {pid: ships}
+    planet_prod: dict[int, int]  # {pid: production} (shared, not copied)
     # In-flight fleets as scheduled arrivals. Phase 2 (positional simulator):
     # each event carries the straight-line geometry of the fleet so a search-leaf
     # position can be reconstructed in-distribution for the neural value head:
@@ -29,29 +31,31 @@ class SimState:
     # heuristic search path is bit-identical to the pre-geometry simulator.
     fleet_events: list[tuple[int, int, int, int, int, float, float, float, float]]
     current_step: int
-    planet_ids: list[int]              # all planet ids (shared, not copied)
+    planet_ids: list[int]  # all planet ids (shared, not copied)
     # Phase 1 (every-step in-sim rollout opponent): geometry, precomputed once at
     # the search root and shared immutably across all candidate copies. Both are
     # None on a positionless SimState — the geometry-free rollout policy is only
     # available when these are populated (build_sim_state fills them).
-    planet_xy: dict[int, tuple[float, float]] | None = None      # root positions
-    neighbors: dict[int, list[int]] | None = None                # pid -> nearest pids
+    planet_xy: dict[int, tuple[float, float]] | None = None  # root positions
+    neighbors: dict[int, list[int]] | None = None  # pid -> nearest pids
 
     def copy(self) -> SimState:
         return SimState(
             planet_owner=dict(self.planet_owner),
             planet_ships=dict(self.planet_ships),
-            planet_prod=self.planet_prod,       # shared immutable
+            planet_prod=self.planet_prod,  # shared immutable
             fleet_events=list(self.fleet_events),
             current_step=self.current_step,
-            planet_ids=self.planet_ids,          # shared immutable
-            planet_xy=self.planet_xy,            # shared immutable
-            neighbors=self.neighbors,            # shared immutable
+            planet_ids=self.planet_ids,  # shared immutable
+            planet_xy=self.planet_xy,  # shared immutable
+            neighbors=self.neighbors,  # shared immutable
         )
 
 
 def build_sim_state(
-    game_state: GameState, step: int | None = None, with_geometry: bool = False,
+    game_state: GameState,
+    step: int | None = None,
+    with_geometry: bool = False,
 ) -> SimState:
     """Construct SimState from a parsed GameState observation.
 
@@ -81,8 +85,11 @@ def build_sim_state(
         planet_xy = {p.id: (p.x, p.y) for p in game_state.planets}
         neighbors = {}
         for pid, (x, y) in planet_xy.items():
-            others = [(math.hypot(ox - x, oy - y), oid)
-                      for oid, (ox, oy) in planet_xy.items() if oid != pid]
+            others = [
+                (math.hypot(ox - x, oy - y), oid)
+                for oid, (ox, oy) in planet_xy.items()
+                if oid != pid
+            ]
             others.sort()
             neighbors[pid] = [oid for _, oid in others]
 
@@ -121,8 +128,19 @@ def _build_fleet_schedule(
                 best_planet = p
         if best_planet is not None:
             arrival = step + max(1, int(math.ceil(best_eta)))
-            schedule.append((arrival, best_planet.id, f.owner, int(f.ships),
-                             step, f.x, f.y, best_planet.x, best_planet.y))
+            schedule.append(
+                (
+                    arrival,
+                    best_planet.id,
+                    f.owner,
+                    int(f.ships),
+                    step,
+                    f.x,
+                    f.y,
+                    best_planet.x,
+                    best_planet.y,
+                )
+            )
     return schedule
 
 
@@ -130,13 +148,15 @@ def _build_fleet_schedule(
 # apex: launch when affordable, keep a small home reserve, favour cheap high-prod
 # captures). Deliberately simple — Phase 1's value is that the opponent acts at
 # EVERY step, not that it is apex-perfect.
-ROLLOUT_MAX_TARGETS = 6      # nearest planets considered per source planet
-ROLLOUT_MIN_SHIPS = 3        # don't launch from near-empty planets
-ROLLOUT_RESERVE = 1          # ships left behind after a launch
+ROLLOUT_MAX_TARGETS = 6  # nearest planets considered per source planet
+ROLLOUT_MIN_SHIPS = 3  # don't launch from near-empty planets
+ROLLOUT_RESERVE = 1  # ships left behind after a launch
 
 
 def rollout_launches(
-    state: SimState, player: int, max_targets: int = ROLLOUT_MAX_TARGETS,
+    state: SimState,
+    player: int,
+    max_targets: int = ROLLOUT_MAX_TARGETS,
 ) -> list[tuple[int, int, int, float]]:
     """Cheap geometry-light launches for `player` from the current SimState.
 
@@ -278,11 +298,13 @@ def add_fleet_event(
     else:
         ls, sx, sy, tx, ty = -1, 0.0, 0.0, 0.0, 0.0
     state.fleet_events.append(
-        (arrival, target_id, state.planet_owner[src_id], ships, ls, sx, sy, tx, ty))
+        (arrival, target_id, state.planet_owner[src_id], ships, ls, sx, sy, tx, ty)
+    )
 
 
 def fleet_position_at(
-    event: tuple[int, int, int, int, int, float, float, float, float], step: int,
+    event: tuple[int, int, int, int, int, float, float, float, float],
+    step: int,
 ) -> tuple[float, float, float] | None:
     """(x, y, angle) of an in-flight fleet event at `step`, or None if the event
     carries no geometry (launch_step == -1). Fleets travel a straight line at

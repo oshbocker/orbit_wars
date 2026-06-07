@@ -1,4 +1,5 @@
 """Action sampling and decoding for V2 pipeline."""
+
 from __future__ import annotations
 
 import math
@@ -18,9 +19,9 @@ from .model import OrbitNetOutput
 @dataclass(slots=True)
 class V2SampledAction:
     target_indices: torch.Tensor  # [B, P] sampled target per planet (1..P, 0=hold)
-    frac_indices: torch.Tensor    # [B, P] sampled ship-fraction bin per planet (0..K-1)
-    log_prob: torch.Tensor        # [B] sum of per-planet (target + fraction) log probs
-    entropy: torch.Tensor         # [B] MEAN per-planet (target + fraction) entropy
+    frac_indices: torch.Tensor  # [B, P] sampled ship-fraction bin per planet (0..K-1)
+    log_prob: torch.Tensor  # [B] sum of per-planet (target + fraction) log probs
+    entropy: torch.Tensor  # [B] MEAN per-planet (target + fraction) entropy
 
 
 def _mask_hold(logits: torch.Tensor) -> torch.Tensor:
@@ -30,18 +31,19 @@ def _mask_hold(logits: torch.Tensor) -> torch.Tensor:
     return masked
 
 
-def _frac_dist_for(output: OrbitNetOutput, idx: torch.Tensor, i: int,
-                   actions: torch.Tensor) -> tuple[Categorical, torch.Tensor]:
+def _frac_dist_for(
+    output: OrbitNetOutput, idx: torch.Tensor, i: int, actions: torch.Tensor
+) -> tuple[Categorical, torch.Tensor]:
     """Categorical over fraction bins for the chosen target of source planet i.
 
     Returns (distribution, send_mask) where send_mask is True for non-hold
     actions. For hold actions the target slot is clamped to 0 (the row is
     ignored downstream via send_mask).
     """
-    tgt_slot = (actions - 1).clamp(min=0)                       # [M]
-    fl = output.frac_logits[idx, i]                             # [M, P, K]
+    tgt_slot = (actions - 1).clamp(min=0)  # [M]
+    fl = output.frac_logits[idx, i]  # [M, P, K]
     rows = torch.arange(fl.shape[0], device=fl.device)
-    frac_row = fl[rows, tgt_slot]                               # [M, K]
+    frac_row = fl[rows, tgt_slot]  # [M, K]
     return Categorical(logits=frac_row), (actions > 0)
 
 
@@ -186,7 +188,6 @@ def decode_sampled_actions(
     the executed actions match the recorded log_probs.
     """
     P = cfg.max_planets
-    logits = output.logits[0]  # [P, P+1]
     moves: list[list[float | int]] = []
 
     for i in range(P):
@@ -239,9 +240,8 @@ def decode_actions(
     may be spuriously inflated.
     """
     P = cfg.max_planets
-    logits = output.logits[0]            # [P, P+1]
+    logits = output.logits[0]  # [P, P+1]
     frac_logits = output.frac_logits[0]  # [P, P, K]
-    fracs = cfg.ship_fractions
     moves: list[list[float | int]] = []
 
     for i in range(P):
@@ -309,7 +309,11 @@ def decode_actions(
 
 
 def _compute_angle(
-    src, tgt, ships: int, state: GameState, cfg: V2EnvConfig,
+    src,
+    tgt,
+    ships: int,
+    state: GameState,
+    cfg: V2EnvConfig,
 ) -> float | None:
     """Compute launch angle ensuring fleet reaches the target.
 
@@ -338,7 +342,11 @@ def _compute_angle(
 
 
 def _validate_will_hit(
-    src, tgt, angle: float, ships: int, state: GameState,
+    src,
+    tgt,
+    angle: float,
+    ships: int,
+    state: GameState,
 ) -> bool:
     """Verify fleet launched at `angle` will actually hit the intended target.
 
@@ -356,8 +364,10 @@ def _validate_will_hit(
         return False
 
     virtual_fleet = FleetState(
-        id=-1, owner=state.player,
-        x=spawn_x, y=spawn_y,
+        id=-1,
+        owner=state.player,
+        x=spawn_x,
+        y=spawn_y,
         angle=angle,
         from_planet_id=src.id,
         ships=ships,
@@ -366,7 +376,10 @@ def _validate_will_hit(
     # Exclude source planet from collision check (fleet just launched from it)
     other_planets = [p for p in state.planets if p.id != src.id]
     hit_planet, _eta = predict_fleet_destination(
-        virtual_fleet, other_planets, state.step, state.angular_velocity,
+        virtual_fleet,
+        other_planets,
+        state.step,
+        state.angular_velocity,
     )
 
     return hit_planet is not None and hit_planet.id == tgt.id

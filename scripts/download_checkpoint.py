@@ -62,7 +62,8 @@ def _check_rclone() -> None:
 def _check_remote(remote: str) -> None:
     result = subprocess.run(
         ["rclone", "listremotes"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     remotes = [r.rstrip(":") for r in result.stdout.strip().splitlines()]
     if remote not in remotes:
@@ -147,31 +148,38 @@ def main() -> None:
         description="Download trained checkpoints from Google Drive via rclone.",
     )
     parser.add_argument(
-        "--run", default=DEFAULT_RUN,
+        "--run",
+        default=DEFAULT_RUN,
         help=f"Run name to download (default: {DEFAULT_RUN})",
     )
     parser.add_argument(
-        "--ckpt", default="ckpt_last.pt",
+        "--ckpt",
+        default="ckpt_last.pt",
         help="Which checkpoint file to fetch, e.g. ckpt_000750.pt (default: ckpt_last.pt)",
     )
     parser.add_argument(
-        "--all", action="store_true",
+        "--all",
+        action="store_true",
         help="Download all checkpoint runs",
     )
     parser.add_argument(
-        "--all-ckpts", action="store_true",
+        "--all-ckpts",
+        action="store_true",
         help="Download EVERY checkpoint file of --run (the whole run dir)",
     )
     parser.add_argument(
-        "--list", action="store_true",
+        "--list",
+        action="store_true",
         help="List available checkpoint runs on Drive",
     )
     parser.add_argument(
-        "--list-ckpts", action="store_true",
+        "--list-ckpts",
+        action="store_true",
         help="List the individual checkpoint files within --run",
     )
     parser.add_argument(
-        "--remote", default=DEFAULT_REMOTE,
+        "--remote",
+        default=DEFAULT_REMOTE,
         help=f"rclone remote name (default: {DEFAULT_REMOTE})",
     )
     args = parser.parse_args()

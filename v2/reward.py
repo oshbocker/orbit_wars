@@ -1,4 +1,5 @@
 """Reward computation for V2 pipeline."""
+
 from __future__ import annotations
 
 from src.game_types import GameState
@@ -39,8 +40,9 @@ def compute_reward(
         # invariant (Ng et al. 1999), so it cannot bias the optimal (win) policy.
         # Phi rewards owning productive territory, NOT banked ships — closing the
         # ship-hoarding loophole that makes dense_relative reward passivity.
-        return (cfg.pbrs_gamma * _potential(curr_state, player, cfg)
-                - _potential(prev_state, player, cfg))
+        return cfg.pbrs_gamma * _potential(curr_state, player, cfg) - _potential(
+            prev_state, player, cfg
+        )
 
     # Early-game production bonus multiplier
     prod_mult = 1.0
@@ -51,8 +53,9 @@ def compute_reward(
     if mode == "dense_absolute":
         prev_ships, prev_prod = _count_own(prev_state, player)
         curr_ships, curr_prod = _count_own(curr_state, player)
-        return ((curr_ships - prev_ships) * cfg.dense_ship_coef
-                + (curr_prod - prev_prod) * cfg.dense_prod_coef * prod_mult)
+        return (curr_ships - prev_ships) * cfg.dense_ship_coef + (
+            curr_prod - prev_prod
+        ) * cfg.dense_prod_coef * prod_mult
 
     # dense_relative
     prev_all_ships = _count_all_ships(prev_state)

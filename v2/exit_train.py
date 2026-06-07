@@ -18,11 +18,11 @@ Loop per iteration:
 
 Optionally BC-pretrains from apex first (imitation.enabled) for a warm start.
 """
+
 from __future__ import annotations
 
 import argparse
 import math
-import random
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -43,7 +43,6 @@ from .features import encode_features
 from .model import OrbitNet
 from .search import search_improve_planet
 from .train import (
-    make_v2_eval_agent,
     resolve_device,
     run_periodic_eval,
     save_checkpoint,
@@ -53,12 +52,12 @@ from .train import (
 
 @dataclass
 class StepRecord:
-    features: Any           # V2Features
-    sim_state: Any          # SimState
-    game_state: Any         # GameState (for angular_velocity / step / intercept)
+    features: Any  # V2Features
+    sim_state: Any  # SimState
+    game_state: Any  # GameState (for angular_velocity / step / intercept)
     player: int
     step: int
-    outcome: float = 0.0    # filled after the game ends
+    outcome: float = 0.0  # filled after the game ends
     # Two-player search (Tier 3.2): the opponent's (apex) launches this turn,
     # mapped to SimState schedule entries (from_id, target_id, ships, travel_time).
     # Replayed in search so the lookahead evaluates moves against a real response
@@ -84,10 +83,12 @@ def _map_opp_moves(opp_moves: list, game_state: Any) -> list:
             continue
         sx = fp.x + (fp.radius + 0.1) * math.cos(angle)
         sy = fp.y + (fp.radius + 0.1) * math.sin(angle)
-        vf = FleetState(id=-1, owner=fp.owner, x=sx, y=sy, angle=angle,
-                        from_planet_id=from_id, ships=ships)
+        vf = FleetState(
+            id=-1, owner=fp.owner, x=sx, y=sy, angle=angle, from_planet_id=from_id, ships=ships
+        )
         tgt, eta = predict_fleet_destination(
-            vf, game_state.planets, game_state.step, game_state.angular_velocity)
+            vf, game_state.planets, game_state.step, game_state.angular_velocity
+        )
         if tgt is not None and math.isfinite(eta):
             out.append((from_id, int(tgt.id), ships, float(eta)))
     return out
@@ -100,8 +101,8 @@ class V2ExItSample:
     planet_mask: np.ndarray
     own_mask: np.ndarray
     reachability_mask: np.ndarray
-    target_probs: np.ndarray   # [P, P+1]
-    frac_probs: np.ndarray     # [P, P, K]
+    target_probs: np.ndarray  # [P, P+1]
+    frac_probs: np.ndarray  # [P, P, K]
     outcome: float
 
 
@@ -129,6 +130,7 @@ def _comet_ids(obs) -> list[int] | None:
 
 # ── Phase 1: collect games with the current policy ───────────────────────────
 
+
 def _policy_decide(model, cfg, device, obs0, game_records: list[StepRecord]):
     """Run the policy on obs0, append a StepRecord, return player-0 moves."""
     state = parse_observation(obs0)
@@ -145,15 +147,23 @@ def _policy_decide(model, cfg, device, obs0, game_records: list[StepRecord]):
         # Geometry (positions + neighbour lists) is needed only by the Phase 1
         # every-step rollout opponent; skip the O(P^2) precompute otherwise.
         with_geom = bool(getattr(cfg.exit, "rollout_search", False))
-        game_records.append(StepRecord(
-            features=features, sim_state=build_sim_state(state, with_geometry=with_geom),
-            game_state=state, player=state.player, step=state.step,
-        ))
+        game_records.append(
+            StepRecord(
+                features=features,
+                sim_state=build_sim_state(state, with_geometry=with_geom),
+                game_state=state,
+                player=state.player,
+                step=state.step,
+            )
+        )
     return decode_sampled_actions(sampled, output, features, state, cfg.env)
 
 
 def play_single_game(
-    model: OrbitNet, cfg: V2Config, device: torch.device, seed: int,
+    model: OrbitNet,
+    cfg: V2Config,
+    device: torch.device,
+    seed: int,
 ) -> tuple[list[StepRecord], float]:
     """Play ONE game of the policy (player 0) vs apex (player 1). Returns
     (records, outcome). Backend = fast_env (cfg.exit.collect_fast_env) or Kaggle."""
@@ -170,6 +180,7 @@ def play_single_game(
 
     if cfg.exit.collect_fast_env:
         from .fast_env import FastOrbitWars
+
         sim = FastOrbitWars(num_agents=2, seed=seed)
         while not sim.done:
             obs0, obs1 = sim.observation(0), sim.observation(1)
@@ -181,6 +192,7 @@ def play_single_game(
         reward = sim.rewards[0]
     else:
         from kaggle_environments import make
+
         env = make("orbit_wars", configuration={"seed": seed}, debug=False)
         env.reset(num_agents=2)
         states = env.step([[], []])
@@ -212,6 +224,7 @@ def _collect_init(cfg_dict: dict, state_dict: dict) -> None:
     os.environ["OMP_NUM_THREADS"] = "1"
     torch.set_num_threads(1)
     from .config import v2_config_from_dict
+
     cfg = v2_config_from_dict(cfg_dict)
     model = OrbitNet(cfg.model)
     model.load_state_dict(state_dict)
@@ -226,7 +239,11 @@ def _collect_worker(seed: int) -> tuple[list[StepRecord], float]:
 
 
 def collect_games(
-    model: OrbitNet, cfg: V2Config, device: torch.device, n_games: int, seed: int,
+    model: OrbitNet,
+    cfg: V2Config,
+    device: torch.device,
+    n_games: int,
+    seed: int,
 ) -> tuple[list[StepRecord], list[float], float]:
     """Play n_games of the current policy vs apex, recording per-decision
     StepRecords for search improvement.
@@ -244,10 +261,12 @@ def collect_games(
         from concurrent.futures import ProcessPoolExecutor
 
         from .config import v2_config_to_dict
+
         sd = {k: v.cpu() for k, v in model.state_dict().items()}
         try:
             with ProcessPoolExecutor(
-                max_workers=workers, initializer=_collect_init,
+                max_workers=workers,
+                initializer=_collect_init,
                 initargs=(v2_config_to_dict(cfg), sd),
             ) as ex:
                 for game_records, outcome in ex.map(_collect_worker, seeds):
@@ -269,6 +288,7 @@ def collect_games(
 
 
 # ── Phase 2: search improvement ──────────────────────────────────────────────
+
 
 def _search_record(rec: StepRecord, env_cfg, exit_cfg, value_model=None) -> V2ExItSample:
     """Run per-planet search for one recorded step (picklable worker)."""
@@ -292,18 +312,26 @@ def _search_record(rec: StepRecord, env_cfg, exit_cfg, value_model=None) -> V2Ex
         if not feats.own_mask[i]:
             continue
         tp, fp = search_improve_planet(
-            state=rec.game_state, features=feats,
-            sim_state=base_sim, player=rec.player, source_slot=i,
-            env_cfg=env_cfg, exit_cfg=exit_cfg, value_model=value_model,
+            state=rec.game_state,
+            features=feats,
+            sim_state=base_sim,
+            player=rec.player,
+            source_slot=i,
+            env_cfg=env_cfg,
+            exit_cfg=exit_cfg,
+            value_model=value_model,
         )
         target_probs[i] = tp
         frac_probs[i] = fp
 
     return V2ExItSample(
-        planet_features=feats.planet_features, global_features=feats.global_features,
-        planet_mask=feats.planet_mask, own_mask=feats.own_mask,
+        planet_features=feats.planet_features,
+        global_features=feats.global_features,
+        planet_mask=feats.planet_mask,
+        own_mask=feats.own_mask,
         reachability_mask=feats.reachability_mask,
-        target_probs=target_probs, frac_probs=frac_probs,
+        target_probs=target_probs,
+        frac_probs=frac_probs,
         outcome=rec.outcome,
     )
 
@@ -318,6 +346,7 @@ def _search_init(cfg_dict: dict, state_dict: dict | None) -> None:
     os.environ["OMP_NUM_THREADS"] = "1"
     torch.set_num_threads(1)
     from .config import v2_config_from_dict
+
     cfg = v2_config_from_dict(cfg_dict)
     _SW["env"] = cfg.env
     _SW["exit"] = cfg.exit
@@ -335,7 +364,9 @@ def _search_worker(rec: StepRecord) -> V2ExItSample:
 
 
 def search_improve(
-    records: list[StepRecord], cfg: V2Config, model: OrbitNet | None = None,
+    records: list[StepRecord],
+    cfg: V2Config,
+    model: OrbitNet | None = None,
 ) -> list[V2ExItSample]:
     """Search-improve all recorded decisions. Search is CPU-bound and
     embarrassingly parallel; with exit.search_workers>1 it fans out across
@@ -357,10 +388,16 @@ def search_improve(
         from concurrent.futures import ProcessPoolExecutor
 
         from .config import v2_config_to_dict
-        sd = {k: v.cpu() for k, v in model.state_dict().items()} if use_neural else None
+
+        sd = (
+            {k: v.cpu() for k, v in model.state_dict().items()}
+            if (use_neural and model is not None)
+            else None
+        )
         try:
             with ProcessPoolExecutor(
-                max_workers=workers, initializer=_search_init,
+                max_workers=workers,
+                initializer=_search_init,
                 initargs=(v2_config_to_dict(cfg), sd),
             ) as ex:
                 return list(ex.map(_search_worker, records, chunksize=4))
@@ -372,6 +409,7 @@ def search_improve(
 
 
 # ── Phase 3: supervised distillation ─────────────────────────────────────────
+
 
 def _build_batch(samples: list[V2ExItSample], idx: np.ndarray, device: torch.device):
     pick = [samples[i] for i in idx]
@@ -397,20 +435,20 @@ def train_epoch(model, optimizer, samples, cfg, device) -> dict[str, float]:
     metrics = {"loss": 0.0, "target_loss": 0.0, "frac_loss": 0.0, "value_loss": 0.0}
     nb = 0
     for start in range(0, N, bs):
-        idx = order[start:start + bs]
+        idx = order[start : start + bs]
         if len(idx) < 4:
             continue
         b = _build_batch(samples, idx, device)
         out = model(b["pf"], b["gf"], b["pm"], b["om"], b["rm"])
 
-        logp = F.log_softmax(out.logits.clamp(min=-1e4), dim=-1)       # [B,P,P+1]
-        tgt_ce = -(b["tp"] * logp).sum(-1)                              # [B,P]
+        logp = F.log_softmax(out.logits.clamp(min=-1e4), dim=-1)  # [B,P,P+1]
+        tgt_ce = -(b["tp"] * logp).sum(-1)  # [B,P]
         own = b["om"].float()
         target_loss = (tgt_ce * own).sum() / own.sum().clamp(min=1)
 
-        flogp = F.log_softmax(out.frac_logits, dim=-1)                 # [B,P,P,K]
-        fce = -(b["fp"] * flogp).sum(-1)                               # [B,P,P]
-        fmask = (b["rm"] & b["om"].unsqueeze(-1)).float()              # [B,P,P]
+        flogp = F.log_softmax(out.frac_logits, dim=-1)  # [B,P,P,K]
+        fce = -(b["fp"] * flogp).sum(-1)  # [B,P,P]
+        fmask = (b["rm"] & b["om"].unsqueeze(-1)).float()  # [B,P,P]
         frac_loss = (fce * fmask).sum() / fmask.sum().clamp(min=1)
 
         value_loss = F.mse_loss(out.value, b["out"])
@@ -431,6 +469,7 @@ def train_epoch(model, optimizer, samples, cfg, device) -> dict[str, float]:
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
     args = parse_args()
     cfg = load_v2_config(args.config)
@@ -449,6 +488,7 @@ def main() -> None:
         # Close-and-reopen periodically so the Google Drive FUSE mount (Colab)
         # actually syncs train.log — flush()/fsync() alone can leave it stale.
         import os as _os
+
         print(msg)
         f = _log_state["f"]
         f.write(msg + "\n")
@@ -465,8 +505,10 @@ def main() -> None:
     model = OrbitNet(cfg.model).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     log(f"V2 ExIt: {cfg.run_name}, device={device}, params={n_params:,}")
-    log(f"  iterations={cfg.exit.iterations}, games/iter={cfg.exit.games_per_iter}, "
-        f"search_depth={cfg.exit.search_depth}, candidates={cfg.exit.search_candidates}")
+    log(
+        f"  iterations={cfg.exit.iterations}, games/iter={cfg.exit.games_per_iter}, "
+        f"search_depth={cfg.exit.search_depth}, candidates={cfg.exit.search_candidates}"
+    )
 
     logger = TrainLogger(cfg.log_dir, cfg.run_name)
     save_dir = Path(cfg.save_dir)
@@ -476,8 +518,11 @@ def main() -> None:
     if cfg.imitation.enabled and not args.resume:
         from .imitation import v2_bc_pretrain
         from .train import _load_or_collect_demos
-        log(f"\n=== BC warm start ({cfg.imitation.bc_games} games, "
-            f"{cfg.imitation.bc_epochs} epochs) ===")
+
+        log(
+            f"\n=== BC warm start ({cfg.imitation.bc_games} games, "
+            f"{cfg.imitation.bc_epochs} epochs) ==="
+        )
         demos = _load_or_collect_demos(cfg, log)
         v2_bc_pretrain(model, demos, cfg.imitation, device, logger)
         save_checkpoint(save_dir, cfg.run_name, 0, model, optimizer)
@@ -486,8 +531,10 @@ def main() -> None:
             log(f"  Eval of BC clone (iter 0, {cfg.eval.eval_games} games)...")
             for r in run_periodic_eval(model, cfg, device):
                 logger.log_eval(0, [r])
-                log(f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
-                    f"T={r.tie_rate:.0%} (n={r.n_games})")
+                log(
+                    f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
+                    f"T={r.tie_rate:.0%} (n={r.n_games})"
+                )
     elif args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=True)
         model.load_state_dict(ckpt["model"])
@@ -502,7 +549,8 @@ def main() -> None:
         t_it = time.time()
         model.eval()
         records, outcomes, win_rate = collect_games(
-            model, cfg, device, cfg.exit.games_per_iter, next_seed)
+            model, cfg, device, cfg.exit.games_per_iter, next_seed
+        )
         next_seed += cfg.exit.games_per_iter
         t_collect = time.time() - t_it
 
@@ -519,20 +567,31 @@ def main() -> None:
             m = train_epoch(model, optimizer, all_samples, cfg, device)
         t_train = time.time() - t_tr
 
-        logger.log_update(it, {"win_rate": win_rate, "dataset_size": float(len(all_samples)),
-                               "episode_reward_mean": float(np.mean(outcomes)) if outcomes else 0.0, **m})
-        log(f"iter={it:4d}  selfwin_vs_apex={win_rate:.0%}  decisions={len(records)}  "
+        logger.log_update(
+            it,
+            {
+                "win_rate": win_rate,
+                "dataset_size": float(len(all_samples)),
+                "episode_reward_mean": float(np.mean(outcomes)) if outcomes else 0.0,
+                **m,
+            },
+        )
+        log(
+            f"iter={it:4d}  selfwin_vs_apex={win_rate:.0%}  decisions={len(records)}  "
             f"dataset={len(all_samples)}  loss={m.get('loss', 0):.4f}  "
             f"tloss={m.get('target_loss', 0):.4f}  floss={m.get('frac_loss', 0):.4f}  "
             f"vloss={m.get('value_loss', 0):.4f}  collect={t_collect:.0f}s  "
-            f"search={t_search:.0f}s  train={t_train:.0f}s")
+            f"search={t_search:.0f}s  train={t_train:.0f}s"
+        )
 
         if cfg.eval.eval_every > 0 and it % cfg.eval.eval_every == 0:
             log(f"\n  Eval ({cfg.eval.eval_games} games)...")
             for r in run_periodic_eval(model, cfg, device):
                 logger.log_eval(it, [r])
-                log(f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
-                    f"T={r.tie_rate:.0%} (n={r.n_games})")
+                log(
+                    f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
+                    f"T={r.tie_rate:.0%} (n={r.n_games})"
+                )
             log("")
 
         if it % cfg.checkpoint_every == 0 or it == cfg.exit.iterations:

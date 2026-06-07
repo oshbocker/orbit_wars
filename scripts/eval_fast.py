@@ -14,6 +14,7 @@ scored on the SAME seed/side set (paired) for low-variance ranking.
     uv run python scripts/eval_fast.py --run v2_exit_a100 \
         --config configs/v2_exit.yaml --iters 10,15,25,last --games 100
 """
+
 from __future__ import annotations
 
 import argparse
@@ -70,14 +71,17 @@ def _eval_game(args: tuple[int, int]) -> str:
     return "win" if rr > 0 else "loss"
 
 
-def _eval_checkpoint(path: Path, cfg_dict: dict, n_games: int, workers: int,
-                     opponent: str, base_seed: int) -> tuple[int, int, int]:
+def _eval_checkpoint(
+    path: Path, cfg_dict: dict, n_games: int, workers: int, opponent: str, base_seed: int
+) -> tuple[int, int, int]:
     sd = torch.load(path, map_location="cpu", weights_only=True)["model"]
-    jobs = [(base_seed + i, i % 2) for i in range(n_games)]   # alternate sides
+    jobs = [(base_seed + i, i % 2) for i in range(n_games)]  # alternate sides
     if workers > 1 and n_games > 1:
         from concurrent.futures import ProcessPoolExecutor
-        with ProcessPoolExecutor(max_workers=workers, initializer=_eval_init,
-                                 initargs=(cfg_dict, sd, opponent)) as ex:
+
+        with ProcessPoolExecutor(
+            max_workers=workers, initializer=_eval_init, initargs=(cfg_dict, sd, opponent)
+        ) as ex:
             res = list(ex.map(_eval_game, jobs))
     else:
         _eval_init(cfg_dict, sd, opponent)
@@ -88,7 +92,9 @@ def _eval_checkpoint(path: Path, cfg_dict: dict, n_games: int, workers: int,
 def _resolve_iters(run_dir: Path, spec: str) -> list[str]:
     if spec == "all":
         nums = sorted(int(p.stem.split("_")[1]) for p in run_dir.glob("ckpt_[0-9]*.pt"))
-        return [f"{n:06d}" for n in nums] + (["last"] if (run_dir / "ckpt_last.pt").exists() else [])
+        return [f"{n:06d}" for n in nums] + (
+            ["last"] if (run_dir / "ckpt_last.pt").exists() else []
+        )
     return [s.strip() for s in spec.split(",")]
 
 
@@ -104,6 +110,7 @@ def main() -> int:
     args = ap.parse_args()
 
     from v2.config import load_v2_config, v2_config_to_dict
+
     cfg_dict = v2_config_to_dict(load_v2_config(args.config))
     run_dir = ROOT / "outputs" / "checkpoints" / args.run
 
@@ -111,8 +118,10 @@ def main() -> int:
         return "ckpt_last.pt" if it == "last" else f"ckpt_{int(it):06d}.pt"
 
     iters = _resolve_iters(run_dir, args.iters)
-    print(f"run={args.run}  vs {args.opponent}  n={args.games}  workers={args.workers}  "
-          f"(fast_env, side-alternated, paired seeds)")
+    print(
+        f"run={args.run}  vs {args.opponent}  n={args.games}  workers={args.workers}  "
+        f"(fast_env, side-alternated, paired seeds)"
+    )
     print(f"{'iter':>6} | {'win%':>5} {'loss%':>6} {'tie%':>5}")
     print("-" * 32)
     best = (-1.0, None)
@@ -122,15 +131,18 @@ def main() -> int:
         if not path.exists():
             print(f"{it:>6} | (missing {path.name})")
             continue
-        w, l, t = _eval_checkpoint(path, cfg_dict, args.games, args.workers,
-                                   args.opponent, args.seed)
+        w, l, t = _eval_checkpoint(
+            path, cfg_dict, args.games, args.workers, args.opponent, args.seed
+        )
         wr = w / max(w + l + t, 1)
         rows.append((it, wr))
-        print(f"{it:>6} | {wr:>4.0%} {l/max(args.games,1):>6.0%} {t/max(args.games,1):>5.0%}")
+        print(f"{it:>6} | {wr:>4.0%} {l / max(args.games, 1):>6.0%} {t / max(args.games, 1):>5.0%}")
         if wr > best[0]:
             best = (wr, it)
     if best[1] is not None:
-        print(f"\nBEST: iter {best[1]}  win-rate {best[0]:.0%} vs {args.opponent}  (n={args.games})")
+        print(
+            f"\nBEST: iter {best[1]}  win-rate {best[0]:.0%} vs {args.opponent}  (n={args.games})"
+        )
     return 0
 
 

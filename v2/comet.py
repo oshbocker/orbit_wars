@@ -1,10 +1,11 @@
 """Comet evacuation handler for V2 pipeline."""
+
 from __future__ import annotations
 
 import math
 from typing import Any
 
-from src.game_types import GameState, PlanetState, SUN_X, SUN_Y
+from src.game_types import GameState, PlanetState
 
 
 def comet_evacuation_moves(
@@ -74,7 +75,7 @@ def _comet_near_exit(planet_id: int, comets_data: Any) -> bool:
             continue
         # Check if this planet_id is in this comet group
         pids = []
-        for p in (planets if isinstance(planets, list) else list(planets)):
+        for p in planets if isinstance(planets, list) else list(planets):
             if hasattr(p, "id"):
                 pids.append(int(p.id))
             elif isinstance(p, dict):

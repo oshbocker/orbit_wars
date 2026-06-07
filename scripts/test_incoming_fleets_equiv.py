@@ -8,13 +8,12 @@ reports the wall-clock speedup.
 
 Run: uv run python scripts/test_incoming_fleets_equiv.py
 """
+
 from __future__ import annotations
 
 import sys
 import time
 from pathlib import Path
-
-import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -57,7 +56,9 @@ def _compare(a: dict, b: dict, ctx: str, mism: list) -> None:
         ia, ib = a[pid], b[pid]
         for team in range(4):
             if abs(ia.ships[team] - ib.ships[team]) > SHIP_TOL:
-                mism.append(f"{ctx} pid={pid} team={team}: ships {ia.ships[team]} vs {ib.ships[team]}")
+                mism.append(
+                    f"{ctx} pid={pid} team={team}: ships {ia.ships[team]} vs {ib.ships[team]}"
+                )
             # ETA only meaningful where ships present.
             if ia.ships[team] > 0 and abs(ia.eta[team] - ib.eta[team]) > ETA_TOL:
                 mism.append(f"{ctx} pid={pid} team={team}: eta {ia.eta[team]} vs {ib.eta[team]}")
@@ -82,7 +83,8 @@ def main() -> int:
         for seed in seeds:
             sim = FastOrbitWars(num_agents=num_agents, seed=seed)
             agents = (
-                [apex] * num_agents if kind == "apex"
+                [apex] * num_agents
+                if kind == "apex"
                 else [_rng_agent_factory(seed * 17 + p) for p in range(num_agents)]
             )
             for _ in range(160):
@@ -108,9 +110,9 @@ def main() -> int:
 
     print(f"states compared : {n_states}")
     print(f"total fleets     : {n_fleets_total} (max in a state: {max_fleets})")
-    print(f"scalar time      : {t_scalar*1000:.0f}ms  ({t_scalar/n_states*1000:.3f}ms/call)")
-    print(f"vectorized time  : {t_vec*1000:.0f}ms  ({t_vec/n_states*1000:.3f}ms/call)")
-    print(f"speedup          : {t_scalar/max(t_vec,1e-9):.1f}x")
+    print(f"scalar time      : {t_scalar * 1000:.0f}ms  ({t_scalar / n_states * 1000:.3f}ms/call)")
+    print(f"vectorized time  : {t_vec * 1000:.0f}ms  ({t_vec / n_states * 1000:.3f}ms/call)")
+    print(f"speedup          : {t_scalar / max(t_vec, 1e-9):.1f}x")
     print(f"mismatches       : {len(mism)}")
     for m in mism[:25]:
         print("  " + m)

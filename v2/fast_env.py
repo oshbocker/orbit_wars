@@ -19,12 +19,13 @@ Design choices for fidelity:
 This is the *scalar* reference implementation. Once `tests` confirm it matches the
 Kaggle engine step-for-step, a batched (vectorized) version reuses this exact logic.
 """
+
 from __future__ import annotations
 
 import math
 import random
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from kaggle_environments.envs.orbit_wars.orbit_wars import (
     BOARD_SIZE,
@@ -50,20 +51,34 @@ AgentFn = Callable[[dict], list]  # obs dict -> moves
 
 
 def _planet_obs(p: list) -> dict:
-    return {"id": p[0], "owner": p[1], "x": p[2], "y": p[3],
-            "radius": p[4], "ships": p[5], "production": p[6]}
+    return {
+        "id": p[0],
+        "owner": p[1],
+        "x": p[2],
+        "y": p[3],
+        "radius": p[4],
+        "ships": p[5],
+        "production": p[6],
+    }
 
 
 def _fleet_obs(f: list) -> dict:
-    return {"id": f[0], "owner": f[1], "x": f[2], "y": f[3],
-            "angle": f[4], "from_planet_id": f[5], "ships": f[6]}
+    return {
+        "id": f[0],
+        "owner": f[1],
+        "x": f[2],
+        "y": f[3],
+        "angle": f[4],
+        "from_planet_id": f[5],
+        "ships": f[6],
+    }
 
 
 @dataclass
 class StepResult:
     done: bool
-    rewards: list[float]   # per-player terminal reward (+1/-1), all 0 until done
-    scores: list[float]    # per-player score (ships on owned planets + owned fleets)
+    rewards: list[float]  # per-player terminal reward (+1/-1), all 0 until done
+    scores: list[float]  # per-player score (ships on owned planets + owned fleets)
 
 
 class FastOrbitWars:
@@ -191,8 +206,9 @@ class FastOrbitWars:
                     from_planet[5] -= ships
                     start_x = from_planet[2] + math.cos(angle) * (from_planet[4] + 0.1)
                     start_y = from_planet[3] + math.sin(angle) * (from_planet[4] + 0.1)
-                    self.fleets.append([self.next_fleet_id, player_id, start_x, start_y,
-                                        angle, from_id, ships])
+                    self.fleets.append(
+                        [self.next_fleet_id, player_id, start_x, start_y, angle, from_id, ships]
+                    )
                     self.next_fleet_id += 1
 
     def _move_fleets(self, fleets_to_remove: list, combat_lists: dict) -> None:
@@ -234,7 +250,10 @@ class FastOrbitWars:
                 return
             for fleet in self.fleets:
                 if fleet not in fleets_to_remove:
-                    if point_to_segment_distance((fleet[2], fleet[3]), old_pos, new_pos) < planet[4]:
+                    if (
+                        point_to_segment_distance((fleet[2], fleet[3]), old_pos, new_pos)
+                        < planet[4]
+                    ):
                         combat_lists[planet[0]].append(fleet)
                         fleets_to_remove.append(fleet)
 
@@ -325,14 +344,22 @@ class FastOrbitWars:
             return
         comet_rng = random.Random(f"orbit_wars-comet-{self._episode_seed}-{self.step_num + 1}")
         paths = generate_comet_paths(
-            self.initial_planets, self.angular_velocity, self.step_num + 1,
-            self.comet_planet_ids, self.comet_speed, rng=comet_rng,
+            self.initial_planets,
+            self.angular_velocity,
+            self.step_num + 1,
+            self.comet_planet_ids,
+            self.comet_speed,
+            rng=comet_rng,
         )
         if not paths:
             return
         next_id = max(p[0] for p in self.planets) + 1
-        comet_ships = min(comet_rng.randint(1, 99), comet_rng.randint(1, 99),
-                          comet_rng.randint(1, 99), comet_rng.randint(1, 99))
+        comet_ships = min(
+            comet_rng.randint(1, 99),
+            comet_rng.randint(1, 99),
+            comet_rng.randint(1, 99),
+            comet_rng.randint(1, 99),
+        )
         group = {"planet_ids": [], "paths": paths, "path_index": -1}
         for i in range(len(paths)):
             pid = next_id + i

@@ -50,44 +50,61 @@ from kaggle_environments import make
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a game and export HTML replay")
     parser.add_argument(
-        "--checkpoint", type=str, required=True,
+        "--checkpoint",
+        type=str,
+        required=True,
         help="Path to ckpt_last.pt (or any .pt checkpoint)",
     )
     parser.add_argument(
-        "--config", type=str, default=None,
+        "--config",
+        type=str,
+        default=None,
         help="Config YAML (required for --v1, default for v2: configs/v2_default.yaml)",
     )
     parser.add_argument(
-        "--v1", action="store_true",
+        "--v1",
+        action="store_true",
         help="Use V1 TransformerPolicy instead of V2 OrbitNet",
     )
     parser.add_argument(
-        "--v3", action="store_true",
+        "--v3",
+        action="store_true",
         help="V3 OrbitNet checkpoint (defaults config to configs/v3_features.yaml)",
     )
     parser.add_argument(
-        "--v4", action="store_true",
+        "--v4",
+        action="store_true",
         help="V4 OrbitNet checkpoint (defaults config to configs/v4_ceiling.yaml)",
     )
     parser.add_argument(
-        "--exit", action="store_true",
+        "--exit",
+        action="store_true",
         help="ExIt checkpoint (base-v2 OrbitNet; defaults config to configs/v2_exit.yaml)",
     )
     parser.add_argument(
-        "--opponent", type=str, default="apex",
+        "--opponent",
+        type=str,
+        default="apex",
         choices=["hybrid", "apex", "random"],
         help="Opponent to play against (default: apex)",
     )
     parser.add_argument(
-        "--output", type=str, default="game_replay.html",
+        "--output",
+        type=str,
+        default="game_replay.html",
         help="Output HTML file path (default: game_replay.html)",
     )
     parser.add_argument(
-        "--seed", type=int, default=None,
+        "--seed",
+        type=int,
+        default=None,
         help="Random seed for the game (default: random)",
     )
     parser.add_argument(
-        "--side", type=int, default=0, choices=[0, 1],
+        "--side",
+        type=int,
+        default=0,
+        choices=[0, 1],
         help="Which player slot the RL agent takes (0 or 1, default: 0)",
     )
     return parser.parse_args()
@@ -96,12 +113,15 @@ def parse_args() -> argparse.Namespace:
 def load_opponent(name: str):
     if name == "hybrid":
         from agents.hybrid import agent
+
         return agent
     if name == "apex":
         from agents.apex import agent
+
         return agent
     if name == "random":
         from kaggle_environments.envs.orbit_wars.orbit_wars import random_agent
+
         return random_agent
     raise ValueError(f"Unknown opponent: {name}")
 
@@ -121,8 +141,7 @@ def load_v1_agent(ckpt_path: Path, config_path: str, device: torch.device):
     return make_eval_agent(policy, cfg, device)
 
 
-def load_v2_agent(ckpt_path: Path, config_path: str, device: torch.device,
-                  label: str = "V2"):
+def load_v2_agent(ckpt_path: Path, config_path: str, device: torch.device, label: str = "V2"):
     from v2.config import load_v2_config
     from v2.model import OrbitNet
     from v2.train import make_v2_eval_agent

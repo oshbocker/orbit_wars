@@ -20,6 +20,7 @@ IMPORTANT: `agent()` must remain the LAST callable defined at module level —
 Kaggle's loader returns the last callable in the module namespace. The bundle
 packages are imported at top (before any `def`), so `agent` stays last.
 """
+
 from __future__ import annotations
 
 import os
@@ -55,13 +56,14 @@ for _d in ("/kaggle_simulations/agent", _AGENT_DIR):
 
 import torch
 
+from src.game_types import parse_observation as _parse
+
 # Eagerly import the bundled packages NOW (during exec, while the agent dir is on
 # sys.path) so they are cached in sys.modules before Kaggle pops the path entry.
 from v2.actions import decode_actions as _decode
+from v2.config import V2Config, load_v2_config
 from v2.features import encode_features as _encode
 from v2.model import OrbitNet
-from v2.config import V2Config, load_v2_config
-from src.game_types import parse_observation as _parse
 
 # Singleton state (model + config loaded on first call).
 _model = None
@@ -78,12 +80,14 @@ def _find(paths: list[str]) -> str | None:
 
 def _resolve_config():
     """Load the V2Config matching the trained checkpoint, or a sane default."""
-    cfg_path = _find([
-        os.environ.get("V2_CONFIG", ""),
-        "submission_config.yaml",
-        os.path.join(_AGENT_DIR, "submission_config.yaml"),
-        "/kaggle_simulations/agent/submission_config.yaml",
-    ])
+    cfg_path = _find(
+        [
+            os.environ.get("V2_CONFIG", ""),
+            "submission_config.yaml",
+            os.path.join(_AGENT_DIR, "submission_config.yaml"),
+            "/kaggle_simulations/agent/submission_config.yaml",
+        ]
+    )
     if cfg_path is not None:
         return load_v2_config(cfg_path)
     # Fallback: defaults (v2 architecture, features off). Works for v2 checkpoints.
@@ -96,12 +100,14 @@ def _init() -> None:
 
     _cfg = _resolve_config()
 
-    ckpt_path = _find([
-        os.environ.get("V2_CHECKPOINT", ""),
-        "ckpt_last.pt",
-        os.path.join(_AGENT_DIR, "ckpt_last.pt"),
-        "/kaggle_simulations/agent/ckpt_last.pt",
-    ])
+    ckpt_path = _find(
+        [
+            os.environ.get("V2_CHECKPOINT", ""),
+            "ckpt_last.pt",
+            os.path.join(_AGENT_DIR, "ckpt_last.pt"),
+            "/kaggle_simulations/agent/ckpt_last.pt",
+        ]
+    )
     if ckpt_path is None:
         raise FileNotFoundError("No checkpoint found (ckpt_last.pt).")
 
@@ -130,10 +136,10 @@ def agent(obs, config=None):
     """V3 Kaggle agent. MUST be the last callable in the file."""
     if _model is None:
         _init()
+    assert _cfg is not None  # _init() populates _model and _cfg together
 
     state = _parse(obs)
-    features = _encode(state, _cfg.env, comet_ids=_comet_ids(obs),
-                       comets_data=_comets_data(obs))
+    features = _encode(state, _cfg.env, comet_ids=_comet_ids(obs), comets_data=_comets_data(obs))
 
     with torch.inference_mode():
         pf = torch.from_numpy(features.planet_features).unsqueeze(0).to(_device)

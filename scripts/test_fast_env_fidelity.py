@@ -13,6 +13,7 @@ Usage:
     uv run python scripts/test_fast_env_fidelity.py --games 20
     uv run python scripts/test_fast_env_fidelity.py --games 5 --verbose
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,6 +33,7 @@ def scripted_agent(obs) -> list:
     step-dependent policy would desync the two players between engine and
     fast_env for reasons unrelated to simulator fidelity. Keying on pid alone
     guarantees identical actions from identical (pid, owner, ships) inputs."""
+
     def g(o, k, d):
         if isinstance(o, dict):
             return o.get(k, d)
@@ -53,10 +55,12 @@ def scripted_agent(obs) -> list:
 
 def _engine_state(obs):
     """Extract a comparable snapshot from a kaggle obs."""
+
     def g(o, k, d):
         if isinstance(o, dict):
             return o.get(k, d)
         return getattr(o, k, d)
+
     planets = {p[0]: (p[1], round(p[2], 3), round(p[3], 3), p[5]) for p in g(obs, "planets", [])}
     n_fleets = len(g(obs, "fleets", []))
     return planets, n_fleets
@@ -89,7 +93,10 @@ def run_pair(seed: int, max_steps: int, verbose: bool) -> tuple[bool, str]:
         return False, f"seed {seed}: initial planet IDs differ (engine {len(kp)} vs fast {len(fp)})"
     for pid in kp:
         if kp[pid] != fp[pid]:
-            return False, f"seed {seed}: initial planet {pid} differs: engine {kp[pid]} vs fast {fp[pid]}"
+            return (
+                False,
+                f"seed {seed}: initial planet {pid} differs: engine {kp[pid]} vs fast {fp[pid]}",
+            )
 
     # Step both with the SAME scripted actions derived from each one's own obs
     # (obs are identical, so actions are identical — verified by the state checks).
@@ -100,7 +107,7 @@ def run_pair(seed: int, max_steps: int, verbose: bool) -> tuple[bool, str]:
         fa = [scripted_agent(fenv.observation(i)) for i in range(2)]
 
         kstates = kenv.step(ka)
-        fres = fenv.step(fa)
+        fenv.step(fa)
 
         kp, knf = _engine_state(kstates[0].observation)
         fp, fnf = _fast_state(fenv)
@@ -111,12 +118,16 @@ def run_pair(seed: int, max_steps: int, verbose: bool) -> tuple[bool, str]:
             if not (kdone or fenv.done):
                 pass
         if set(kp.keys()) != set(fp.keys()):
-            return False, (f"seed {seed} step {t}: planet sets diverge "
-                           f"(engine {sorted(kp)} vs fast {sorted(fp)})")
+            return False, (
+                f"seed {seed} step {t}: planet sets diverge "
+                f"(engine {sorted(kp)} vs fast {sorted(fp)})"
+            )
         for pid in kp:
             if kp[pid] != fp[pid]:
-                return False, (f"seed {seed} step {t}: planet {pid} diverges: "
-                               f"engine {kp[pid]} vs fast {fp[pid]}")
+                return False, (
+                    f"seed {seed} step {t}: planet {pid} diverges: "
+                    f"engine {kp[pid]} vs fast {fp[pid]}"
+                )
         if knf != fnf:
             return False, f"seed {seed} step {t}: fleet count diverges (engine {knf} vs fast {fnf})"
 

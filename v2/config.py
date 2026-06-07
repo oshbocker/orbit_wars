@@ -57,8 +57,7 @@ class V2EnvConfig:
     # MULTIPLES of required_ships from req_fraction_multipliers (len must match
     # model.n_fractions), capped at the source garrison.
     requirement_relative_fractions: bool = False
-    req_fraction_multipliers: list[float] = field(
-        default_factory=lambda: [1.0, 1.5, 2.0, 3.0])
+    req_fraction_multipliers: list[float] = field(default_factory=lambda: [1.0, 1.5, 2.0, 3.0])
     # Tier 0.4: at decode, reject a launch if the shot-success head's P(own
     # target N turns later) is below this threshold. 0.0 = never reject (the head
     # still trains as an aux signal but does not gate actions). ~0.4 ≈ konbu17.
@@ -103,23 +102,27 @@ class V2PPOConfig:
     lr: float = 3e-4
     max_grad_norm: float = 0.5
     num_workers: int = 0  # 0 = sequential (backward-compat), >0 = parallel subprocess workers
-    ent_coef_end: float = -1.0  # <0 = constant ent_coef; >=0 = linearly anneal ent_coef -> ent_coef_end
-    value_symlog: bool = False  # symlog-transform value targets (scale-robust value learning; DreamerV3)
+    ent_coef_end: float = (
+        -1.0
+    )  # <0 = constant ent_coef; >=0 = linearly anneal ent_coef -> ent_coef_end
+    value_symlog: bool = (
+        False  # symlog-transform value targets (scale-robust value learning; DreamerV3)
+    )
     # ── v4 ceiling flags (default off) ──
     # Tier 0.3: PopArt-style running normalization of value targets (handles the
     # DRIFTING return scale that symlog doesn't). Use INSTEAD of value_symlog.
     popart: bool = False
-    popart_beta: float = 0.01    # per-UPDATE EMA rate for running return mean/var
+    popart_beta: float = 0.01  # per-UPDATE EMA rate for running return mean/var
     # Tier 1.1: PPG auxiliary value phase. After the policy phase, run aux_epochs
     # of value-only optimization on the same buffer, with a policy-clone KL term
     # (weight aux_beta_clone) freezing the action distribution. 0 = disabled.
     aux_epochs: int = 0
     aux_beta_clone: float = 1.0
-    aux_every: int = 1          # run the aux phase every N updates
+    aux_every: int = 1  # run the aux phase every N updates
     # Tier 1.2: weight on the shot-success auxiliary loss (needs model.shot_success_head).
     shot_aux_coef: float = 0.0
-    shot_horizon: int = 10      # label = own target this many steps after the launch decision
-    shot_aux_epochs: int = 1    # passes over the shot-label set per update
+    shot_horizon: int = 10  # label = own target this many steps after the launch decision
+    shot_aux_epochs: int = 1  # passes over the shot-label set per update
     # Tier 3.1: collect rollouts via the batched fast_env instead of the Kaggle
     # harness (major throughput win; required for affordable long rollouts).
     use_batched_env: bool = False
@@ -135,10 +138,10 @@ class V2RewardConfig:
     # PBRS (potential-based reward shaping): r = gamma*Phi(s') - Phi(s).
     # Phi rewards owning productive territory (not banked ships), so effective
     # capture is rewarded and ship-hoarding is not. Policy-invariant (Ng 1999).
-    pbrs_gamma: float = 0.997           # must match ppo.gamma for invariance
-    pbrs_prod_weight: float = 1.0       # weight on (own_prod - best_enemy_prod)
-    pbrs_planet_weight: float = 0.5     # weight on (own_planets - best_enemy_planets)
-    pbrs_scale: float = 0.01            # overall scale of the shaping term
+    pbrs_gamma: float = 0.997  # must match ppo.gamma for invariance
+    pbrs_prod_weight: float = 1.0  # weight on (own_prod - best_enemy_prod)
+    pbrs_planet_weight: float = 0.5  # weight on (own_planets - best_enemy_planets)
+    pbrs_scale: float = 0.01  # overall scale of the shaping term
 
 
 @dataclass(slots=True)
@@ -169,7 +172,9 @@ class V2ImitationConfig:
     distilled_opponent: bool = True
     bc_skip_steps: int = 0
     bc_cache_path: str = ""  # if set, pickle-cache demos here and reuse across runs
-    bc_match_tolerance_deg: float = 90.0  # angular tolerance for matching an apex launch to a target slot
+    bc_match_tolerance_deg: float = (
+        90.0  # angular tolerance for matching an apex launch to a target slot
+    )
     # ── v4 ceiling flags (default off) ──
     # Tier 0.1: floor the imitation coefficient so the BC/expert anchor never
     # decays fully to 0. A persistent pull toward a competent reference is what
@@ -183,26 +188,27 @@ class V2ImitationConfig:
 @dataclass(slots=True)
 class V2ExItConfig:
     """Expert Iteration: simulator + per-planet search to distill OrbitNet."""
+
     enabled: bool = False
     iterations: int = 50
     games_per_iter: int = 8
-    search_depth: int = 12          # forward-sim steps per candidate evaluation
-    search_candidates: int = 10     # max reachable targets searched per source planet
+    search_depth: int = 12  # forward-sim steps per candidate evaluation
+    search_candidates: int = 10  # max reachable targets searched per source planet
     search_temperature: float = 1.0  # softmax temperature over candidate scores
     train_epochs: int = 4
     train_batch_size: int = 256
     train_lr: float = 3e-4
     value_loss_coef: float = 0.5
     max_grad_norm: float = 0.5
-    dataset_max_iters: int = 3       # keep this many iterations of data in the buffer
+    dataset_max_iters: int = 3  # keep this many iterations of data in the buffer
     four_player_prob: float = 0.0
     opponent: str = "apex"
-    sample_collect: bool = True      # sample (vs argmax) during self-play collection
-    search_workers: int = 0          # >1 = parallelize the (CPU-bound) search across processes
-    collect_workers: int = 0         # >1 = play the games of each iteration in parallel across
-                                     # processes (collection is the ExIt bottleneck, ~linear win)
-    collect_fast_env: bool = False   # collect games on the standalone fast_env (engine-faithful,
-                                     # no Kaggle harness overhead) instead of make("orbit_wars")
+    sample_collect: bool = True  # sample (vs argmax) during self-play collection
+    search_workers: int = 0  # >1 = parallelize the (CPU-bound) search across processes
+    collect_workers: int = 0  # >1 = play the games of each iteration in parallel across
+    # processes (collection is the ExIt bottleneck, ~linear win)
+    collect_fast_env: bool = False  # collect games on the standalone fast_env (engine-faithful,
+    # no Kaggle harness overhead) instead of make("orbit_wars")
     # ── v4 ceiling flags (default off) ──
     # Tier 3.2: score search leaves with OrbitNet's value head instead of the
     # handcrafted heuristic eval (requires a trustworthy value head — do Tier 1
@@ -221,7 +227,7 @@ class V2ExItConfig:
     # playing on and aggression is scored against a real, persistent opponent.
     # Default OFF — keeps the 77% agent byte-identical until validated @ n=60.
     rollout_search: bool = False
-    rollout_self: bool = True       # include our own continuation in the rollout
+    rollout_self: bool = True  # include our own continuation in the rollout
     # Phase 3 (2026-06-05): grounded learned value at search leaves — BLEND, not
     # swap. When >0 (and a value_model is supplied), each candidate leaf is scored
     # by BOTH evaluate_state (heuristic) and OrbitNet's value head; the two are
@@ -255,10 +261,10 @@ class V2Config:
     # sampled by win-rate so the agent trains more against what it loses to —
     # which prevents self-play from forgetting how to beat apex.
     pfsp_enabled: bool = False
-    pfsp_apex_min_prob: float = 0.3     # floor on probability of facing apex each episode
-    pfsp_pool_size: int = 5             # max frozen self-snapshots retained
-    pfsp_snapshot_every: int = 50       # add a frozen self-snapshot every N updates
-    pfsp_weighting: str = "hard"        # "hard" (favor low win-rate) or "uniform"
+    pfsp_apex_min_prob: float = 0.3  # floor on probability of facing apex each episode
+    pfsp_pool_size: int = 5  # max frozen self-snapshots retained
+    pfsp_snapshot_every: int = 50  # add a frozen self-snapshot every N updates
+    pfsp_weighting: str = "hard"  # "hard" (favor low win-rate) or "uniform"
     env: V2EnvConfig = field(default_factory=V2EnvConfig)
     model: V2ModelConfig = field(default_factory=V2ModelConfig)
     ppo: V2PPOConfig = field(default_factory=V2PPOConfig)
@@ -303,6 +309,7 @@ def v2_config_from_dict(data: dict[str, Any]) -> V2Config:
 def v2_config_to_dict(cfg: V2Config) -> dict[str, Any]:
     """Serialize V2Config to a plain dict (for passing to subprocess workers)."""
     from dataclasses import fields as dc_fields
+
     result: dict[str, Any] = {}
     sub = {"env", "model", "ppo", "reward", "eval", "imitation", "exit"}
     for f in dc_fields(cfg):

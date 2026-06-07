@@ -9,6 +9,7 @@ Asserts batch shapes/fields, shot-index bounds, finite GAE, and that a freshly
 snapshotted opponent propagates to workers. Run:
     uv run python scripts/test_parallel_v4_smoke.py
 """
+
 from __future__ import annotations
 
 import sys
@@ -32,8 +33,8 @@ def main() -> int:
     cfg.ppo.num_workers = 2
     cfg.ppo.rollout_steps = 24
     cfg.ppo.num_envs = 1
-    cfg.four_player_prob = 0.0          # keep 2p for a fast smoke
-    cfg.pfsp_snapshot_every = 1         # snapshot immediately so broadcast is exercised
+    cfg.four_player_prob = 0.0  # keep 2p for a fast smoke
+    cfg.pfsp_snapshot_every = 1  # snapshot immediately so broadcast is exercised
     cfg.pfsp_pool_size = 3
     cfg.imitation.enabled = False
     cfg.eval.eval_every = 0
@@ -64,36 +65,57 @@ def main() -> int:
         # ── Round 1: collect + validate the v4 batch ─────────────────────────
         batch, stats, deltas = collector.collect(update=1)
         N = batch.planet_features.shape[0]
-        print(f"round1: N={N} rows  eps={stats['episodes_finished']:.0f}  "
-              f"pfsp_deltas={ {k: [round(x,1) for x in v] for k,v in deltas.items()} }")
+        print(
+            f"round1: N={N} rows  eps={stats['episodes_finished']:.0f}  "
+            f"pfsp_deltas={ {k: [round(x, 1) for x in v] for k, v in deltas.items()} }"
+        )
 
-        check(N == cfg.ppo.num_workers * cfg.ppo.rollout_steps,
-              f"row count {N} != workers*rollout_steps {cfg.ppo.num_workers*cfg.ppo.rollout_steps}")
+        check(
+            cfg.ppo.num_workers * cfg.ppo.rollout_steps == N,
+            f"row count {N} != workers*rollout_steps {cfg.ppo.num_workers * cfg.ppo.rollout_steps}",
+        )
         check(batch.pair_features is not None, "pair_features missing from parallel batch")
         if batch.pair_features is not None:
-            check(tuple(batch.pair_features.shape) == (N, P, P, cfg.env.pair_feat_dim),
-                  f"pair_features shape {tuple(batch.pair_features.shape)} wrong")
+            check(
+                tuple(batch.pair_features.shape) == (N, P, P, cfg.env.pair_feat_dim),
+                f"pair_features shape {tuple(batch.pair_features.shape)} wrong",
+            )
         check(torch.isfinite(batch.returns).all().item(), "non-finite returns")
         check(torch.isfinite(batch.advantages).all().item(), "non-finite advantages")
-        check(batch.planet_features.shape == (N, P, cfg.model.planet_feat_dim),
-              "planet_features shape wrong")
+        check(
+            batch.planet_features.shape == (N, P, cfg.model.planet_feat_dim),
+            "planet_features shape wrong",
+        )
 
         # Shot labels present, offset-merged, and in-range.
         check(batch.shot_idx is not None, "shot_idx missing (shot head enabled)")
         if batch.shot_idx is not None:
+            assert (
+                batch.shot_src is not None
+                and batch.shot_tgt is not None
+                and batch.shot_label is not None
+            )
             mn, mx = int(batch.shot_idx.min()), int(batch.shot_idx.max())
-            check(0 <= mn and mx < N, f"shot_idx out of range [{mn},{mx}] vs N={N}")
-            check(batch.shot_idx.shape == batch.shot_src.shape == batch.shot_tgt.shape
-                  == batch.shot_label.shape, "shot_* length mismatch")
-            check(set(batch.shot_label.unique().tolist()) <= {0.0, 1.0},
-                  "shot_label not binary")
-            print(f"  shot labels: {batch.shot_idx.shape[0]} (max_idx={mx}, "
-                  f"pos_rate={batch.shot_label.mean():.2f})")
+            check(mn >= 0 and mx < N, f"shot_idx out of range [{mn},{mx}] vs N={N}")
+            check(
+                batch.shot_idx.shape
+                == batch.shot_src.shape
+                == batch.shot_tgt.shape
+                == batch.shot_label.shape,
+                "shot_* length mismatch",
+            )
+            check(set(batch.shot_label.unique().tolist()) <= {0.0, 1.0}, "shot_label not binary")
+            print(
+                f"  shot labels: {batch.shot_idx.shape[0]} (max_idx={mx}, "
+                f"pos_rate={batch.shot_label.mean():.2f})"
+            )
 
         # PFSP delta games should roughly match episodes finished this round.
         games = sum(d[1] for d in deltas.values())
-        check(abs(games - stats["episodes_finished"]) < 1e-6,
-              f"pfsp games {games} != episodes_finished {stats['episodes_finished']}")
+        check(
+            abs(games - stats["episodes_finished"]) < 1e-6,
+            f"pfsp games {games} != episodes_finished {stats['episodes_finished']}",
+        )
 
         # ── Snapshot + broadcast, then round 2 ───────────────────────────────
         scheduler.apply_deltas(deltas)
@@ -106,11 +128,15 @@ def main() -> int:
         batch2, stats2, deltas2 = collector.collect(update=2)
         check(batch2.planet_features.shape[0] == N, "round2 row count changed")
         check(batch2.pair_features is not None, "round2 pair_features missing")
-        print(f"round2: N={batch2.planet_features.shape[0]}  "
-              f"pfsp_deltas={ {k: [round(x,1) for x in v] for k,v in deltas2.items()} }")
+        print(
+            f"round2: N={batch2.planet_features.shape[0]}  "
+            f"pfsp_deltas={ {k: [round(x, 1) for x in v] for k, v in deltas2.items()} }"
+        )
         # Opponent names seen must be a subset of the (broadcast) pool names.
-        check(set(deltas2) <= {e["name"] for e in scheduler.pool},
-              f"worker reported unknown opponent: {set(deltas2)}")
+        check(
+            set(deltas2) <= {e["name"] for e in scheduler.pool},
+            f"worker reported unknown opponent: {set(deltas2)}",
+        )
     finally:
         collector.shutdown()
 

@@ -53,22 +53,31 @@ def _obs_get(obs: Any, key: str, default: Any = None) -> Any:
 def _parse_planet(p: Any) -> PlanetState:
     if hasattr(p, "production"):
         return PlanetState(
-            id=int(p.id), owner=int(p.owner),
-            x=float(p.x), y=float(p.y),
-            radius=float(p.radius), ships=int(p.ships),
+            id=int(p.id),
+            owner=int(p.owner),
+            x=float(p.x),
+            y=float(p.y),
+            radius=float(p.radius),
+            ships=int(p.ships),
             production=int(p.production),
         )
     if isinstance(p, dict):
         return PlanetState(
-            id=int(p["id"]), owner=int(p["owner"]),
-            x=float(p["x"]), y=float(p["y"]),
-            radius=float(p["radius"]), ships=int(p["ships"]),
+            id=int(p["id"]),
+            owner=int(p["owner"]),
+            x=float(p["x"]),
+            y=float(p["y"]),
+            radius=float(p["radius"]),
+            ships=int(p["ships"]),
             production=int(p["production"]),
         )
     return PlanetState(
-        id=int(p[0]), owner=int(p[1]),
-        x=float(p[2]), y=float(p[3]),
-        radius=float(p[4]), ships=int(p[5]),
+        id=int(p[0]),
+        owner=int(p[1]),
+        x=float(p[2]),
+        y=float(p[3]),
+        radius=float(p[4]),
+        ships=int(p[5]),
         production=int(p[6]),
     )
 
@@ -76,22 +85,31 @@ def _parse_planet(p: Any) -> PlanetState:
 def _parse_fleet(f: Any) -> FleetState:
     if hasattr(f, "from_planet_id"):
         return FleetState(
-            id=int(f.id), owner=int(f.owner),
-            x=float(f.x), y=float(f.y),
-            angle=float(f.angle), from_planet_id=int(f.from_planet_id),
+            id=int(f.id),
+            owner=int(f.owner),
+            x=float(f.x),
+            y=float(f.y),
+            angle=float(f.angle),
+            from_planet_id=int(f.from_planet_id),
             ships=int(f.ships),
         )
     if isinstance(f, dict):
         return FleetState(
-            id=int(f["id"]), owner=int(f["owner"]),
-            x=float(f["x"]), y=float(f["y"]),
-            angle=float(f["angle"]), from_planet_id=int(f["from_planet_id"]),
+            id=int(f["id"]),
+            owner=int(f["owner"]),
+            x=float(f["x"]),
+            y=float(f["y"]),
+            angle=float(f["angle"]),
+            from_planet_id=int(f["from_planet_id"]),
             ships=int(f["ships"]),
         )
     return FleetState(
-        id=int(f[0]), owner=int(f[1]),
-        x=float(f[2]), y=float(f[3]),
-        angle=float(f[4]), from_planet_id=int(f[5]),
+        id=int(f[0]),
+        owner=int(f[1]),
+        x=float(f[2]),
+        y=float(f[3]),
+        angle=float(f[4]),
+        from_planet_id=int(f[5]),
         ships=int(f[6]),
     )
 

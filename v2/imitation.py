@@ -1,4 +1,5 @@
 """Behavioral cloning for V2 OrbitNet pipeline."""
+
 from __future__ import annotations
 
 import math
@@ -23,14 +24,14 @@ class V2DemonstrationBuffer:
     the expert's target choice for each planet slot.
     """
 
-    planet_features: list[np.ndarray]     # each [P, 22]
-    global_features: list[np.ndarray]     # each [8]
-    planet_mask: list[np.ndarray]         # each [P] bool
-    own_mask: list[np.ndarray]            # each [P] bool
-    reachability_mask: list[np.ndarray]   # each [P, P] bool
-    target_indices: list[np.ndarray]      # each [P] int64 (0=hold, 1..P=target+1)
-    frac_bins: list[np.ndarray]           # each [P] int64 (expert ship-fraction bin)
-    supervise_mask: list[np.ndarray]      # each [P] bool (planets that contribute to BC loss)
+    planet_features: list[np.ndarray]  # each [P, 22]
+    global_features: list[np.ndarray]  # each [8]
+    planet_mask: list[np.ndarray]  # each [P] bool
+    own_mask: list[np.ndarray]  # each [P] bool
+    reachability_mask: list[np.ndarray]  # each [P, P] bool
+    target_indices: list[np.ndarray]  # each [P] int64 (0=hold, 1..P=target+1)
+    frac_bins: list[np.ndarray]  # each [P] int64 (expert ship-fraction bin)
+    supervise_mask: list[np.ndarray]  # each [P] bool (planets that contribute to BC loss)
 
     def __init__(self) -> None:
         self.planet_features = []
@@ -45,8 +46,13 @@ class V2DemonstrationBuffer:
     def __len__(self) -> int:
         return len(self.planet_features)
 
-    def add(self, features: V2Features, targets: np.ndarray, frac_bins: np.ndarray,
-            supervise_mask: np.ndarray) -> None:
+    def add(
+        self,
+        features: V2Features,
+        targets: np.ndarray,
+        frac_bins: np.ndarray,
+        supervise_mask: np.ndarray,
+    ) -> None:
         self.planet_features.append(features.planet_features.copy())
         self.global_features.append(features.global_features.copy())
         self.planet_mask.append(features.planet_mask.copy())
@@ -71,15 +77,17 @@ class V2DemonstrationBuffer:
             "global_features": torch.from_numpy(
                 np.array([self.global_features[i] for i in indices], dtype=np.float32)
             ).to(device),
-            "planet_mask": torch.from_numpy(
-                np.array([self.planet_mask[i] for i in indices])
-            ).to(device).bool(),
-            "own_mask": torch.from_numpy(
-                np.array([self.own_mask[i] for i in indices])
-            ).to(device).bool(),
+            "planet_mask": torch.from_numpy(np.array([self.planet_mask[i] for i in indices]))
+            .to(device)
+            .bool(),
+            "own_mask": torch.from_numpy(np.array([self.own_mask[i] for i in indices]))
+            .to(device)
+            .bool(),
             "reachability_mask": torch.from_numpy(
                 np.array([self.reachability_mask[i] for i in indices])
-            ).to(device).bool(),
+            )
+            .to(device)
+            .bool(),
             "target_indices": torch.from_numpy(
                 np.array([self.target_indices[i] for i in indices], dtype=np.int64)
             ).to(device),
@@ -88,12 +96,19 @@ class V2DemonstrationBuffer:
             ).to(device),
             # supervise_mask: fall back to own_mask for caches predating this field
             "supervise_mask": torch.from_numpy(
-                np.array([
-                    (self.supervise_mask[i] if getattr(self, "supervise_mask", None)
-                     else self.own_mask[i])
-                    for i in indices
-                ])
-            ).to(device).bool(),
+                np.array(
+                    [
+                        (
+                            self.supervise_mask[i]
+                            if getattr(self, "supervise_mask", None)
+                            else self.own_mask[i]
+                        )
+                        for i in indices
+                    ]
+                )
+            )
+            .to(device)
+            .bool(),
         }
 
 
@@ -115,9 +130,11 @@ def _resolve_expert(name: str):
     """Import and return the expert agent function by name."""
     if name == "apex":
         from agents.apex import agent
+
         return agent
     if name == "hybrid":
         from agents.hybrid import agent
+
         return agent
     raise ValueError(f"Unknown BC expert: {name!r} (expected 'apex' or 'hybrid')")
 
@@ -245,6 +262,7 @@ def collect_v2_demonstrations(
 
     for game_i in range(n_games):
         from kaggle_environments import make
+
         env = make("orbit_wars", configuration={"seed": game_i + 100}, debug=False)
         env.reset(num_agents=2)
         states = env.step([[], []])
@@ -271,9 +289,13 @@ def collect_v2_demonstrations(
             features = encode_features(state, cfg.env)
 
             # Map expert moves to V2 target indices + fraction bins
-            targets, frac_bins, supervise_mask, n_mapped, n_hold, n_dropped = _map_expert_moves_to_v2(
-                expert_moves, features, cfg.env,
-                match_tolerance_deg=cfg.imitation.bc_match_tolerance_deg,
+            targets, frac_bins, supervise_mask, n_mapped, n_hold, n_dropped = (
+                _map_expert_moves_to_v2(
+                    expert_moves,
+                    features,
+                    cfg.env,
+                    match_tolerance_deg=cfg.imitation.bc_match_tolerance_deg,
+                )
             )
             mapped_count += n_mapped
             hold_count += n_hold
@@ -295,10 +317,12 @@ def collect_v2_demonstrations(
     supervised = mapped_count + hold_count
     launches = mapped_count + dropped_count  # apex launches we tried to map
     capture = mapped_count / max(launches, 1) * 100  # of apex launches, how many mapped
-    print(f"  V2 demo collection ({cfg.imitation.bc_expert}): {len(buffer)} samples, "
-          f"{mapped_count} mapped sends, {hold_count} genuine holds, "
-          f"{dropped_count} dropped (unmappable launches); "
-          f"launch-capture={capture:.0f}%, supervised={supervised}/{total}")
+    print(
+        f"  V2 demo collection ({cfg.imitation.bc_expert}): {len(buffer)} samples, "
+        f"{mapped_count} mapped sends, {hold_count} genuine holds, "
+        f"{dropped_count} dropped (unmappable launches); "
+        f"launch-capture={capture:.0f}%, supervised={supervised}/{total}"
+    )
     return buffer
 
 
@@ -324,16 +348,16 @@ def compute_v2_bc_loss(
         batch.get("reachability_mask"),
     )
 
-    logits = output.logits   # [B, P, P+1]
+    logits = output.logits  # [B, P, P+1]
     targets = batch["target_indices"]  # [B, P]
-    own_mask = batch["own_mask"]       # [B, P]
+    own_mask = batch["own_mask"]  # [B, P]
     # Supervise only genuine holds + mapped launches; drop unmappable apex launches
     # so we never teach spurious passivity.
     sup = own_mask & batch["supervise_mask"] if "supervise_mask" in batch else own_mask
 
     # Flatten to supervised owned planets only
-    flat_logits = logits[sup]     # [N_sup, P+1]
-    flat_targets = targets[sup]   # [N_sup]
+    flat_logits = logits[sup]  # [N_sup, P+1]
+    flat_targets = targets[sup]  # [N_sup]
 
     if flat_logits.shape[0] == 0:
         return torch.tensor(0.0, device=logits.device, requires_grad=True)
@@ -346,11 +370,11 @@ def compute_v2_bc_loss(
     frac_loss = torch.tensor(0.0, device=logits.device)
     send = sup & (targets > 0)  # [B, P]
     if send.any() and "frac_bins" in batch:
-        bi = send.nonzero(as_tuple=False)            # [M, 2] -> (b, i)
+        bi = send.nonzero(as_tuple=False)  # [M, 2] -> (b, i)
         b_idx, i_idx = bi[:, 0], bi[:, 1]
         tslot = (targets[b_idx, i_idx] - 1).clamp(min=0)
         frac_rows = output.frac_logits[b_idx, i_idx, tslot]  # [M, K]
-        frac_targets = batch["frac_bins"][b_idx, i_idx]      # [M]
+        frac_targets = batch["frac_bins"][b_idx, i_idx]  # [M]
         frac_loss = F.cross_entropy(frac_rows, frac_targets)
 
     return target_loss + frac_loss
@@ -384,7 +408,7 @@ def v2_bc_pretrain(
         n_batches = 0
 
         for start in range(0, N, batch_size):
-            indices = order[start:start + batch_size]
+            indices = order[start : start + batch_size]
             batch = buffer.sample_indices(indices, device)
 
             loss = compute_v2_bc_loss(model, batch)

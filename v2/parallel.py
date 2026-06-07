@@ -11,6 +11,7 @@ PPG aux / shot-aux phases, and PFSP win-rate bookkeeping + snapshotting. Workers
 only roll out. Snapshot weights are broadcast once (when a snapshot is first
 created); thereafter only the tiny win/game stats ride along each sync.
 """
+
 from __future__ import annotations
 
 import multiprocessing as mp
@@ -27,23 +28,24 @@ from .ppo import V2TransitionBatch
 @dataclass
 class WorkerTransitions:
     """Serializable rollout data from one worker (numpy arrays)."""
-    planet_features: np.ndarray    # [N, P, F]
-    global_features: np.ndarray    # [N, G]
-    planet_mask: np.ndarray        # [N, P]
-    own_mask: np.ndarray           # [N, P]
+
+    planet_features: np.ndarray  # [N, P, F]
+    global_features: np.ndarray  # [N, G]
+    planet_mask: np.ndarray  # [N, P]
+    own_mask: np.ndarray  # [N, P]
     reachability_mask: np.ndarray  # [N, P, P]
-    target_indices: np.ndarray     # [N, P]
-    frac_indices: np.ndarray       # [N, P]
-    log_prob: np.ndarray           # [N]
-    returns: np.ndarray            # [N]
-    advantages: np.ndarray         # [N]
-    values: np.ndarray             # [N]
-    pair_features: np.ndarray | None    # [N, P, P, pf] or None
-    shot_idx: np.ndarray | None         # [M] (row indices WITHIN this worker's batch)
-    shot_src: np.ndarray | None         # [M]
-    shot_tgt: np.ndarray | None         # [M]
-    shot_label: np.ndarray | None       # [M]
-    pfsp_delta: dict                     # name -> [wins_delta, games_delta]
+    target_indices: np.ndarray  # [N, P]
+    frac_indices: np.ndarray  # [N, P]
+    log_prob: np.ndarray  # [N]
+    returns: np.ndarray  # [N]
+    advantages: np.ndarray  # [N]
+    values: np.ndarray  # [N]
+    pair_features: np.ndarray | None  # [N, P, P, pf] or None
+    shot_idx: np.ndarray | None  # [M] (row indices WITHIN this worker's batch)
+    shot_src: np.ndarray | None  # [M]
+    shot_tgt: np.ndarray | None  # [M]
+    shot_label: np.ndarray | None  # [M]
+    pfsp_delta: dict  # name -> [wins_delta, games_delta]
     stats: dict
 
 
@@ -66,7 +68,6 @@ def _worker_fn(conn: mp.connection.Connection, worker_id: int, cfg_dict: dict) -
     # Lazy imports inside subprocess to avoid pickling issues.
     from src.opponents import build_opponent
 
-    from .config import v2_config_from_dict
     from .env import V2FastEnv, V2OrbitWarsEnv
     from .model import OrbitNet
     from .ppo import ValueNorm
@@ -91,8 +92,7 @@ def _worker_fn(conn: mp.connection.Connection, worker_id: int, cfg_dict: dict) -
     rule_based_opponent = build_opponent(cfg.opponent)
 
     # Self-play opponent (for the non-PFSP MixedScheduler path).
-    sp_opponent = V2SelfPlayOpponent(cfg, device=device,
-                                     deterministic=cfg.self_play_deterministic)
+    sp_opponent = V2SelfPlayOpponent(cfg, device=device, deterministic=cfg.self_play_deterministic)
     sp_opponent.sync_from(model)
 
     # PopArt value-norm (read-only in the worker; updated centrally).
@@ -147,8 +147,14 @@ def _worker_fn(conn: mp.connection.Connection, worker_id: int, cfg_dict: dict) -
                     scheduler.set_update(update_num)
 
                 batch, features_per_env, next_seed, stats = collect_rollout(
-                    envs, features_per_env, model, cfg, device, next_seed,
-                    scheduler=scheduler, value_norm=value_norm,
+                    envs,
+                    features_per_env,
+                    model,
+                    cfg,
+                    device,
+                    next_seed,
+                    scheduler=scheduler,
+                    value_norm=value_norm,
                 )
 
                 # PFSP win/game deltas since the last sync.
@@ -200,7 +206,8 @@ def _worker_fn(conn: mp.connection.Connection, worker_id: int, cfg_dict: dict) -
                         snap.model.load_state_dict({k: v.cpu() for k, v in sd.items()})
                         snap.model.eval()
                         scheduler.pool.append(
-                            {"name": name, "agent": snap, "wins": 0.0, "games": 0.0})
+                            {"name": name, "agent": snap, "wins": 0.0, "games": 0.0}
+                        )
                     # Overwrite local win/game stats with authoritative global ones.
                     stats_by_name = payload.get("pfsp_stats", {})
                     for e in scheduler.pool:
@@ -212,8 +219,11 @@ def _worker_fn(conn: mp.connection.Connection, worker_id: int, cfg_dict: dict) -
 
             elif cmd[0] == "poolinfo":
                 # Diagnostic: report this worker's PFSP pool (names + local games).
-                info = ([(e["name"], e["games"]) for e in scheduler.pool]
-                        if scheduler is not None and is_pfsp else [])
+                info = (
+                    [(e["name"], e["games"]) for e in scheduler.pool]
+                    if scheduler is not None and is_pfsp
+                    else []
+                )
                 conn.send(info)
 
             elif cmd[0] == "shutdown":
@@ -246,8 +256,7 @@ class ParallelRolloutCollector:
         ctx = mp.get_context("spawn")
         for i in range(num_workers):
             parent_conn, child_conn = ctx.Pipe()
-            proc = ctx.Process(target=_worker_fn, args=(child_conn, i, self.cfg_dict),
-                               daemon=True)
+            proc = ctx.Process(target=_worker_fn, args=(child_conn, i, self.cfg_dict), daemon=True)
             proc.start()
             child_conn.close()
             self._conns.append(parent_conn)
@@ -258,8 +267,12 @@ class ParallelRolloutCollector:
             if msg != "ready":
                 raise RuntimeError(f"Worker failed to initialize: {msg}")
 
-    def sync(self, model: torch.nn.Module, value_norm: object | None = None,
-             scheduler: object | None = None) -> None:
+    def sync(
+        self,
+        model: torch.nn.Module,
+        value_norm: object | None = None,
+        scheduler: object | None = None,
+    ) -> None:
         """Broadcast weights (+ PopArt stats + PFSP pool/stats) to all workers."""
         payload = {
             "model": {k: v.cpu() for k, v in model.state_dict().items()},
@@ -267,6 +280,7 @@ class ParallelRolloutCollector:
         }
         # PFSP: send authoritative win/game stats + any not-yet-broadcast snapshots.
         from .train import V2PFSPScheduler
+
         if isinstance(scheduler, V2PFSPScheduler):
             pfsp_stats: dict[str, tuple[float, float]] = {}
             new_snapshots: list[tuple[str, dict]] = []
@@ -323,7 +337,8 @@ class ParallelRolloutCollector:
                 proc.terminate()
 
     def _merge_transitions(
-        self, results: list[WorkerTransitions],
+        self,
+        results: list[WorkerTransitions],
     ) -> tuple[V2TransitionBatch, dict, dict]:
         non_empty = [r for r in results if r.planet_features.shape[0] > 0]
 
@@ -337,16 +352,20 @@ class ParallelRolloutCollector:
 
         if not non_empty:
             from .train import _empty_batch
-            return (_empty_batch(self.cfg),
-                    {"episode_reward_mean": 0.0, "episodes_finished": 0.0, "samples": 0.0},
-                    pfsp_deltas)
+
+            return (
+                _empty_batch(self.cfg),
+                {"episode_reward_mean": 0.0, "episodes_finished": 0.0, "samples": 0.0},
+                pfsp_deltas,
+            )
 
         def cat(attr):
             return torch.from_numpy(np.concatenate([getattr(r, attr) for r in non_empty]))
 
         # Shot labels reference rows WITHIN each worker's batch -> offset on merge.
         has_shot = all(r.shot_idx is not None for r in non_empty) and any(
-            r.shot_idx is not None and r.shot_idx.shape[0] > 0 for r in non_empty)
+            r.shot_idx is not None and r.shot_idx.shape[0] > 0 for r in non_empty
+        )
         shot_idx = shot_src = shot_tgt = shot_label = None
         if has_shot:
             idx_parts, src_parts, tgt_parts, lab_parts = [], [], [], []
@@ -368,7 +387,9 @@ class ParallelRolloutCollector:
         has_pair = all(r.pair_features is not None for r in non_empty)
         pair_features = (
             torch.from_numpy(np.concatenate([r.pair_features for r in non_empty]))
-            if has_pair else None)
+            if has_pair
+            else None
+        )
 
         batch = V2TransitionBatch(
             planet_features=cat("planet_features").float(),
@@ -389,8 +410,11 @@ class ParallelRolloutCollector:
             shot_label=shot_label,
         )
 
-        all_rewards = [r.stats.get("episode_reward_mean", 0.0) for r in results
-                       if r.stats.get("episodes_finished", 0) > 0]
+        all_rewards = [
+            r.stats.get("episode_reward_mean", 0.0)
+            for r in results
+            if r.stats.get("episodes_finished", 0) > 0
+        ]
         stats = {
             "episode_reward_mean": float(np.mean(all_rewards)) if all_rewards else 0.0,
             "episodes_finished": float(sum(r.stats.get("episodes_finished", 0) for r in results)),

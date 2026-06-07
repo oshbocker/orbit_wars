@@ -3,12 +3,12 @@
 Self-contained: loads checkpoint on first call.
 IMPORTANT: agent() must be the LAST callable in this file.
 """
+
 from __future__ import annotations
 
 import math
 import os
 import sys
-from typing import Any
 
 import numpy as np
 import torch
@@ -59,7 +59,7 @@ def _passes_through_sun(x1, y1, x2, y2):
     if a == 0:
         return False
     b = 2 * (fx * dx + fy * dy)
-    c = fx * fx + fy * fy - _SUN_SAFE_RADIUS ** 2
+    c = fx * fx + fy * fy - _SUN_SAFE_RADIUS**2
     disc = b * b - 4 * a * c
     if disc < 0:
         return False
@@ -102,13 +102,34 @@ def _is_valid_target(src, tgt, player, step):
 
 def _parse_planet(p):
     if hasattr(p, "production"):
-        return {"id": int(p.id), "owner": int(p.owner), "x": float(p.x), "y": float(p.y),
-                "radius": float(p.radius), "ships": int(p.ships), "production": int(p.production)}
+        return {
+            "id": int(p.id),
+            "owner": int(p.owner),
+            "x": float(p.x),
+            "y": float(p.y),
+            "radius": float(p.radius),
+            "ships": int(p.ships),
+            "production": int(p.production),
+        }
     if isinstance(p, dict):
-        return {"id": int(p["id"]), "owner": int(p["owner"]), "x": float(p["x"]), "y": float(p["y"]),
-                "radius": float(p["radius"]), "ships": int(p["ships"]), "production": int(p["production"])}
-    return {"id": int(p[0]), "owner": int(p[1]), "x": float(p[2]), "y": float(p[3]),
-            "radius": float(p[4]), "ships": int(p[5]), "production": int(p[6])}
+        return {
+            "id": int(p["id"]),
+            "owner": int(p["owner"]),
+            "x": float(p["x"]),
+            "y": float(p["y"]),
+            "radius": float(p["radius"]),
+            "ships": int(p["ships"]),
+            "production": int(p["production"]),
+        }
+    return {
+        "id": int(p[0]),
+        "owner": int(p[1]),
+        "x": float(p[2]),
+        "y": float(p[3]),
+        "radius": float(p[4]),
+        "ships": int(p[5]),
+        "production": int(p[6]),
+    }
 
 
 def _obs_get(obs, key, default=None):
@@ -158,15 +179,28 @@ def _encode_features(obs):
         theta = math.atan2(dy, dx) if dist_center > 0.1 else 0.0
 
         pf[slot] = [
-            1.0, 0.0,  # exists, orbiting (simplified)
-            own[0], own[1], own[2], own[3],
+            1.0,
+            0.0,  # exists, orbiting (simplified)
+            own[0],
+            own[1],
+            own[2],
+            own[3],
             math.log1p(p["ships"]) / 7.0,
-            p["x"] / _BOARD_SIZE, p["y"] / _BOARD_SIZE,
+            p["x"] / _BOARD_SIZE,
+            p["y"] / _BOARD_SIZE,
             dist_center / 70.7,
-            math.sin(theta), math.cos(theta),
-            p["production"] / 5.0, p["radius"] / 4.0,
-            0.0, 0.0, 0.0, 0.0,  # incoming fleets (skip for speed)
-            0.0, 0.0, 0.0, 0.0,  # incoming ETAs
+            math.sin(theta),
+            math.cos(theta),
+            p["production"] / 5.0,
+            p["radius"] / 4.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,  # incoming fleets (skip for speed)
+            0.0,
+            0.0,
+            0.0,
+            0.0,  # incoming ETAs
         ]
 
     # Global features
@@ -197,16 +231,19 @@ def _encode_features(obs):
     best_enemy_ships = max(enemy_ships_total.values()) if enemy_ships_total else 0.0
     best_enemy_prod = max(enemy_prod_total.values()) if enemy_prod_total else 0.0
 
-    gf = np.array([
-        step / 500.0,
-        angular_velocity / 0.05,
-        math.log1p(my_ships) / 10.0,
-        math.log1p(best_enemy_ships) / 10.0,
-        my_prod / max(my_prod + best_enemy_prod, 1.0),
-        best_enemy_prod / max(my_prod + best_enemy_prod, 1.0),
-        my_planets_count / _MAX_PLANETS,
-        total_planets / _MAX_PLANETS,
-    ], dtype=np.float32)
+    gf = np.array(
+        [
+            step / 500.0,
+            angular_velocity / 0.05,
+            math.log1p(my_ships) / 10.0,
+            math.log1p(best_enemy_ships) / 10.0,
+            my_prod / max(my_prod + best_enemy_prod, 1.0),
+            best_enemy_prod / max(my_prod + best_enemy_prod, 1.0),
+            my_planets_count / _MAX_PLANETS,
+            total_planets / _MAX_PLANETS,
+        ],
+        dtype=np.float32,
+    )
 
     return pf, gf, pm, om, planet_map
 
@@ -217,8 +254,8 @@ def _init_model():
     _device = torch.device("cpu")
 
     # Import model class
-    from v2.model import OrbitNet
     from v2.config import V2ModelConfig
+    from v2.model import OrbitNet
 
     _cfg = V2ModelConfig()
 
@@ -257,7 +294,7 @@ def agent(obs, config=None):
         om_t = torch.from_numpy(om).unsqueeze(0).to(_device)
         output = _model(pf_t, gf_t, pm_t, om_t)
 
-    logits = output.logits[0]            # [P, P+1]
+    logits = output.logits[0]  # [P, P+1]
     frac_logits = output.frac_logits[0]  # [P, P, K]
     player = int(_obs_get(obs, "player", 0))
     step = int(_obs_get(obs, "step", 0))
@@ -275,7 +312,11 @@ def agent(obs, config=None):
         row = logits[i].clone()  # [P+1]
         for j in range(_MAX_PLANETS):
             tgt = planet_map.get(j)
-            if tgt is None or tgt["id"] == src["id"] or not _is_valid_target(src, tgt, player, step):
+            if (
+                tgt is None
+                or tgt["id"] == src["id"]
+                or not _is_valid_target(src, tgt, player, step)
+            ):
                 row[j + 1] = float("-inf")
         if not torch.isfinite(row[1:]).any():
             continue

@@ -119,6 +119,23 @@ uv run python scripts/replay.py --exit \
 uv run tensorboard --logdir outputs/logs
 ```
 
+### Lint & type-check
+
+Ruff (lint + format) and Pyright (`basic` mode) are configured in `pyproject.toml`.
+
+```bash
+uv run ruff check .            # lint
+uv run ruff check --fix .      # lint + apply safe fixes
+uv run ruff format .           # format (black-compatible)
+uv run pyright                 # type-check (src, v2, agents, evaluation, scripts)
+```
+
+Pyright `basic` is intentional — `torch`/`numpy`/`kaggle-environments` ship partial stubs, so
+strict mode is mostly noise here; `basic` still catches None-derefs and wrong-arg bugs. There is
+a known baseline of lint findings (style-only) and Pyright errors to chip away at incrementally —
+fix-as-you-touch, don't bulk-rewrite research code. `v2/agent_v3.py` is E402-exempt (it mutates
+`sys.path` before importing for Kaggle packaging).
+
 ## Environment Setup
 
 **Locally, always use `uv` to run Python scripts** (e.g. `uv run python -m v2.exit_train ...`). Do not use bare `python` or `python3`.

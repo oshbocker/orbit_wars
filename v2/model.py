@@ -1,4 +1,5 @@
 """OrbitNet: simultaneous all-planet transformer with pairwise output head."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,11 +14,15 @@ from .config import V2ModelConfig
 
 @dataclass(slots=True)
 class OrbitNetOutput:
-    logits: torch.Tensor        # [B, max_planets, max_planets+1] (hold + targets)
-    value: torch.Tensor         # [B]
-    frac_logits: torch.Tensor   # [B, max_planets, max_planets, n_fractions] per (source->target) ship-fraction
-    aux_value: torch.Tensor | None = None   # [B] PPG auxiliary value head (v4 Tier 1.1)
-    shot_logits: torch.Tensor | None = None  # [B, P, P] logit P(own target N turns after arrival) (v4 Tier 1.2/0.4)
+    logits: torch.Tensor  # [B, max_planets, max_planets+1] (hold + targets)
+    value: torch.Tensor  # [B]
+    frac_logits: (
+        torch.Tensor
+    )  # [B, max_planets, max_planets, n_fractions] per (source->target) ship-fraction
+    aux_value: torch.Tensor | None = None  # [B] PPG auxiliary value head (v4 Tier 1.1)
+    shot_logits: torch.Tensor | None = (
+        None  # [B, P, P] logit P(own target N turns after arrival) (v4 Tier 1.2/0.4)
+    )
 
 
 class OrbitNet(nn.Module):
@@ -53,10 +58,9 @@ class OrbitNet(nn.Module):
         )
 
         # Self-attention encoder
-        self.transformer_blocks = nn.ModuleList([
-            TransformerBlock(d, cfg.n_heads, cfg.ff_dim)
-            for _ in range(cfg.n_layers)
-        ])
+        self.transformer_blocks = nn.ModuleList(
+            [TransformerBlock(d, cfg.n_heads, cfg.ff_dim) for _ in range(cfg.n_layers)]
+        )
         self.final_ln = nn.LayerNorm(d)
 
         # Optional pairwise (source->target) input features (v3): travel_time,
@@ -99,7 +103,9 @@ class OrbitNet(nn.Module):
         self.aux_value_head = None
         if getattr(cfg, "aux_value_head", False):
             self.aux_value_head = nn.Sequential(
-                nn.Linear(d, d), nn.ReLU(), nn.Linear(d, 1),
+                nn.Linear(d, d),
+                nn.ReLU(),
+                nn.Linear(d, 1),
             )
 
         # v4 Tier 1.2/0.4: per-(source->target) shot-success head. Predicts
@@ -108,7 +114,9 @@ class OrbitNet(nn.Module):
         self.shot_success_head = None
         if getattr(cfg, "shot_success_head", False):
             self.shot_success_head = nn.Sequential(
-                nn.Linear(pair_in, d), nn.ReLU(), nn.Linear(d, 1),
+                nn.Linear(pair_in, d),
+                nn.ReLU(),
+                nn.Linear(d, 1),
             )
 
         self._init_output_heads()
@@ -134,10 +142,10 @@ class OrbitNet(nn.Module):
 
     def forward(
         self,
-        planet_features: torch.Tensor,    # [B, P, F]
-        global_features: torch.Tensor,    # [B, G]
-        planet_mask: torch.Tensor,        # [B, P] bool (True = exists)
-        own_mask: torch.Tensor,           # [B, P] bool (True = we own it)
+        planet_features: torch.Tensor,  # [B, P, F]
+        global_features: torch.Tensor,  # [B, G]
+        planet_mask: torch.Tensor,  # [B, P] bool (True = exists)
+        own_mask: torch.Tensor,  # [B, P] bool (True = we own it)
         reachability_mask: torch.Tensor | None = None,  # [B, P, P] bool (True = reachable)
         pair_features: torch.Tensor | None = None,  # [B, P, P, pair_feat_dim] (v3)
     ) -> OrbitNetOutput:
@@ -171,8 +179,12 @@ class OrbitNet(nn.Module):
         if self.pair_feat_dim > 0:
             if pair_features is None:
                 pair_features = torch.zeros(
-                    B, P, P, self.pair_feat_dim,
-                    dtype=pair_input.dtype, device=pair_input.device,
+                    B,
+                    P,
+                    P,
+                    self.pair_feat_dim,
+                    dtype=pair_input.dtype,
+                    device=pair_input.device,
                 )
             pair_input = torch.cat([pair_input, pair_features], dim=-1)  # [B,P,P,2d+pf]
         pair_logits = self.pair_mlp(pair_input).squeeze(-1)  # [B, P, P]
@@ -196,9 +208,7 @@ class OrbitNet(nn.Module):
         # Non-existent targets: target logits -> -inf
         # target_mask applies to logits[:,:,1:] (the P target columns)
         target_invalid = ~planet_mask  # [B, P]
-        logits[:, :, 1:] = logits[:, :, 1:].masked_fill(
-            target_invalid.unsqueeze(1), NEG_INF
-        )
+        logits[:, :, 1:] = logits[:, :, 1:].masked_fill(target_invalid.unsqueeze(1), NEG_INF)
 
         # Self-targeting diagonal -> -inf (can't send to self)
         diag_mask = torch.eye(P, dtype=torch.bool, device=logits.device)
@@ -207,9 +217,7 @@ class OrbitNet(nn.Module):
 
         # Reachability mask: block targets unreachable due to sun
         if reachability_mask is not None:
-            logits[:, :, 1:] = logits[:, :, 1:].masked_fill(
-                ~reachability_mask, NEG_INF
-            )
+            logits[:, :, 1:] = logits[:, :, 1:].masked_fill(~reachability_mask, NEG_INF)
 
         # 6. Value head: masked mean pool
         mask_float = planet_mask.float().unsqueeze(-1)  # [B, P, 1]
@@ -225,14 +233,19 @@ class OrbitNet(nn.Module):
             # reuse pair_input [B,P,P,2d+pf] built above for the pair/frac heads
             shot_logits = self.shot_success_head(pair_input).squeeze(-1)  # [B, P, P]
 
-        return OrbitNetOutput(logits=logits, value=value, frac_logits=frac_logits,
-                              aux_value=aux_value, shot_logits=shot_logits)
+        return OrbitNetOutput(
+            logits=logits,
+            value=value,
+            frac_logits=frac_logits,
+            aux_value=aux_value,
+            shot_logits=shot_logits,
+        )
 
     def value_only(
         self,
-        planet_features: torch.Tensor,    # [B, P, F]
-        global_features: torch.Tensor,    # [B, G]
-        planet_mask: torch.Tensor,        # [B, P] bool
+        planet_features: torch.Tensor,  # [B, P, F]
+        global_features: torch.Tensor,  # [B, G]
+        planet_mask: torch.Tensor,  # [B, P] bool
     ) -> torch.Tensor:
         """Value head only (trunk -> masked mean pool -> value), skipping the
         O(P^2) pairwise output heads. ~30-100x cheaper than forward() on CPU —

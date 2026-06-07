@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from .config import EvalConfig, TrainConfig
+from .config import TrainConfig
 from .policy import TransformerPolicy
 
 
@@ -43,7 +43,8 @@ class TrainLogger:
         self._csv_rows: list[dict] = []
         self._csv_file = open(self._csv_path, "w", newline="")  # noqa: SIM115
         self._csv_writer = csv.DictWriter(
-            self._csv_file, fieldnames=self._csv_fieldnames, extrasaction="ignore")
+            self._csv_file, fieldnames=self._csv_fieldnames, extrasaction="ignore"
+        )
         self._csv_writer.writeheader()
 
     def log_update(self, update: int, metrics: dict[str, float]) -> None:
@@ -57,11 +58,13 @@ class TrainLogger:
         if new_keys:
             # Expand header (keep "update" first, rest sorted) and rewrite the file.
             self._csv_fieldnames = ["update"] + sorted(
-                set(self._csv_fieldnames[1:]) | set(new_keys))
+                set(self._csv_fieldnames[1:]) | set(new_keys)
+            )
             self._csv_file.close()
             self._csv_file = open(self._csv_path, "w", newline="")
             self._csv_writer = csv.DictWriter(
-                self._csv_file, fieldnames=self._csv_fieldnames, extrasaction="ignore")
+                self._csv_file, fieldnames=self._csv_fieldnames, extrasaction="ignore"
+            )
             self._csv_writer.writeheader()
             self._csv_writer.writerows(self._csv_rows)
         else:
@@ -115,13 +118,15 @@ def run_periodic_eval(
     for opp_name in cfg.eval.eval_opponents:
         opp_callable = _get_eval_opponent(opp_name)
         raw = run_games(eval_agent, opp_callable, n_games=cfg.eval.eval_games)
-        results.append(EvalResult(
-            opponent_name=opp_name,
-            win_rate=raw["win_rate"],
-            loss_rate=raw["loss_rate"],
-            tie_rate=raw["tie_rate"],
-            n_games=raw["n_games"],
-        ))
+        results.append(
+            EvalResult(
+                opponent_name=opp_name,
+                win_rate=raw["win_rate"],
+                loss_rate=raw["loss_rate"],
+                tie_rate=raw["tie_rate"],
+                n_games=raw["n_games"],
+            )
+        )
 
     return results
 
@@ -129,11 +134,14 @@ def run_periodic_eval(
 def _get_eval_opponent(name: str) -> Any:
     if name == "apex":
         from agents.apex import agent as apex_agent
+
         return apex_agent
     if name == "random":
         from kaggle_environments.envs.orbit_wars.orbit_wars import random_agent
+
         return random_agent
     if name == "hybrid":
         from agents.hybrid import agent as hybrid_agent
+
         return hybrid_agent
     raise ValueError(f"Unknown eval opponent: {name}")

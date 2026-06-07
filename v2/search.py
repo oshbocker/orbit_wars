@@ -10,6 +10,7 @@ output layout:
 
 These serve as supervised distillation targets (the "expert" in ExIt is search).
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -32,7 +33,9 @@ NEG = -1e9
 
 
 def _reconstruct_leaf_state(
-    root_state: GameState, leaf_sim: SimState, player: int,
+    root_state: GameState,
+    leaf_sim: SimState,
+    player: int,
 ) -> GameState:
     """Reconstruct GameState at a search leaf for neural-value scoring.
 
@@ -57,30 +60,51 @@ def _reconstruct_leaf_state(
             x, y = planet_pos_at(rp, leaf_sim.current_step, av)
         else:
             x, y = rp.x, rp.y
-        planets.append(PlanetState(
-            id=pid, owner=leaf_sim.planet_owner[pid], x=x, y=y, radius=rp.radius,
-            ships=int(leaf_sim.planet_ships[pid]), production=leaf_sim.planet_prod[pid],
-            is_orbiting=rp.is_orbiting, orbital_radius=rp.orbital_radius,
-            initial_angle=rp.initial_angle,
-        ))
+        planets.append(
+            PlanetState(
+                id=pid,
+                owner=leaf_sim.planet_owner[pid],
+                x=x,
+                y=y,
+                radius=rp.radius,
+                ships=int(leaf_sim.planet_ships[pid]),
+                production=leaf_sim.planet_prod[pid],
+                is_orbiting=rp.is_orbiting,
+                orbital_radius=rp.orbital_radius,
+                initial_angle=rp.initial_angle,
+            )
+        )
     fleets: list[FleetState] = []
     for ev in leaf_sim.fleet_events:
         pos = fleet_position_at(ev, leaf_sim.current_step)
         if pos is None:
             continue
         fx, fy, fangle = pos
-        fleets.append(FleetState(
-            id=-1, owner=ev[2], x=fx, y=fy, angle=fangle,
-            from_planet_id=-1, ships=int(ev[3]),
-        ))
+        fleets.append(
+            FleetState(
+                id=-1,
+                owner=ev[2],
+                x=fx,
+                y=fy,
+                angle=fangle,
+                from_planet_id=-1,
+                ships=int(ev[3]),
+            )
+        )
     return GameState(
-        step=leaf_sim.current_step, player=player, planets=planets, fleets=fleets,
-        angular_velocity=av, planets_by_id={p.id: p for p in planets},
+        step=leaf_sim.current_step,
+        player=player,
+        planets=planets,
+        fleets=fleets,
+        angular_velocity=av,
+        planets_by_id={p.id: p for p in planets},
     )
 
 
 def _batch_neural_values(
-    value_model, env_cfg: V2EnvConfig, leaf_states: list[GameState],
+    value_model,
+    env_cfg: V2EnvConfig,
+    leaf_states: list[GameState],
 ) -> list[float]:
     """Score leaf GameStates with OrbitNet's value head in one batched pass.
 
@@ -155,7 +179,7 @@ def search_improve_planet(
             owners.discard(player)
         rollout_players = sorted(owners)
 
-    target_scores = np.full(P + 1, NEG, dtype=np.float32)   # [hold, targets...]
+    target_scores = np.full(P + 1, NEG, dtype=np.float32)  # [hold, targets...]
     frac_scores = np.full((P, K), NEG, dtype=np.float32)
 
     # Collect forward-simulated leaves as (kind, j, fb, leaf_sim).
@@ -186,8 +210,9 @@ def search_improve_planet(
                 ships = max(1, int(src_ships * frac))
                 tt = travel_time(src.x, src.y, tx, ty, ships)
                 sc = sim_state.copy()
-                add_fleet_event(sc, src.id, tgt.id, ships, tt,
-                                src_xy=(src.x, src.y), dst_xy=(tx, ty))
+                add_fleet_event(
+                    sc, src.id, tgt.id, ships, tt, src_xy=(src.x, src.y), dst_xy=(tx, ty)
+                )
                 for _ in range(exit_cfg.search_depth):
                     sim_step(sc, rollout_players)
                 leaves.append(("frac", j, fb, sc))
@@ -202,11 +227,13 @@ def search_improve_planet(
         # z-scoring is what makes the two scorers commensurable (their raw ranges
         # differ); it is applied per source-planet decision, never globally.
         heur = np.asarray(
-            [evaluate_state(lf, player) for (_, _, _, lf) in leaves], dtype=np.float64,
+            [evaluate_state(lf, player) for (_, _, _, lf) in leaves],
+            dtype=np.float64,
         )
         leaf_states = [_reconstruct_leaf_state(state, lf, player) for (_, _, _, lf) in leaves]
         neural = np.asarray(
-            _batch_neural_values(value_model, env_cfg, leaf_states), dtype=np.float64,
+            _batch_neural_values(value_model, env_cfg, leaf_states),
+            dtype=np.float64,
         )
         zh = (heur - heur.mean()) / (heur.std() + 1e-6)
         zn = (neural - neural.mean()) / (neural.std() + 1e-6)

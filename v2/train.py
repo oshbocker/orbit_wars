@@ -1,19 +1,20 @@
 """V2 training loop: OrbitNet PPO with simultaneous planet processing."""
+
 from __future__ import annotations
 
 import argparse
-import copy
 import random
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import torch
 
 from src.game_types import parse_observation
 from src.logging import EvalResult, TrainLogger
-from src.opponents import ApexOpponent, OpponentPolicy, build_opponent
+from src.opponents import OpponentPolicy, build_opponent
 
 from .actions import V2SampledAction, decode_actions, decode_sampled_actions, sample_actions
 from .config import V2Config, load_v2_config
@@ -21,15 +22,23 @@ from .env import V2FastEnv, V2OrbitWarsEnv
 from .features import V2Features, encode_features
 from .model import OrbitNet, OrbitNetOutput
 from .ppo import (
-    V2TransitionBatch, ValueNorm, v2_aux_phase, v2_ppo_update, v2_shot_aux_update,
+    V2TransitionBatch,
+    ValueNorm,
+    v2_aux_phase,
+    v2_ppo_update,
+    v2_shot_aux_update,
 )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train V2 OrbitNet agent")
     parser.add_argument("--config", type=str, default="configs/v2_default.yaml")
-    parser.add_argument("--resume", type=str, default=None,
-                        help="Path to checkpoint .pt file to resume training from")
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint .pt file to resume training from",
+    )
     return parser.parse_args()
 
 
@@ -139,8 +148,7 @@ def _v2_policy_act(
     comets_data = getattr(observation, "comets", None)
     if comets_data is None and isinstance(observation, dict):
         comets_data = observation.get("comets")
-    features = encode_features(state, cfg.env, comet_ids=comet_ids,
-                               comets_data=comets_data)
+    features = encode_features(state, cfg.env, comet_ids=comet_ids, comets_data=comets_data)
 
     with torch.inference_mode():
         pf = torch.from_numpy(features.planet_features).unsqueeze(0).to(device)
@@ -202,8 +210,7 @@ class V2PFSPScheduler:
     failure mode where self-play forgets how to beat the script.
     """
 
-    def __init__(self, cfg: V2Config, rule_based: OpponentPolicy,
-                 device: torch.device) -> None:
+    def __init__(self, cfg: V2Config, rule_based: OpponentPolicy, device: torch.device) -> None:
         self.cfg = cfg
         self.device = device
         self._update = 0
@@ -224,12 +231,11 @@ class V2PFSPScheduler:
             return
         snap = V2SelfPlayOpponent(self.cfg, device=self.device, deterministic=False)
         snap.sync_from(model)
-        self.pool.append({"name": f"self@{self._update}", "agent": snap,
-                          "wins": 0.0, "games": 0.0})
+        self.pool.append({"name": f"self@{self._update}", "agent": snap, "wins": 0.0, "games": 0.0})
         # Cap frozen snapshots (never evict apex at index 0).
         frozen = self.pool[1:]
         if len(frozen) > self.cfg.pfsp_pool_size:
-            self.pool = [self.pool[0]] + frozen[-self.cfg.pfsp_pool_size:]
+            self.pool = [self.pool[0]] + frozen[-self.cfg.pfsp_pool_size :]
 
     def _win_rate(self, entry: dict) -> float:
         return entry["wins"] / entry["games"] if entry["games"] > 0 else 0.5
@@ -288,8 +294,9 @@ class V2PFSPScheduler:
                 e["games"] += d[1]
 
     def pool_summary(self) -> str:
-        return ", ".join(f"{e['name']}:{self._win_rate(e):.0%}({int(e['games'])})"
-                         for e in self.pool)
+        return ", ".join(
+            f"{e['name']}:{self._win_rate(e):.0%}({int(e['games'])})" for e in self.pool
+        )
 
 
 def make_v2_eval_agent(
@@ -342,12 +349,11 @@ def collect_rollout(
     is_pfsp = isinstance(scheduler, V2PFSPScheduler)
     # Track which PFSP opponent each env is currently facing (set at reset).
     active_opp_name: list[str | None] = [
-        (scheduler.last_name() if is_pfsp else None) for _ in envs
+        (scheduler.last_name() if isinstance(scheduler, V2PFSPScheduler) else None) for _ in envs
     ]
 
     # v4 Tier 1.2: per-step records for shot-success labeling (only if needed).
-    collect_shot = (model.shot_success_head is not None
-                    and cfg.ppo.shot_aux_coef > 0.0)
+    collect_shot = model.shot_success_head is not None and cfg.ppo.shot_aux_coef > 0.0
     shot_records: list[list] = [[] for _ in envs]
 
     has_pair = features_per_env[0].pair_features is not None
@@ -371,13 +377,22 @@ def collect_rollout(
 
         # ONE batched forward + sample across all envs (Tier 3.1 throughput win).
         with torch.inference_mode():
-            pf_b = torch.from_numpy(np.stack([f.planet_features for f in features_per_env])).to(device)
-            gf_b = torch.from_numpy(np.stack([f.global_features for f in features_per_env])).to(device)
+            pf_b = torch.from_numpy(np.stack([f.planet_features for f in features_per_env])).to(
+                device
+            )
+            gf_b = torch.from_numpy(np.stack([f.global_features for f in features_per_env])).to(
+                device
+            )
             pm_b = torch.from_numpy(np.stack([f.planet_mask for f in features_per_env])).to(device)
             om_b = torch.from_numpy(np.stack([f.own_mask for f in features_per_env])).to(device)
-            rm_b = torch.from_numpy(np.stack([f.reachability_mask for f in features_per_env])).to(device)
-            pair_b = (torch.from_numpy(np.stack([f.pair_features for f in features_per_env])).to(device)
-                      if has_pair else None)
+            rm_b = torch.from_numpy(np.stack([f.reachability_mask for f in features_per_env])).to(
+                device
+            )
+            pair_b = (
+                torch.from_numpy(np.stack([f.pair_features for f in features_per_env])).to(device)
+                if has_pair
+                else None
+            )
             output = model(pf_b, gf_b, pm_b, om_b, rm_b, pair_b)
             sampled = sample_actions(output, om_b, deterministic=False)
 
@@ -397,17 +412,22 @@ def collect_rollout(
             # decode helpers' [0]-indexing intact).
             e = env_idx
             out_i = OrbitNetOutput(
-                logits=output.logits[e:e + 1], value=output.value[e:e + 1],
-                frac_logits=output.frac_logits[e:e + 1],
-                aux_value=(output.aux_value[e:e + 1] if output.aux_value is not None else None),
-                shot_logits=(output.shot_logits[e:e + 1] if output.shot_logits is not None else None),
+                logits=output.logits[e : e + 1],
+                value=output.value[e : e + 1],
+                frac_logits=output.frac_logits[e : e + 1],
+                aux_value=(output.aux_value[e : e + 1] if output.aux_value is not None else None),
+                shot_logits=(
+                    output.shot_logits[e : e + 1] if output.shot_logits is not None else None
+                ),
             )
             sa_i = V2SampledAction(
-                target_indices=sampled.target_indices[e:e + 1],
-                frac_indices=sampled.frac_indices[e:e + 1],
-                log_prob=sampled.log_prob[e:e + 1], entropy=sampled.entropy[e:e + 1],
+                target_indices=sampled.target_indices[e : e + 1],
+                frac_indices=sampled.frac_indices[e : e + 1],
+                log_prob=sampled.log_prob[e : e + 1],
+                entropy=sampled.entropy[e : e + 1],
             )
             state = env.last_state
+            assert state is not None  # set by env.reset()/step() before this loop body
             moves = decode_sampled_actions(sa_i, out_i, feat, state, cfg.env)
             result = env.step(moves)
 
@@ -418,17 +438,20 @@ def collect_rollout(
             # v4 Tier 1.2: record launches + ownership for shot-success labeling.
             if collect_shot:
                 ti_np = ti_cpu[env_idx]
-                launches = [(i, int(ti_np[i]) - 1) for i in range(P)
-                            if feat.own_mask[i] and ti_np[i] > 0]
+                launches = [
+                    (i, int(ti_np[i]) - 1) for i in range(P) if feat.own_mask[i] and ti_np[i] > 0
+                ]
                 owners = {ps.id: ps.owner for ps in feat.planet_states if ps is not None}
                 shot_records[env_idx].append(
-                    (idx_e[env_idx], state.player, owners, launches, result.done))
+                    (idx_e[env_idx], state.player, owners, launches, result.done)
+                )
 
             if result.done:
                 episode_rewards.append(running_rewards[env_idx])
                 if is_pfsp:
                     scheduler.update_result(
-                        active_opp_name[env_idx], running_rewards[env_idx] > 0.0)
+                        active_opp_name[env_idx], running_rewards[env_idx] > 0.0
+                    )
                 running_rewards[env_idx] = 0.0
                 next_seed += 1
                 if scheduler is not None:
@@ -461,7 +484,7 @@ def collect_rollout(
                     continue
                 m_idx, player_t, _own, launches_t, _done = recs[t]
                 owners_future = recs[t2][2]
-                for (s_slot, tg_slot) in launches_t:
+                for s_slot, tg_slot in launches_t:
                     shot_idx.append(m_idx)
                     shot_src.append(s_slot)
                     shot_tgt.append(tg_slot)
@@ -526,8 +549,9 @@ def collect_rollout(
             returns=torch.tensor(returns, dtype=torch.float32),
             advantages=torch.tensor(advantages, dtype=torch.float32),
             values=torch.tensor(all_values, dtype=torch.float32),
-            pair_features=(torch.from_numpy(np.array(all_pairf, dtype=np.float32))
-                           if all_pairf else None),
+            pair_features=(
+                torch.from_numpy(np.array(all_pairf, dtype=np.float32)) if all_pairf else None
+            ),
             shot_idx=(torch.tensor(shot_idx, dtype=torch.long) if shot_idx else None),
             shot_src=(torch.tensor(shot_src, dtype=torch.long) if shot_idx else None),
             shot_tgt=(torch.tensor(shot_tgt, dtype=torch.long) if shot_idx else None),
@@ -565,7 +589,8 @@ def _bootstrap_values(
 
 def _empty_batch(cfg: V2Config) -> V2TransitionBatch:
     P = cfg.env.max_planets
-    from .features import PLANET_FEAT_DIM, GLOBAL_FEAT_DIM
+    from .features import GLOBAL_FEAT_DIM, PLANET_FEAT_DIM
+
     return V2TransitionBatch(
         planet_features=torch.zeros(0, P, PLANET_FEAT_DIM),
         global_features=torch.zeros(0, GLOBAL_FEAT_DIM),
@@ -656,11 +681,10 @@ def run_periodic_eval(
     is the map seed. CPU games are slow (~20s each) so cfg.eval.eval_workers>1
     fans them across processes.
     """
-    from v2.fast_env import FastOrbitWars
 
     n = cfg.eval.eval_games
     base_seed = cfg.eval.eval_seed
-    jobs = [(base_seed + i, i % 2) for i in range(n)]   # alternate RL's side
+    jobs = [(base_seed + i, i % 2) for i in range(n)]  # alternate RL's side
     workers = cfg.eval.eval_workers
     results: list[EvalResult] = []
 
@@ -668,12 +692,14 @@ def run_periodic_eval(
         from concurrent.futures import ProcessPoolExecutor
 
         from v2.config import v2_config_to_dict
+
         cfg_dict = v2_config_to_dict(cfg)
         sd = {k: v.cpu() for k, v in model.state_dict().items()}
         for opp_name in cfg.eval.eval_opponents:
             try:
                 with ProcessPoolExecutor(
-                    max_workers=workers, initializer=_peval_init,
+                    max_workers=workers,
+                    initializer=_peval_init,
                     initargs=(cfg_dict, sd, opp_name),
                 ) as ex:
                     res = list(ex.map(_peval_game, jobs))
@@ -690,8 +716,11 @@ def run_periodic_eval(
 
 
 def _run_eval_sequential(
-    model: OrbitNet, cfg: V2Config, device: torch.device,
-    opp_name: str, jobs: list[tuple[int, int]],
+    model: OrbitNet,
+    cfg: V2Config,
+    device: torch.device,
+    opp_name: str,
+    jobs: list[tuple[int, int]],
 ) -> list[str]:
     from v2.fast_env import FastOrbitWars
 
@@ -725,12 +754,15 @@ def _tally(opp_name: str, res: list[str], n: int) -> EvalResult:
 def _get_eval_opponent(name: str) -> Any:
     if name == "apex":
         from agents.apex import agent as apex_agent
+
         return apex_agent
     if name == "random":
         from kaggle_environments.envs.orbit_wars.orbit_wars import random_agent
+
         return random_agent
     if name == "hybrid":
         from agents.hybrid import agent as hybrid_agent
+
         return hybrid_agent
     raise ValueError(f"Unknown eval opponent: {name}")
 
@@ -759,6 +791,7 @@ def main() -> None:
         this is what keeps train.log complete across Colab session resumes.
         """
         import os as _os
+
         print(msg)
         f = _log_state["f"]
         f.write(msg + "\n")
@@ -782,12 +815,15 @@ def main() -> None:
     def log_eval_row(update: int, results) -> None:
         with open(_eval_csv, "a") as ef:
             for r in results:
-                ef.write(f"{update},{r.opponent_name},{r.win_rate},"
-                         f"{r.loss_rate},{r.tie_rate},{r.n_games}\n")
+                ef.write(
+                    f"{update},{r.opponent_name},{r.win_rate},"
+                    f"{r.loss_rate},{r.tie_rate},{r.n_games}\n"
+                )
 
     log(f"V2 Config: {cfg.run_name}, device={device}, updates={cfg.ppo.total_updates}")
-    log(f"  envs={cfg.ppo.num_envs}, rollout_steps={cfg.ppo.rollout_steps}, "
-        f"opponent={cfg.opponent}")
+    log(
+        f"  envs={cfg.ppo.num_envs}, rollout_steps={cfg.ppo.rollout_steps}, opponent={cfg.opponent}"
+    )
 
     # Count parameters
     model = OrbitNet(cfg.model).to(device)
@@ -817,8 +853,10 @@ def main() -> None:
         from .imitation import v2_bc_pretrain
 
         # Phase 1: Collect demonstrations (or load from cache)
-        log(f"\n=== Phase 1: Collecting {cfg.imitation.bc_games} demo games "
-            f"(expert={cfg.imitation.bc_expert} vs {cfg.imitation.bc_demo_opponent}) ===")
+        log(
+            f"\n=== Phase 1: Collecting {cfg.imitation.bc_games} demo games "
+            f"(expert={cfg.imitation.bc_expert} vs {cfg.imitation.bc_demo_opponent}) ==="
+        )
         demo_buffer = _load_or_collect_demos(cfg, log)
         log(f"  Buffer size: {len(demo_buffer)}")
 
@@ -835,21 +873,21 @@ def main() -> None:
             log(f"  Eval of BC clone (update 0, {cfg.eval.eval_games} games)...")
             for r in run_periodic_eval(model, cfg, device):
                 logger.log_eval(0, [r])
-                log(f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
-                    f"T={r.tie_rate:.0%} (n={r.n_games})")
+                log(
+                    f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
+                    f"T={r.tie_rate:.0%} (n={r.n_games})"
+                )
 
     # Build opponents
     rule_based_opponent = build_opponent(cfg.opponent)
 
     # Use distilled opponent if BC was done
-    if (cfg.imitation.enabled and cfg.imitation.distilled_opponent
-            and demo_buffer is not None):
+    if cfg.imitation.enabled and cfg.imitation.distilled_opponent and demo_buffer is not None:
         log("  Using distilled opponent (BC-pretrained V2)")
         distilled = V2SelfPlayOpponent(cfg, device=device, deterministic=True)
         distilled.sync_from(model)
         rule_based_opponent = distilled
-    sp_opponent = V2SelfPlayOpponent(cfg, device=device,
-                                     deterministic=cfg.self_play_deterministic)
+    sp_opponent = V2SelfPlayOpponent(cfg, device=device, deterministic=cfg.self_play_deterministic)
     sp_opponent.sync_from(model)
 
     # Scheduler: PFSP pool (keeps apex, samples by win-rate) takes precedence;
@@ -857,14 +895,18 @@ def main() -> None:
     scheduler: V2MixedScheduler | V2PFSPScheduler | None = None
     if cfg.pfsp_enabled:
         scheduler = V2PFSPScheduler(cfg, rule_based_opponent, device)
-        log(f"  PFSPScheduler: apex_floor={cfg.pfsp_apex_min_prob}, "
+        log(
+            f"  PFSPScheduler: apex_floor={cfg.pfsp_apex_min_prob}, "
             f"pool_size={cfg.pfsp_pool_size}, snapshot_every={cfg.pfsp_snapshot_every}, "
-            f"weighting={cfg.pfsp_weighting}")
+            f"weighting={cfg.pfsp_weighting}"
+        )
     elif cfg.four_player_prob > 0.0 or cfg.rule_based_prob_start < 1.0:
         scheduler = V2MixedScheduler(cfg, rule_based_opponent, sp_opponent)
-        log(f"  MixedScheduler: 4p_prob={cfg.four_player_prob}, "
+        log(
+            f"  MixedScheduler: 4p_prob={cfg.four_player_prob}, "
             f"rule_based={cfg.rule_based_prob_start:.1f}->{cfg.rule_based_prob_end:.1f} "
-            f"over {cfg.rule_based_decay_updates} updates")
+            f"over {cfg.rule_based_decay_updates} updates"
+        )
 
     # Create envs (only needed for sequential mode)
     envs: list = []
@@ -875,12 +917,13 @@ def main() -> None:
         env_cls = V2FastEnv if cfg.ppo.use_batched_env else V2OrbitWarsEnv
         if cfg.ppo.use_batched_env:
             log("  Using V2FastEnv (standalone fast_env sim) for rollouts")
-        envs = [env_cls(cfg, rule_based_opponent, env_index=idx)
-                for idx in range(cfg.ppo.num_envs)]
+        envs = [env_cls(cfg, rule_based_opponent, env_index=idx) for idx in range(cfg.ppo.num_envs)]
         for env in envs:
             if scheduler is not None:
                 num_p, opps = scheduler.sample_episode()
-                features_per_env.append(env.reset(seed=next_seed, num_players=num_p, opponents=opps))
+                features_per_env.append(
+                    env.reset(seed=next_seed, num_players=num_p, opponents=opps)
+                )
             else:
                 features_per_env.append(env.reset(seed=next_seed))
             next_seed += 1
@@ -908,7 +951,9 @@ def main() -> None:
             if scheduler is not None:
                 scheduler.set_update(start_update)
                 num_p, opps = scheduler.sample_episode()
-                features_per_env.append(env.reset(seed=next_seed, num_players=num_p, opponents=opps))
+                features_per_env.append(
+                    env.reset(seed=next_seed, num_players=num_p, opponents=opps)
+                )
             else:
                 features_per_env.append(env.reset(seed=next_seed))
             next_seed += 1
@@ -928,18 +973,46 @@ def main() -> None:
 
     # Training loop
     remaining = cfg.ppo.total_updates - start_update + 1
-    log(f"\n=== PPO training (updates {start_update}..{cfg.ppo.total_updates}, "
-        f"{remaining} remaining) ===")
+    log(
+        f"\n=== PPO training (updates {start_update}..{cfg.ppo.total_updates}, "
+        f"{remaining} remaining) ==="
+    )
 
     if cfg.ppo.num_workers > 0:
-        _train_parallel(cfg, model, optimizer, logger, save_dir, device, log,
-                        start_update, demo_buffer, log_eval_row,
-                        scheduler, value_norm, sp_opponent)
+        _train_parallel(
+            cfg,
+            model,
+            optimizer,
+            logger,
+            save_dir,
+            device,
+            log,
+            start_update,
+            demo_buffer,
+            log_eval_row,
+            scheduler,
+            value_norm,
+            sp_opponent,
+        )
     else:
-        _train_sequential(cfg, model, optimizer, logger, save_dir, device, log,
-                          envs, features_per_env, next_seed, scheduler,
-                          sp_opponent, start_update, demo_buffer, log_eval_row,
-                          value_norm)
+        _train_sequential(
+            cfg,
+            model,
+            optimizer,
+            logger,
+            save_dir,
+            device,
+            log,
+            envs,
+            features_per_env,
+            next_seed,
+            scheduler,
+            sp_opponent,
+            start_update,
+            demo_buffer,
+            log_eval_row,
+            value_norm,
+        )
 
     logger.close()
     _log_state["f"].close()
@@ -973,8 +1046,14 @@ def _train_sequential(
             scheduler.set_update(update)
 
         batch, features_per_env, next_seed, stats = collect_rollout(
-            envs, features_per_env, model, cfg, device, next_seed,
-            scheduler=scheduler, value_norm=value_norm,
+            envs,
+            features_per_env,
+            model,
+            cfg,
+            device,
+            next_seed,
+            scheduler=scheduler,
+            value_norm=value_norm,
         )
 
         # Compute imitation coefficient (linear decay)
@@ -987,7 +1066,9 @@ def _train_sequential(
             )
 
         metrics = v2_ppo_update(
-            model, optimizer, batch,
+            model,
+            optimizer,
+            batch,
             clip_coef=cfg.ppo.clip_coef,
             ent_coef=_current_ent_coef(cfg, update),
             vf_coef=cfg.ppo.vf_coef,
@@ -1005,7 +1086,9 @@ def _train_sequential(
         # model has an aux value head). Runs every aux_every updates.
         if cfg.ppo.aux_epochs > 0 and update % max(1, cfg.ppo.aux_every) == 0:
             aux_metrics = v2_aux_phase(
-                model, optimizer, batch,
+                model,
+                optimizer,
+                batch,
                 aux_epochs=cfg.ppo.aux_epochs,
                 beta_clone=cfg.ppo.aux_beta_clone,
                 minibatch_size=cfg.ppo.minibatch_size,
@@ -1019,7 +1102,9 @@ def _train_sequential(
         # shot_aux_coef>0 and the model has a shot head).
         if cfg.ppo.shot_aux_coef > 0.0:
             shot_metrics = v2_shot_aux_update(
-                model, optimizer, batch,
+                model,
+                optimizer,
+                batch,
                 coef=cfg.ppo.shot_aux_coef,
                 epochs=cfg.ppo.shot_aux_epochs,
                 minibatch_size=cfg.ppo.minibatch_size,
@@ -1057,8 +1142,10 @@ def _train_sequential(
             if log_eval_row is not None:
                 log_eval_row(update, eval_results)
             for r in eval_results:
-                log(f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
-                    f"T={r.tie_rate:.0%} (n={r.n_games})")
+                log(
+                    f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
+                    f"T={r.tie_rate:.0%} (n={r.n_games})"
+                )
             if isinstance(scheduler, V2PFSPScheduler):
                 log(f"    PFSP pool: {scheduler.pool_summary()}")
             log("")
@@ -1081,9 +1168,9 @@ def _train_parallel(
     start_update: int,
     demo_buffer: object | None = None,
     log_eval_row: Any = None,
-    scheduler: "V2MixedScheduler | V2PFSPScheduler | None" = None,
+    scheduler: V2MixedScheduler | V2PFSPScheduler | None = None,
     value_norm: object | None = None,
-    sp_opponent: "V2SelfPlayOpponent | None" = None,
+    sp_opponent: V2SelfPlayOpponent | None = None,
 ) -> None:
     """Parallel training loop using subprocess workers (v4-complete).
 
@@ -1121,12 +1208,14 @@ def _train_parallel(
             if cfg.imitation.enabled and demo_buffer is not None:
                 decay_frac = update / max(cfg.imitation.coef_decay_updates, 1)
                 imitation_coef = max(
-                cfg.imitation.coef_floor,  # Tier 0.1: persistent anchor (never decays to 0)
-                cfg.imitation.coef_start * max(0.0, 1.0 - decay_frac),
-            )
+                    cfg.imitation.coef_floor,  # Tier 0.1: persistent anchor (never decays to 0)
+                    cfg.imitation.coef_start * max(0.0, 1.0 - decay_frac),
+                )
 
             metrics = v2_ppo_update(
-                model, optimizer, batch,
+                model,
+                optimizer,
+                batch,
                 clip_coef=cfg.ppo.clip_coef,
                 ent_coef=_current_ent_coef(cfg, update),
                 vf_coef=cfg.ppo.vf_coef,
@@ -1142,25 +1231,33 @@ def _train_parallel(
 
             # Tier 1.1: PPG auxiliary value phase (every aux_every updates).
             if cfg.ppo.aux_epochs > 0 and update % max(1, cfg.ppo.aux_every) == 0:
-                metrics.update(v2_aux_phase(
-                    model, optimizer, batch,
-                    aux_epochs=cfg.ppo.aux_epochs,
-                    beta_clone=cfg.ppo.aux_beta_clone,
-                    minibatch_size=cfg.ppo.minibatch_size,
-                    device=device,
-                    value_symlog=cfg.ppo.value_symlog,
-                    value_norm=value_norm,
-                ))
+                metrics.update(
+                    v2_aux_phase(
+                        model,
+                        optimizer,
+                        batch,
+                        aux_epochs=cfg.ppo.aux_epochs,
+                        beta_clone=cfg.ppo.aux_beta_clone,
+                        minibatch_size=cfg.ppo.minibatch_size,
+                        device=device,
+                        value_symlog=cfg.ppo.value_symlog,
+                        value_norm=value_norm,
+                    )
+                )
 
             # Tier 1.2: train the shot-success head on outcome labels.
             if cfg.ppo.shot_aux_coef > 0.0:
-                metrics.update(v2_shot_aux_update(
-                    model, optimizer, batch,
-                    coef=cfg.ppo.shot_aux_coef,
-                    epochs=cfg.ppo.shot_aux_epochs,
-                    minibatch_size=cfg.ppo.minibatch_size,
-                    device=device,
-                ))
+                metrics.update(
+                    v2_shot_aux_update(
+                        model,
+                        optimizer,
+                        batch,
+                        coef=cfg.ppo.shot_aux_coef,
+                        epochs=cfg.ppo.shot_aux_epochs,
+                        minibatch_size=cfg.ppo.minibatch_size,
+                        device=device,
+                    )
+                )
 
             # Sync self-play opponent periodically (non-PFSP MixedScheduler path).
             if sp_opponent is not None and update % cfg.self_play_update_interval == 0:
@@ -1195,8 +1292,10 @@ def _train_parallel(
                 if log_eval_row is not None:
                     log_eval_row(update, eval_results)
                 for r in eval_results:
-                    log(f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
-                        f"T={r.tie_rate:.0%} (n={r.n_games})")
+                    log(
+                        f"    vs {r.opponent_name}: W={r.win_rate:.0%} L={r.loss_rate:.0%} "
+                        f"T={r.tie_rate:.0%} (n={r.n_games})"
+                    )
                 if isinstance(scheduler, V2PFSPScheduler):
                     log(f"    PFSP pool: {scheduler.pool_summary()}")
                 log("")

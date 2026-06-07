@@ -1,9 +1,8 @@
 """PPO algorithm for V2 pipeline."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-import torch
 
 import torch
 
@@ -60,12 +59,15 @@ class ValueNorm:
         return {"mean": self.mean, "var": self.var, "count": self.count, "beta": self.beta}
 
     def load_state_dict(self, d: dict) -> None:
-        self.mean = d["mean"]; self.var = d["var"]
-        self.count = d["count"]; self.beta = d.get("beta", self.beta)
+        self.mean = d["mean"]
+        self.var = d["var"]
+        self.count = d["count"]
+        self.beta = d.get("beta", self.beta)
 
 
-def _target_policy_kl(old_logits: torch.Tensor, new_logits: torch.Tensor,
-                      own_mask: torch.Tensor) -> torch.Tensor:
+def _target_policy_kl(
+    old_logits: torch.Tensor, new_logits: torch.Tensor, own_mask: torch.Tensor
+) -> torch.Tensor:
     """KL(old || new) over the per-planet target distribution, own rows only.
 
     Used as the PPG aux-phase clone term that freezes the policy while the value
@@ -87,25 +89,25 @@ def _target_policy_kl(old_logits: torch.Tensor, new_logits: torch.Tensor,
 
 @dataclass
 class V2TransitionBatch:
-    planet_features: torch.Tensor    # [N, P, F]
-    global_features: torch.Tensor    # [N, G]
-    planet_mask: torch.Tensor        # [N, P] bool
-    own_mask: torch.Tensor           # [N, P] bool
+    planet_features: torch.Tensor  # [N, P, F]
+    global_features: torch.Tensor  # [N, G]
+    planet_mask: torch.Tensor  # [N, P] bool
+    own_mask: torch.Tensor  # [N, P] bool
     reachability_mask: torch.Tensor  # [N, P, P] bool
-    target_indices: torch.Tensor     # [N, P] long
-    frac_indices: torch.Tensor       # [N, P] long (ship-fraction bin per planet)
-    log_prob: torch.Tensor           # [N]
-    returns: torch.Tensor            # [N]
-    advantages: torch.Tensor         # [N]
-    values: torch.Tensor             # [N]
+    target_indices: torch.Tensor  # [N, P] long
+    frac_indices: torch.Tensor  # [N, P] long (ship-fraction bin per planet)
+    log_prob: torch.Tensor  # [N]
+    returns: torch.Tensor  # [N]
+    advantages: torch.Tensor  # [N]
+    values: torch.Tensor  # [N]
     pair_features: torch.Tensor | None = None  # [N, P, P, pf] (v3; None if disabled)
     # v4 Tier 1.2: shot-success labels. Parallel arrays referencing buffer rows:
     # at row shot_idx[k] the launch (shot_src[k] -> shot_tgt[k]) had outcome
     # shot_label[k] = 1 if we owned the target shot_horizon steps later.
-    shot_idx: torch.Tensor | None = None     # [M] long
-    shot_src: torch.Tensor | None = None     # [M] long
-    shot_tgt: torch.Tensor | None = None     # [M] long
-    shot_label: torch.Tensor | None = None   # [M] float
+    shot_idx: torch.Tensor | None = None  # [M] long
+    shot_src: torch.Tensor | None = None  # [M] long
+    shot_tgt: torch.Tensor | None = None  # [M] long
+    shot_label: torch.Tensor | None = None  # [M] float
 
 
 def v2_ppo_update(
@@ -123,7 +125,7 @@ def v2_ppo_update(
     demo_buffer: object | None = None,
     imitation_coef: float = 0.0,
     value_symlog: bool = False,
-    value_norm: "ValueNorm | None" = None,
+    value_norm: ValueNorm | None = None,
 ) -> dict[str, float]:
     """Clipped PPO update for V2 pipeline."""
     N = batch.planet_features.shape[0]
@@ -153,20 +155,34 @@ def v2_ppo_update(
         value_norm.update(returns)
 
     minibatch_size = min(N, max(1, minibatch_size))
-    metrics = {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0,
-               "imitation_loss": 0.0}
+    metrics = {
+        "loss": 0.0,
+        "policy_loss": 0.0,
+        "value_loss": 0.0,
+        "entropy": 0.0,
+        "imitation_loss": 0.0,
+    }
     updates = 0
 
     for _ in range(epochs):
         order = torch.randperm(N, device=device)
         for start in range(0, N, minibatch_size):
-            idx = order[start:start + minibatch_size]
+            idx = order[start : start + minibatch_size]
 
-            output = model(pf[idx], gf[idx], pm[idx], om[idx], rm[idx],
-                           pairf[idx] if pairf is not None else None)
+            output = model(
+                pf[idx],
+                gf[idx],
+                pm[idx],
+                om[idx],
+                rm[idx],
+                pairf[idx] if pairf is not None else None,
+            )
 
             new_log_prob, entropy = action_log_prob_and_entropy(
-                output, om[idx], ti[idx], fi[idx],
+                output,
+                om[idx],
+                ti[idx],
+                fi[idx],
             )
 
             # Importance ratio
@@ -190,7 +206,9 @@ def v2_ppo_update(
                 value_target = returns[idx]
             value_pred = output.value
             value_clipped = old_values[idx] + torch.clamp(
-                value_pred - old_values[idx], -clip_coef, clip_coef,
+                value_pred - old_values[idx],
+                -clip_coef,
+                clip_coef,
             )
             vl_unclipped = (value_target - value_pred).pow(2)
             vl_clipped = (value_target - value_clipped).pow(2)
@@ -204,6 +222,7 @@ def v2_ppo_update(
             im_loss_val = 0.0
             if demo_buffer is not None and imitation_coef > 0.0:
                 from .imitation import compute_v2_bc_loss
+
                 demo_batch = demo_buffer.sample_batch(len(idx), device)
                 im_loss = compute_v2_bc_loss(model, demo_batch)
                 loss = loss + imitation_coef * im_loss
@@ -241,9 +260,19 @@ def v2_shot_aux_update(
     signal vs sparse reward; the same head doubles as the decode-time rejection
     filter. No-op without a shot head, labels, or coef.
     """
-    if (coef <= 0.0 or model.shot_success_head is None
-            or batch.shot_idx is None or batch.shot_idx.numel() == 0):
+    if (
+        coef <= 0.0
+        or model.shot_success_head is None
+        or batch.shot_idx is None
+        or batch.shot_idx.numel() == 0
+    ):
         return {"shot_loss": 0.0, "shot_acc": 0.0}
+
+    # shot_src/tgt/label are co-populated with shot_idx (see V2TransitionBatch
+    # construction in train.py / parallel.py): non-None shot_idx ⇒ all non-None.
+    assert (
+        batch.shot_src is not None and batch.shot_tgt is not None and batch.shot_label is not None
+    )
 
     pf = batch.planet_features.to(device)
     gf = batch.global_features.to(device)
@@ -264,12 +293,18 @@ def v2_shot_aux_update(
     for _ in range(max(1, epochs)):
         order = torch.randperm(M, device=device)
         for start in range(0, M, mb):
-            sel = order[start:start + mb]
+            sel = order[start : start + mb]
             rows = s_idx[sel]
             # Unique buffer rows in this minibatch -> one forward each.
             uniq, inv = torch.unique(rows, return_inverse=True)
-            out = model(pf[uniq], gf[uniq], pm[uniq], om[uniq], rm[uniq],
-                        pairf[uniq] if pairf is not None else None)
+            out = model(
+                pf[uniq],
+                gf[uniq],
+                pm[uniq],
+                om[uniq],
+                rm[uniq],
+                pairf[uniq] if pairf is not None else None,
+            )
             logit = out.shot_logits[inv, s_src[sel], s_tgt[sel]]  # [m]
             loss = coef * bce(logit, s_lab[sel])
             optimizer.zero_grad(set_to_none=True)
@@ -294,7 +329,7 @@ def v2_aux_phase(
     minibatch_size: int,
     device: torch.device,
     value_symlog: bool = False,
-    value_norm: "ValueNorm | None" = None,
+    value_norm: ValueNorm | None = None,
 ) -> dict[str, float]:
     """PPG auxiliary value phase (Tier 1.1).
 
@@ -309,6 +344,7 @@ def v2_aux_phase(
         return {"aux_value_loss": 0.0, "aux_kl": 0.0}
 
     import copy
+
     N = batch.planet_features.shape[0]
     if N < 4:
         return {"aux_value_loss": 0.0, "aux_kl": 0.0}
@@ -339,12 +375,24 @@ def v2_aux_phase(
     for _ in range(aux_epochs):
         order = torch.randperm(N, device=device)
         for start in range(0, N, minibatch_size):
-            idx = order[start:start + minibatch_size]
-            out = model(pf[idx], gf[idx], pm[idx], om[idx], rm[idx],
-                        pairf[idx] if pairf is not None else None)
+            idx = order[start : start + minibatch_size]
+            out = model(
+                pf[idx],
+                gf[idx],
+                pm[idx],
+                om[idx],
+                rm[idx],
+                pairf[idx] if pairf is not None else None,
+            )
             with torch.no_grad():
-                old_out = old_model(pf[idx], gf[idx], pm[idx], om[idx], rm[idx],
-                                    pairf[idx] if pairf is not None else None)
+                old_out = old_model(
+                    pf[idx],
+                    gf[idx],
+                    pm[idx],
+                    om[idx],
+                    rm[idx],
+                    pairf[idx] if pairf is not None else None,
+                )
 
             vt = _vtarget(returns[idx])
             v_loss = 0.5 * (vt - out.value).pow(2).mean()

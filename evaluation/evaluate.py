@@ -6,7 +6,7 @@ All functions accept any Kaggle-compatible agent callable (obs, config) -> moves
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from kaggle_environments import make
 
@@ -40,7 +40,7 @@ def run_games(
             result = "L"
         if verbose:
             steps = len(env.steps)
-            print(f"  game {g+1:3d}/{n_games}  {result}  ({steps} steps)")
+            print(f"  game {g + 1:3d}/{n_games}  {result}  ({steps} steps)")
 
     return {
         "wins": wins,
@@ -58,8 +58,7 @@ def print_results(label_a: str, label_b: str, results: dict) -> None:
     l = results["loss_rate"]
     t = results["tie_rate"]
     n = results["n_games"]
-    print(f"{label_a:20s} vs {label_b:20s}  |  "
-          f"W:{w:.0%}  L:{l:.0%}  T:{t:.0%}  (n={n})")
+    print(f"{label_a:20s} vs {label_b:20s}  |  W:{w:.0%}  L:{l:.0%}  T:{t:.0%}  (n={n})")
 
 
 def head_to_head(
@@ -82,7 +81,7 @@ def head_to_head(
     names = list(agents.keys())
     results = {}
     for i, a_name in enumerate(names):
-        for b_name in names[i + 1:]:
+        for b_name in names[i + 1 :]:
             if verbose:
                 print(f"\n{a_name} vs {b_name}:")
             r = run_games(agents[a_name], agents[b_name], n_games=n_games, verbose=verbose)
@@ -93,12 +92,13 @@ def head_to_head(
 
 def benchmark(agent: Callable, agent_name: str = "agent", n_games: int = 20) -> None:
     """Convenience: run agent vs random and apex, print a summary table."""
-    from agents.apex import agent as apex_agent
     from kaggle_environments.envs.orbit_wars.orbit_wars import random_agent
 
-    print(f"\n{'='*60}")
+    from agents.apex import agent as apex_agent
+
+    print(f"\n{'=' * 60}")
     print(f"  Benchmark: {agent_name}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     for opp_name, opp in [("random", random_agent), ("apex", apex_agent)]:
         r = run_games(agent, opp, n_games=n_games)
         print_results(agent_name, opp_name, r)

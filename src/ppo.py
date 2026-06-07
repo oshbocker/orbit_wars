@@ -10,31 +10,31 @@ from .policy import PolicyOutput
 
 @dataclass(slots=True)
 class SampledAction:
-    target_index: torch.Tensor     # [B] — 0=NoOp, 1..T are targets
-    fraction_bin: torch.Tensor     # [B] — 0..num_fractions-1
-    log_prob: torch.Tensor         # [B]
-    entropy: torch.Tensor          # [B]
+    target_index: torch.Tensor  # [B] — 0=NoOp, 1..T are targets
+    fraction_bin: torch.Tensor  # [B] — 0..num_fractions-1
+    log_prob: torch.Tensor  # [B]
+    entropy: torch.Tensor  # [B]
 
 
 @dataclass(slots=True)
 class TransitionBatch:
     # Features
-    global_features: torch.Tensor      # [N, GLOBAL_DIM]
-    source_scalars: torch.Tensor       # [N, SOURCE_SCALAR_DIM]
-    source_positions: torch.Tensor     # [N, 2]
-    knn_scalars: torch.Tensor          # [N, K, KNN_SCALAR_DIM]
-    knn_positions: torch.Tensor        # [N, K, 2]
-    target_scalars: torch.Tensor       # [N, T, TARGET_SCALAR_DIM]
-    target_positions: torch.Tensor     # [N, T, 2]
-    target_mask: torch.Tensor          # [N, T+2]
+    global_features: torch.Tensor  # [N, GLOBAL_DIM]
+    source_scalars: torch.Tensor  # [N, SOURCE_SCALAR_DIM]
+    source_positions: torch.Tensor  # [N, 2]
+    knn_scalars: torch.Tensor  # [N, K, KNN_SCALAR_DIM]
+    knn_positions: torch.Tensor  # [N, K, 2]
+    target_scalars: torch.Tensor  # [N, T, TARGET_SCALAR_DIM]
+    target_positions: torch.Tensor  # [N, T, 2]
+    target_mask: torch.Tensor  # [N, T+2]
     # Actions
-    target_index: torch.Tensor         # [N]
-    fraction_bin: torch.Tensor         # [N]
-    log_prob: torch.Tensor             # [N]
+    target_index: torch.Tensor  # [N]
+    fraction_bin: torch.Tensor  # [N]
+    log_prob: torch.Tensor  # [N]
     # Returns
-    returns: torch.Tensor              # [N]
-    advantages: torch.Tensor           # [N]
-    values: torch.Tensor               # [N] — old value predictions for value clipping
+    returns: torch.Tensor  # [N]
+    advantages: torch.Tensor  # [N]
+    values: torch.Tensor  # [N] — old value predictions for value clipping
 
 
 def _safe_target_logits(target_logits: torch.Tensor) -> torch.Tensor:
@@ -140,8 +140,13 @@ def ppo_update(
 ) -> dict[str, float]:
     N = batch.global_features.shape[0]
     if N < 16:
-        return {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0,
-                "imitation_loss": 0.0}
+        return {
+            "loss": 0.0,
+            "policy_loss": 0.0,
+            "value_loss": 0.0,
+            "entropy": 0.0,
+            "imitation_loss": 0.0,
+        }
 
     # Move to device
     gf = batch.global_features.to(device)
@@ -163,21 +168,33 @@ def ppo_update(
     use_imitation = demo_buffer is not None and imitation_coef > 0.0
 
     minibatch_size = min(N, max(1, minibatch_size))
-    metrics = {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0,
-               "imitation_loss": 0.0}
+    metrics = {
+        "loss": 0.0,
+        "policy_loss": 0.0,
+        "value_loss": 0.0,
+        "entropy": 0.0,
+        "imitation_loss": 0.0,
+    }
     updates = 0
 
     for _ in range(epochs):
         order = torch.randperm(N, device=device)
         for start in range(0, N, minibatch_size):
-            idx = order[start:start + minibatch_size]
+            idx = order[start : start + minibatch_size]
             outputs = policy(
-                gf[idx], ss[idx], sp[idx],
-                ks[idx], kp[idx],
-                ts[idx], tp[idx], tm[idx],
+                gf[idx],
+                ss[idx],
+                sp[idx],
+                ks[idx],
+                kp[idx],
+                ts[idx],
+                tp[idx],
+                tm[idx],
             )
             new_log_prob, entropy = action_log_prob_and_entropy(
-                outputs, target_idx[idx], frac_bin[idx],
+                outputs,
+                target_idx[idx],
+                frac_bin[idx],
             )
             ratio = (new_log_prob - old_log_prob[idx]).exp()
             adv = advantages[idx]
@@ -189,7 +206,9 @@ def ppo_update(
             # Clipped value loss — prevents large value updates
             value_pred = outputs.value
             value_clipped = old_values[idx] + torch.clamp(
-                value_pred - old_values[idx], -clip_coef, clip_coef,
+                value_pred - old_values[idx],
+                -clip_coef,
+                clip_coef,
             )
             vl_unclipped = (returns[idx] - value_pred).pow(2)
             vl_clipped = (returns[idx] - value_clipped).pow(2)

@@ -11,9 +11,9 @@ from .features import GLOBAL_DIM, KNN_SCALAR_DIM, SOURCE_SCALAR_DIM, TARGET_SCAL
 
 @dataclass(slots=True)
 class PolicyOutput:
-    target_logits: torch.Tensor    # [B, 1+T] over NoOp + targets
+    target_logits: torch.Tensor  # [B, 1+T] over NoOp + targets
     fraction_logits: torch.Tensor  # [B, T, num_fractions] per target
-    value: torch.Tensor            # [B]
+    value: torch.Tensor  # [B]
 
 
 class TransformerBlock(nn.Module):
@@ -30,7 +30,9 @@ class TransformerBlock(nn.Module):
             nn.Linear(ff_dim, embed_dim),
         )
 
-    def forward(self, x: torch.Tensor, key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, key_padding_mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
         # Pre-norm attention
         normed = self.ln1(x)
         attn_out, _ = self.attn(normed, normed, normed, key_padding_mask=key_padding_mask)
@@ -105,10 +107,12 @@ class TransformerPolicy(nn.Module):
         self.noop_token = nn.Parameter(torch.randn(d) * 0.02)
 
         # Transformer layers
-        self.transformer_blocks = nn.ModuleList([
-            TransformerBlock(d, model_cfg.n_heads, model_cfg.ff_dim)
-            for _ in range(model_cfg.n_layers)
-        ])
+        self.transformer_blocks = nn.ModuleList(
+            [
+                TransformerBlock(d, model_cfg.n_heads, model_cfg.ff_dim)
+                for _ in range(model_cfg.n_layers)
+            ]
+        )
         self.final_ln = nn.LayerNorm(d)
 
         # Output heads
@@ -139,14 +143,14 @@ class TransformerPolicy(nn.Module):
 
     def forward(
         self,
-        global_features: torch.Tensor,    # [B, GLOBAL_DIM]
-        source_scalars: torch.Tensor,      # [B, SOURCE_SCALAR_DIM]
-        source_positions: torch.Tensor,    # [B, 2]
-        knn_scalars: torch.Tensor,         # [B, K, KNN_SCALAR_DIM]
-        knn_positions: torch.Tensor,       # [B, K, 2]
-        target_scalars: torch.Tensor,      # [B, T, TARGET_SCALAR_DIM]
-        target_positions: torch.Tensor,    # [B, T, 2]
-        target_mask: torch.Tensor,         # [B, T+2] bool (True = valid)
+        global_features: torch.Tensor,  # [B, GLOBAL_DIM]
+        source_scalars: torch.Tensor,  # [B, SOURCE_SCALAR_DIM]
+        source_positions: torch.Tensor,  # [B, 2]
+        knn_scalars: torch.Tensor,  # [B, K, KNN_SCALAR_DIM]
+        knn_positions: torch.Tensor,  # [B, K, 2]
+        target_scalars: torch.Tensor,  # [B, T, TARGET_SCALAR_DIM]
+        target_positions: torch.Tensor,  # [B, T, 2]
+        target_mask: torch.Tensor,  # [B, T+2] bool (True = valid)
     ) -> PolicyOutput:
         B = global_features.shape[0]
         T = self.max_targets
@@ -167,9 +171,7 @@ class TransformerPolicy(nn.Module):
         knn_pool = knn_emb.mean(dim=1)  # [B, d]
 
         # 4. Combine source + KNN
-        source_combined = self.source_knn_combiner(
-            torch.cat([src_emb, knn_pool], dim=-1)
-        )  # [B, d]
+        source_combined = self.source_knn_combiner(torch.cat([src_emb, knn_pool], dim=-1))  # [B, d]
 
         # 5. Encode targets
         tgt_pos_flat = target_positions.reshape(B * T, 2)
@@ -205,7 +207,9 @@ class TransformerPolicy(nn.Module):
         target_logits = self.target_head(selection_tokens).squeeze(-1)  # [B, 1+T]
         # Mask invalid targets (keep NoOp = index 0 in selection, maps to token 1)
         selection_mask = target_mask[:, 1:]  # [B, 1+T]
-        target_logits = target_logits.masked_fill(~selection_mask, torch.finfo(target_logits.dtype).min)
+        target_logits = target_logits.masked_fill(
+            ~selection_mask, torch.finfo(target_logits.dtype).min
+        )
 
         # Fraction logits: for target tokens only (tokens 2..T+1)
         fraction_tokens = x[:, 2:, :]  # [B, T, d]

@@ -5,6 +5,7 @@ Reads each run's TensorBoard event file (outputs/logs/<run>/) for the
 table, and saves a comparison PNG. Works mid-run (reads whatever is logged so
 far). Run: uv run python scripts/plot_embed_ab.py
 """
+
 from __future__ import annotations
 
 import sys
@@ -57,7 +58,8 @@ def main() -> int:
             if s in m:
                 vals[arm] = m[s]
                 best[arm] = max(best[arm], m[s])
-        v128 = vals.get("embed128"); v256 = vals.get("embed256")
+        v128 = vals.get("embed128")
+        v256 = vals.get("embed256")
         c128 = f"{v128:.0%}" if v128 is not None else "  -"
         c256 = f"{v256:.0%}" if v256 is not None else "  -"
         delta = f"{(v256 - v128):+.0%}" if (v128 is not None and v256 is not None) else "  -"
@@ -68,13 +70,19 @@ def main() -> int:
         print(f"  {arm}: {best[arm]:.0%}")
     if best["embed128"] and best["embed256"]:
         gap = best["embed256"] - best["embed128"]
-        verdict = ("256 wins — capacity helps with search targets" if gap > 0.02
-                   else "128 wins" if gap < -0.02 else "≈ tie (no clear capacity benefit)")
+        verdict = (
+            "256 wins — capacity helps with search targets"
+            if gap > 0.02
+            else "128 wins"
+            if gap < -0.02
+            else "≈ tie (no clear capacity benefit)"
+        )
         print(f"  Δ best (256-128): {gap:+.0%}  → {verdict}")
 
     # Plot (best-effort; headless OK).
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 

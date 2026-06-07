@@ -133,7 +133,9 @@ def load_train_config(path: str | Path) -> TrainConfig:
 
 def train_config_from_dict(data: dict[str, Any]) -> TrainConfig:
     cfg = TrainConfig()
-    _update_dataclass(cfg, data, skip={"env", "model", "ppo", "reward", "eval", "imitation", "exit"})
+    _update_dataclass(
+        cfg, data, skip={"env", "model", "ppo", "reward", "eval", "imitation", "exit"}
+    )
     _update_dataclass(cfg.env, data.get("env", {}))
     _update_dataclass(cfg.model, data.get("model", {}))
     _update_dataclass(cfg.ppo, data.get("ppo", {}))
