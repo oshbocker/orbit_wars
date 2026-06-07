@@ -207,19 +207,28 @@ def rollout_launches(
     return out
 
 
-def sim_step(state: SimState, rollout_players: list[int] | None = None) -> None:
+def sim_step(
+    state: SimState,
+    rollout_players: list[int] | None = None,
+    launch_fn=None,
+) -> None:
     """Advance simulation by 1 step: production, then fleet arrivals + combat.
 
-    When `rollout_players` is given, those players first launch fleets via the
-    cheap `rollout_launches` policy (engine order: launch -> production -> move ->
-    combat). This is the every-step in-sim opponent (Phase 1) that stops the
-    lookahead from overrating aggression. Default None reproduces the original
-    passive-opponent behaviour exactly.
+    When `rollout_players` is given, those players first launch fleets (engine
+    order: launch -> production -> move -> combat) — the every-step in-sim
+    opponent that stops the lookahead from overrating aggression. By default
+    those launches come from the cheap `rollout_launches` heuristic (Phase 1,
+    CONFIRMED NEGATIVE — a weak opponent biases the policy to passivity). When
+    `launch_fn(state, player) -> [(from_id, target_id, ships, travel_time), ...]`
+    is supplied it REPLACES that heuristic: Build 2 passes a closure that rolls
+    out the current STRONG distilled net (the AlphaZero-family fix). Both
+    arguments None reproduce the original passive-opponent behaviour exactly.
     """
     if rollout_players:
         xy = state.planet_xy
         for pl in rollout_players:
-            for from_id, tid, ships, tt in rollout_launches(state, pl):
+            launches = launch_fn(state, pl) if launch_fn is not None else rollout_launches(state, pl)
+            for from_id, tid, ships, tt in launches:
                 src_xy = xy[from_id] if xy is not None else None
                 dst_xy = xy[tid] if xy is not None else None
                 add_fleet_event(state, from_id, tid, ships, tt, src_xy, dst_xy)

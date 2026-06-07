@@ -63,6 +63,12 @@ class StepRecord:
     # Replayed in search so the lookahead evaluates moves against a real response
     # instead of a passive opponent. Empty unless exit.two_player_search.
     opp_events: list = field(default_factory=list)
+    # Build 1 (Gumbel): the policy prior from OrbitNet's collection-time forward
+    # pass — target_probs [P, P+1] and frac_probs [P, P, K]. Stored only when
+    # exit.gumbel_search (else None) so the search can anchor selection to the
+    # prior without recomputing the network. Sliced per source planet in search.
+    prior_target: Any = None  # np.ndarray [P, P+1] | None
+    prior_frac: Any = None  # np.ndarray [P, P, K] | None
 
 
 def _map_opp_moves(opp_moves: list, game_state: Any) -> list:
@@ -143,10 +149,20 @@ def _policy_decide(model, cfg, device, obs0, game_records: list[StepRecord]):
         rm = torch.from_numpy(features.reachability_mask).unsqueeze(0).to(device)
         output = model(pf, gf, pm, om, rm)
         sampled = sample_actions(output, om, deterministic=not cfg.exit.sample_collect)
+        # Build 1 (Gumbel): cache the per-source policy prior (softmax of the
+        # masked logits / frac logits) so search can anchor to it. Only when the
+        # flag is on — keeps the record (and pickle payload) unchanged otherwise.
+        prior_target = prior_frac = None
+        if bool(getattr(cfg.exit, "gumbel_search", False)):
+            prior_target = torch.softmax(output.logits[0].float(), dim=-1).cpu().numpy()
+            prior_frac = torch.softmax(output.frac_logits[0].float(), dim=-1).cpu().numpy()
     if features.own_mask.any():
-        # Geometry (positions + neighbour lists) is needed only by the Phase 1
-        # every-step rollout opponent; skip the O(P^2) precompute otherwise.
-        with_geom = bool(getattr(cfg.exit, "rollout_search", False))
+        # Geometry (positions + neighbour lists) is needed only by an in-sim
+        # opponent (Phase 1 heuristic rollout or Build 2 net opponent); skip the
+        # O(P^2) precompute otherwise.
+        with_geom = bool(getattr(cfg.exit, "rollout_search", False)) or bool(
+            getattr(cfg.exit, "net_opponent", False)
+        )
         game_records.append(
             StepRecord(
                 features=features,
@@ -154,6 +170,8 @@ def _policy_decide(model, cfg, device, obs0, game_records: list[StepRecord]):
                 game_state=state,
                 player=state.player,
                 step=state.step,
+                prior_target=prior_target,
+                prior_frac=prior_frac,
             )
         )
     return decode_sampled_actions(sampled, output, features, state, cfg.env)
@@ -308,6 +326,8 @@ def _search_record(rec: StepRecord, env_cfg, exit_cfg, value_model=None) -> V2Ex
             if from_id in base_sim.planet_owner and tgt_id in base_sim.planet_owner:
                 add_fleet_event(base_sim, from_id, tgt_id, ships, tt)
 
+    use_gumbel = bool(getattr(exit_cfg, "gumbel_search", False)) and rec.prior_target is not None
+    seed_base = int(getattr(exit_cfg, "search_seed", 0)) + int(rec.step) * P
     for i in range(P):
         if not feats.own_mask[i]:
             continue
@@ -320,6 +340,9 @@ def _search_record(rec: StepRecord, env_cfg, exit_cfg, value_model=None) -> V2Ex
             env_cfg=env_cfg,
             exit_cfg=exit_cfg,
             value_model=value_model,
+            prior_target=rec.prior_target[i] if use_gumbel else None,
+            prior_frac=rec.prior_frac[i] if use_gumbel else None,
+            rng_seed=seed_base + i,
         )
         target_probs[i] = tp
         frac_probs[i] = fp
@@ -376,10 +399,14 @@ def search_improve(
     by OrbitNet's value head (Tier 3.2). In parallel mode the model's weights are
     broadcast to workers via the pool initializer; workers score leaves on CPU.
     """
-    # The value model must reach the leaf scorer for BOTH the pure-neural swap
-    # (neural_value_leaves) and the Phase 3 blend (value_leaf_blend > 0).
-    wants_value = bool(getattr(cfg.exit, "neural_value_leaves", False)) or (
-        float(getattr(cfg.exit, "value_leaf_blend", 0.0)) > 0.0
+    # The model must reach the worker for the pure-neural swap (neural_value_leaves),
+    # the Phase 3 blend (value_leaf_blend > 0), AND the Build 2 net opponent
+    # (net_opponent rolls the net out as the in-sim opponent). Gumbel alone does
+    # NOT need the model in-worker (it uses the prior stored on the record).
+    wants_value = (
+        bool(getattr(cfg.exit, "neural_value_leaves", False))
+        or (float(getattr(cfg.exit, "value_leaf_blend", 0.0)) > 0.0)
+        or bool(getattr(cfg.exit, "net_opponent", False))
     )
     use_neural = wants_value and model is not None
     workers = cfg.exit.search_workers

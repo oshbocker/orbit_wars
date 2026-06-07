@@ -64,7 +64,14 @@ grounded (corr(pred_value, terminal_outcome) = **0.389**). BUT at the fine grain
 *sibling candidate moves from one position*, neural vs heuristic spearman ≈ 0.008 ± 0.421 —
 i.e. the value is fine globally but too noisy to rank near-equal candidates alone.
 
-### Phase 3 — Grounded learned value (the real win) — BLEND, NOT SWAP — ✅ CODE DONE (2026-06-05), GATE PENDING (Colab)
+### Phase 3 — Grounded learned value (the real win) — BLEND, NOT SWAP — ❌ CONFIRMED NEGATIVE (2026-06-06)
+**Gate result (Colab `eval_fast`, side-alternated paired seeds, 3 map-seed batches), delta vs the w=0 control on the SAME seeds:**
+- w=0.30: −23% −17% −17% → mean **−18.9%**
+- w=0.50: −25% −20% −17% → mean **−20.6%**
+
+6/6 seeds negative, **monotonic in the wrong direction** (more neural weight → worse), magnitude ≫ eval noise → w=0.7 correctly skipped (only extrapolates further down the slope). This confirms the Phase-2 readiness diagnostic (sibling-ranking spearman ≈ 0.008 ± 0.421): the value is grounded globally but too noisy to rank near-equal candidates, so blending it in at any tested weight degrades the search. **This is the 4th consecutive leaf/opponent search experiment to regress the champion** (after neural-value swap →0%, two-player turn-1 →40%, every-step rollout →45%). Keep `value_leaf_blend` default 0.0. **Next lever is NOT the value — see Phase 4(a) below.** Original plan/impl notes retained for reference:
+
+
 **Implemented:** `value_leaf_blend: float = 0.0` on `V2ExItConfig` (`v2/config.py`); blend
 branch in `search_improve_planet` (`v2/search.py`) scores every leaf of a source-planet
 decision with BOTH `evaluate_state` and the batched value head, z-scores each across that

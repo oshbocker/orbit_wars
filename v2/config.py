@@ -237,6 +237,31 @@ class V2ExItConfig:
     # the 77% agent before — the value head is grounded globally (corr w/ outcome
     # 0.389) but too noisy to rank near-equal siblings alone, so blend a small w.
     value_leaf_blend: float = 0.0
+    # ── Build 1 (2026-06-07): Gumbel / Sequential-Halving candidate selection ──
+    # Replaces the softmax-over-raw-heuristic distillation target (under-regularized
+    # w.r.t. the policy prior -> chases noisy outliers, same failure family as the
+    # refuted value-blend) with Gumbel-Top-m sampling + Sequential Halving, which
+    # produces a PROVABLE improvement over the network's policy prior (Danihelka
+    # et al., ICLR 2022). Leaves stay heuristic (evaluate_state); the prior comes
+    # from OrbitNet's collection-time forward pass (stored on the StepRecord).
+    # Default OFF -> search path byte-identical to the current heuristic ExIt.
+    gumbel_search: bool = False
+    gumbel_sims: int = 16  # total leaf-rollout budget per source-planet decision
+    gumbel_top_m: int = 8  # candidates sampled (without replacement) to simulate
+    gumbel_c_visit: float = 50.0  # sigma(q) = (c_visit + max_visit) * c_scale * q_norm
+    gumbel_c_scale: float = 1.0  # dial DOWN to strengthen prior-anchoring of pi'
+    # Deterministic per-(record, source) Gumbel seed base (reproducible runs).
+    search_seed: int = 0
+    # ── Build 2 (2026-06-07): strong-net in-sim opponent ──────────────────────
+    # Roll out the CURRENT distilled net as the in-sim opponent during a leaf's
+    # lookahead (AlphaZero-family always opposes with the current strong policy;
+    # our 3 passivity regressions all injected a WEAK/sparse opponent). Replaces
+    # the cheap rollout_launches heuristic with model forwards on the
+    # reconstructed leaf GameState. Expensive -> only affordable layered on Gumbel
+    # (Sequential Halving caps how many leaves are deeply simulated). Default OFF.
+    net_opponent: bool = False
+    net_opponent_self: bool = True  # also drive OUR continuation with the net
+    net_opponent_every: int = 1  # subsample: run the net opponent every Nth sim step
 
 
 @dataclass(slots=True)
