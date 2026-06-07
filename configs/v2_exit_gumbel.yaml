@@ -1,0 +1,87 @@
+# Build 1 — Gumbel / Sequential-Halving candidate selection (heuristic leaf).
+#
+# Same base-v2 OrbitNet architecture as configs/v2_exit.yaml (embed 128,
+# planet_feat_dim 22, n_fractions 4) so it WARM-STARTS from a v2_exit_a100
+# checkpoint. Instead of distilling a raw softmax-over-heuristic-leaf-scores
+# (under-regularized w.r.t. the policy prior -> chases noisy outliers, the same
+# failure family as the refuted value-blend), the search produces a Gumbel
+# AlphaZero improved policy: Gumbel-Top-m sampling + Sequential Halving over the
+# heuristic leaf scores, anchored to OrbitNet's collection-time policy prior
+# (Danihelka et al., ICLR 2022) -> a PROVABLE improvement over the prior.
+#
+# Leaves stay heuristic (evaluate_state) and the sim has NO opponent — this build
+# deliberately avoids every prior regression mode (neural leaf swap, weak/sparse
+# opponent, value-blend). Add the net opponent (configs/...; net_opponent: true)
+# only if this build holds or plateaus on the gate.
+#
+# Launch (warm-start from the champion, BC skipped via --resume):
+#   python -m v2.exit_train --config configs/v2_exit_gumbel.yaml \
+#       --resume outputs/checkpoints/v2_exit_a100/ckpt_000020.pt
+#
+# GATE: A/B vs the gumbel_search=false control on the SAME paired seeds
+# (scripts/eval_fast.py, side-alternated, n>=60, MULTIPLE seed batches — win-rate
+# is high-variance across map seeds). Ships only if it beats the control.
+run_name: v2_exit_gumbel
+seed: 42
+device: auto
+save_dir: outputs/checkpoints
+log_dir: outputs/logs
+checkpoint_every: 5
+opponent: apex
+
+env:
+  max_planets: 40
+  allocation_threshold: 0.05
+  min_ships_to_send: 1
+  ship_fractions: [0.25, 0.5, 0.75, 1.0]
+
+model:
+  embed_dim: 128
+  n_heads: 4
+  n_layers: 3
+  ff_dim: 256
+  planet_feat_dim: 22
+  global_feat_dim: 8
+  n_fractions: 4
+
+eval:
+  eval_every: 5
+  eval_games: 40          # side-alternated + paired seeds (see run_periodic_eval)
+  eval_opponents: [apex, random]
+  eval_seed: 20000        # shared with scripts/eval_fast.py -> directly comparable
+  eval_workers: 6         # CPU games ~20s each; set to ~vCPU count on Colab
+
+# Warm-started via --resume, so BC is skipped (kept off for clarity).
+imitation:
+  enabled: false
+
+exit:
+  enabled: true
+  iterations: 40
+  games_per_iter: 8
+  search_depth: 12
+  search_candidates: 10
+  search_temperature: 1.0   # unused on the gumbel path (kept for the control A/B)
+  train_epochs: 4
+  train_batch_size: 256
+  train_lr: 0.0003
+  value_loss_coef: 0.5
+  max_grad_norm: 0.5
+  dataset_max_iters: 3
+  four_player_prob: 0.0
+  opponent: apex
+  sample_collect: true
+  search_workers: 6        # parallel CPU search (set ~vCPU count on Colab)
+  collect_workers: 6       # parallel game collection (the ExIt bottleneck)
+  collect_fast_env: true   # engine-faithful standalone sim (no Kaggle harness)
+  # ── Build 1: Gumbel / Sequential-Halving ──
+  gumbel_search: true      # false = the softmax-over-heuristic control (A/B baseline)
+  gumbel_sims: 16          # total leaf-rollout budget per source-planet decision
+  gumbel_top_m: 8          # candidates sampled without replacement to simulate
+  gumbel_c_visit: 50.0
+  gumbel_c_scale: 1.0      # dial DOWN to strengthen prior-anchoring of the target
+  search_seed: 0
+  # ── Build 2: strong-net in-sim opponent (OFF; enable after Build 1 holds) ──
+  net_opponent: false
+  net_opponent_self: true
+  net_opponent_every: 1

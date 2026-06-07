@@ -499,10 +499,25 @@ def search_improve_planet(
     # Build 1: Gumbel/Sequential-Halving improved policy (heuristic leaf). Needs
     # the per-source policy prior threaded in from collection. Takes precedence
     # over the (refuted) value-blend; leaves stay heuristic per the research.
-    if bool(getattr(exit_cfg, "gumbel_search", False)) and prior_target is not None:
+    if (
+        bool(getattr(exit_cfg, "gumbel_search", False))
+        and prior_target is not None
+        and prior_frac is not None
+    ):
         return _gumbel_search_planet(
-            state, features, sim_state, player, source_slot, env_cfg, exit_cfg,
-            prior_target, prior_frac, rng_seed, rollout_players, launch_fn, every,
+            state,
+            features,
+            sim_state,
+            player,
+            source_slot,
+            env_cfg,
+            exit_cfg,
+            prior_target,
+            prior_frac,
+            rng_seed,
+            rollout_players,
+            launch_fn,
+            every,
         )
 
     target_scores = np.full(P + 1, NEG, dtype=np.float32)  # [hold, targets...]
@@ -548,7 +563,7 @@ def search_improve_planet(
     else:
         scores = [evaluate_state(lf, player) for (_, _, _, lf) in leaves]
 
-    for (kind, j, fb, _), sc in zip(leaves, scores):
+    for (kind, j, fb, _), sc in zip(leaves, scores, strict=False):
         if kind == "hold":
             target_scores[0] = sc
         else:

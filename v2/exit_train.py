@@ -326,7 +326,8 @@ def _search_record(rec: StepRecord, env_cfg, exit_cfg, value_model=None) -> V2Ex
             if from_id in base_sim.planet_owner and tgt_id in base_sim.planet_owner:
                 add_fleet_event(base_sim, from_id, tgt_id, ships, tt)
 
-    use_gumbel = bool(getattr(exit_cfg, "gumbel_search", False)) and rec.prior_target is not None
+    pt_full = rec.prior_target if bool(getattr(exit_cfg, "gumbel_search", False)) else None
+    pf_full = rec.prior_frac if bool(getattr(exit_cfg, "gumbel_search", False)) else None
     seed_base = int(getattr(exit_cfg, "search_seed", 0)) + int(rec.step) * P
     for i in range(P):
         if not feats.own_mask[i]:
@@ -340,8 +341,8 @@ def _search_record(rec: StepRecord, env_cfg, exit_cfg, value_model=None) -> V2Ex
             env_cfg=env_cfg,
             exit_cfg=exit_cfg,
             value_model=value_model,
-            prior_target=rec.prior_target[i] if use_gumbel else None,
-            prior_frac=rec.prior_frac[i] if use_gumbel else None,
+            prior_target=pt_full[i] if pt_full is not None else None,
+            prior_frac=pf_full[i] if pf_full is not None else None,
             rng_seed=seed_base + i,
         )
         target_probs[i] = tp

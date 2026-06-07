@@ -227,7 +227,9 @@ def sim_step(
     if rollout_players:
         xy = state.planet_xy
         for pl in rollout_players:
-            launches = launch_fn(state, pl) if launch_fn is not None else rollout_launches(state, pl)
+            launches = (
+                launch_fn(state, pl) if launch_fn is not None else rollout_launches(state, pl)
+            )
             for from_id, tid, ships, tt in launches:
                 src_xy = xy[from_id] if xy is not None else None
                 dst_xy = xy[tid] if xy is not None else None

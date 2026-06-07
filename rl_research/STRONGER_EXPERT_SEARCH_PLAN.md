@@ -69,7 +69,7 @@ i.e. the value is fine globally but too noisy to rank near-equal candidates alon
 - w=0.30: −23% −17% −17% → mean **−18.9%**
 - w=0.50: −25% −20% −17% → mean **−20.6%**
 
-6/6 seeds negative, **monotonic in the wrong direction** (more neural weight → worse), magnitude ≫ eval noise → w=0.7 correctly skipped (only extrapolates further down the slope). This confirms the Phase-2 readiness diagnostic (sibling-ranking spearman ≈ 0.008 ± 0.421): the value is grounded globally but too noisy to rank near-equal candidates, so blending it in at any tested weight degrades the search. **This is the 4th consecutive leaf/opponent search experiment to regress the champion** (after neural-value swap →0%, two-player turn-1 →40%, every-step rollout →45%). Keep `value_leaf_blend` default 0.0. **Next lever is NOT the value — see Phase 4(a) below.** Original plan/impl notes retained for reference:
+6/6 seeds negative, **monotonic in the wrong direction** (more neural weight → worse), magnitude ≫ eval noise → w=0.7 correctly skipped (only extrapolates further down the slope). This confirms the Phase-2 readiness diagnostic (sibling-ranking spearman ≈ 0.008 ± 0.421): the value is grounded globally but too noisy to rank near-equal candidates, so blending it in at any tested weight degrades the search. **This is the 4th consecutive leaf/opponent search experiment to regress the champion** (after neural-value swap →0%, two-player turn-1 →40%, every-step rollout →45%). Keep `value_leaf_blend` default 0.0. **Next lever is NOT the value — see Phase 5 (Gumbel selection + strong-net opponent) below, the literature-backed replacement for the value-blend.** Original plan/impl notes retained for reference:
 
 
 **Implemented:** `value_leaf_blend: float = 0.0` on `V2ExItConfig` (`v2/config.py`); blend
@@ -103,14 +103,54 @@ retry of the idea that previously collapsed, now safe against both prior failure
 - (a) **Sequential multi-planet search** — update `SimState` between owned planets so coordinated multi-planet plays become visible (currently per-source greedy). Low risk.
 - (b) **Shallow fixed-width tree / beam** with the opponent acting at each node and the grounded value at leaves — closest thing to real MCTS the simultaneous-move, huge-branching structure allows. Only after (a) + Phase 3.
 
+### Phase 5 — Gumbel selection + strong-net opponent — 🛠️ BUILT, GATE PENDING (2026-06-07)
+From the 2026-06-07 deep-research sweep (`memory/simultaneous-move-search-research.md`,
+21/25 claims verified): the value-blend instinct was **not** backed by AlphaGo (refuted), and
+all 3 passivity regressions injected a *weak* opponent. Two literature-backed fixes, both
+config-gated, default-OFF, byte-identical when off (verified, `scripts/test_gumbel_search.py`):
+
+- **Build 1 — Gumbel / Sequential-Halving candidate selection** (`exit.gumbel_search`,
+  Danihelka et al., ICLR 2022). The current distillation target is a raw
+  softmax-over-heuristic-leaf-scores — *under-regularized w.r.t. the policy prior*, so it
+  chases noisy outliers (same failure family as the refuted value-blend; PUCT/Gumbel both fix
+  it by anchoring to the prior). Instead: thread OrbitNet's collection-time policy prior into
+  `search_improve_planet`, draw Gumbel noise, take the top-`gumbel_top_m` candidates
+  (Gumbel-Top-k = sampling without replacement), run Sequential Halving over `gumbel_sims`
+  (heuristic `evaluate_state` leaf, leaves cached since the sim is deterministic), and distill
+  `π'(a) = softmax(logit(a) + σ(completedQ(a)))` — a **provable improvement over the prior**
+  (completedQ = q̂ for simulated candidates, prior-weighted v_mix for the rest;
+  σ = (c_visit+max_visit)·c_scale·q_norm). Leaves stay heuristic and the sim stays passive —
+  this build deliberately touches none of the prior regression modes. `c_scale` is the
+  prior-anchoring knob (dial DOWN to trust the prior more). Config: `configs/v2_exit_gumbel.yaml`.
+  **Open question (flagged in code):** Gumbel's guarantee is per-node but we apply it decoupled
+  per planet (DUCT-style — empirically the strongest SM-MCTS variant, but the joint-turn
+  guarantee is unproven). If results are flat, suspect the decoupling first.
+- **Build 2 — strong-net in-sim opponent** (`exit.net_opponent`). AlphaZero-family ALWAYS
+  rolls out the *current strong policy* as the opponent; our regressions all used a weak/sparse
+  one. `sim_step` gained a `launch_fn` hook; the net launch closure reconstructs the
+  in-distribution leaf GameState (`_reconstruct_leaf_state`, the Phase-2 path), runs the
+  distilled net, and schedules its moves — for the opponent and (optionally,
+  `net_opponent_self`) our own continuation. A net forward per opponent step per leaf is
+  expensive → it's only affordable layered on Build 1 (Sequential Halving caps the number of
+  deeply-simulated leaves); `net_opponent_every` subsamples further. **Sequencing: gate Build 1
+  alone first; add Build 2 only if Build 1 holds or plateaus.**
+
+**Plumbing:** prior stored on `StepRecord` (`prior_target`/`prior_frac`) only when
+`gumbel_search` (kept off → record/pickle unchanged); model broadcast to search workers when
+`net_opponent` (reuses the neural-value `wants_value` path). Per-(record, source) Gumbel seed
+= `search_seed + step·P + slot` (reproducible). E2E smoke (seq + parallel workers, both
+builds): `scripts/test_gumbel_e2e.py`. **GATE (needs Colab):** warm-start iter-20, A/B each
+build vs the `gumbel_search=false` control on the SAME paired seeds (`eval_fast`,
+side-alternated, n≥60, multiple seed batches); ships only if it beats the control.
+
 ### Separate track — embed-128 vs 256 capacity A/B in the ExIt regime
 Configs `configs/v2_exit_embed128.yaml` / `v2_exit_embed256.yaml`, run via `scripts/run_embed_ab.py` on Colab once Phase 3 yields high-quality targets. Lesson #5 predicts capacity finally pays off here.
 
 **Sequencing rationale:** 1→2→3 is a dependency chain that fixes both documented failures and installs the one non-negotiable (grounded value + in-distribution leaves). Phase 4 compounds only once the value is trustworthy — deeper search on a passive opponent / ungrounded value is exactly the trap Jang warns about.
 
 ## Key files
-- `src/simulator.py` — `SimState`/`fleet_events` now POSITIONAL (Phase 2: `…, launch_step, sx, sy, tx, ty`), `fleet_position_at`, `add_fleet_event(…, src_xy, dst_xy)`, `sim_step` (still NO opponent — Phase 4(b) gap), `evaluate_state`.
-- `v2/search.py` — `search_improve_planet`, `_make_dists`, neural-value helpers, `_reconstruct_leaf_state` (now rebuilds in-distribution fleets). Phase 3 blend goes here.
+- `src/simulator.py` — `SimState`/`fleet_events` now POSITIONAL (Phase 2: `…, launch_step, sx, sy, tx, ty`), `fleet_position_at`, `add_fleet_event(…, src_xy, dst_xy)`, `sim_step(state, rollout_players, launch_fn)` (Phase 5: `launch_fn` hook lets a caller inject a strong-net opponent; still passive by default), `evaluate_state`.
+- `v2/search.py` — `search_improve_planet` (+ Phase 5 `prior_target`/`prior_frac`/`rng_seed`), `_make_dists`, neural-value helpers, `_reconstruct_leaf_state` (rebuilds in-distribution fleets), `_gumbel_search_planet`/`_enumerate_candidates`/`_make_net_launch`/`_setup_opponent` (Phase 5).
 - `v2/exit_train.py` — collect→search→distill loop, `_search_record`, `play_single_game` (P0-only vs apex — not side-alternated), parallel workers.
 - `v2/config.py` — `V2ExItConfig` (search flags; add `value_leaf_blend` for Phase 3), `V2EvalConfig` (`eval_seed`, `eval_workers`).
 - `v2/train.py` — `run_periodic_eval` (now side-alternated/paired/parallel, mirrors eval_fast), `_peval_init`/`_peval_game`.
