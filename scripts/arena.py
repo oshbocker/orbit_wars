@@ -48,6 +48,10 @@ def spec_label(spec: str) -> str:
     if spec.startswith("exit:"):
         ckpt = Path(spec.split(":")[1])
         return f"exit_{ckpt.parent.name}_{ckpt.stem.removeprefix('ckpt_')}"
+    if spec.startswith("v5:"):
+        # "v5:roi_threshold=1.4+horizon=20" -> "v5_roi_threshold1.4_horizon20"
+        kvs = spec.split(":", 1)[1].split("+")
+        return "v5_" + "_".join(kv.replace("=", "") for kv in kvs)
     return spec
 
 
@@ -57,9 +61,12 @@ def _build_agent(spec: str):
         from agents.apex import agent
 
         return agent
-    if spec == "v5":
+    if spec == "v5" or spec.startswith("v5:"):
         # Our producer fork (agents/v5). Same fresh-exec-per-game treatment as the
         # vendored producer: main.py keeps a module-level runtime across turns.
+        # Optional config overrides: "v5:roi_threshold=1.4+horizon=20" patches both
+        # the 2P default and the 4P preset (for A/B sweeps without code edits).
+        import dataclasses
         import importlib.util
         import itertools
 
@@ -73,6 +80,15 @@ def _build_agent(spec: str):
         mod = importlib.util.module_from_spec(mspec)
         sys.modules[modname] = mod
         mspec.loader.exec_module(mod)
+        if spec.startswith("v5:"):
+            ftypes = {f.name: f.type for f in dataclasses.fields(mod.ProducerLiteConfig)}
+            overrides = {}
+            for kv in spec.split(":", 1)[1].split("+"):
+                k, v = kv.split("=")
+                overrides[k] = int(v) if ftypes[k] in ("int", int) else float(v)
+            cfg2 = dataclasses.replace(mod.ProducerLiteConfig(), **overrides)
+            cfg4 = dataclasses.replace(mod.CONFIG_4P, **overrides)
+            mod._config_for = lambda pc: cfg4 if int(pc) >= 4 else cfg2
         fn = mod.agent
 
         def v5_agent(obs, config=None):
