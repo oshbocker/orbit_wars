@@ -159,10 +159,32 @@ measurably lacks (each gated on arena games vs the full pool):
 - ROI threshold / horizon sweep (1.5/18 are hand-tuned for *their* pool, not the
   current LB meta).
 
-**v5 status 2026-06-10:** fork = `agents/v5/` (package renamed `orbit_lite_v5`),
-arena spec `v5`, bundle builder `scripts/build_v5_bundle.py` (verified via Kaggle
-file loader). Gate runs queued: 2P v5-vs-producer n=60 + 4P co-occurrence n=32,
-paired seeds (`outputs/arena/gate_v5*.csv`).
+**v5 status 2026-06-10 (end of day): SHIPPED.** Fork = `agents/v5/` (package renamed
+`orbit_lite_v5`), arena spec `v5` (+ parametrized `v5:key=val+key=val` for sweeps),
+bundle builder `scripts/build_v5_bundle.py`.
+
+**Gate results (n=60 2P / n=32 4P, 0 errors):**
+- 2P: v5 44% vs producer — but every game ended by elimination at step 106–282, so
+  the endgame clamp NEVER fired → this was an A/A test of identical agents. Key
+  calibration: **the A/A noise floor of n=60 mirror games is ~±6% (44% measured on
+  identical agents)**; only <40% / >60% is signal at this n.
+- 4P: dead even (rank 1.53 vs 1.53, 47% vs 50% outright) — the nearest-opponent
+  mult is active-but-neutral at producer-level tables.
+- **Measurement lesson:** the pool is too weak to measure producer-level
+  improvements (producer = 99% 2P / 91% outright 4P vs pool — ceiling). Mirror
+  A/Bs vs producer are the only sensitive instrument, and they need margin
+  metrics (steps-to-win now recorded in arena CSVs) — binary win-rate at n=60
+  can't resolve <±10%.
+- Shipped anyway: v5 ≈ producer locally, and the clamp/4P-mult only pay off on the
+  ladder (long games vs mixed tiers); it replaced the dominated 729 ExIt slot.
+
+**Final contender matrices (`outputs/arena/arena{,_4p}.csv`, n=30/pair 2P, 40
+co-occ/pair 4P):** producer 99% 2P / 94% pairwise / 91% outright-win 4P — the
+undisputed base, including 4P. ow_proto #2 both formats (68% / 57%). tamrazov_1224
+and distance_1100 are NOT 4P specialists (2–5% outright) — their LB ratings come
+from the weaker ladder population. **exit_embed256 = 31% 2P (below apex 43%) and
+last in 4P (1% outright)** — the n=2 smoke that had it at 67% was noise; Phase-2
+re-anchoring of ExIt is mandatory if the RL track is to matter.
 
 ### Phase 2 — ML edge on top (days 3–6, the RL-learning track)
 In order of expected value-per-day:
@@ -187,8 +209,9 @@ In order of expected value-per-day:
 **Submission log:**
 | date | bundle | LB score | note |
 |---|---|---|---|
-| 2026-06-04 | v2_exit_a100 iter-20 | 736.7 → 725.3 (drifting) | ExIt champion vs apex |
-| 2026-06-10 15:23 | producer_bundle | 695.0 (hours old) | ladder starts low; judge ≥1 day |
+| 2026-06-04 | v2_exit_a100 iter-20 | 736.7 → 729.4 | ExIt champion vs apex; slot freed 06-10 |
+| 2026-06-10 15:23 | producer_bundle | 695.0 → **1242.7** (same day) | **rank 140/4212 (top 3.3%)**, was 1762 |
+| 2026-06-10 ~23:00 | v5_bundle | pending | producer + endgame clamp + 4P nearest-opp; replaced ExIt slot |
 
 ### Explicit non-goals this week
 - No more search-hyperparameter A/Bs vs apex (collect the in-flight Colab results,

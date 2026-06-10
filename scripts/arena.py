@@ -181,6 +181,7 @@ def _play(job: tuple[str, str, int, int]) -> dict:
         "reward_b": rb,
         "status_a": statuses[a_side],
         "status_b": statuses[1 - a_side],
+        "steps": len(env.steps) - 1,
         "seconds": round(time.time() - t0, 1),
     }
 
@@ -203,7 +204,12 @@ def _play_4p(job: tuple[tuple[str, str, str, str], int, int]) -> dict:
     scores = _final_scores(env, 4)
     keys = list(zip(rewards, scores, strict=True))
     ranks = [1 + sum(1 for k in keys if k > keys[i]) for i in range(4)]  # ties share rank
-    row: dict = {"seed": seed, "rot": rot, "seconds": round(time.time() - t0, 1)}
+    row: dict = {
+        "seed": seed,
+        "rot": rot,
+        "steps": len(env.steps) - 1,
+        "seconds": round(time.time() - t0, 1),
+    }
     for i in range(4):
         row[f"agent_{i}"] = spec_label(specs[i])
         row[f"reward_{i}"] = rewards[i]
@@ -223,6 +229,7 @@ FIELDS = [
     "reward_b",
     "status_a",
     "status_b",
+    "steps",
     "seconds",
 ]
 
@@ -230,7 +237,7 @@ FIELDS_4P = (
     [f"agent_{i}" for i in range(4)]
     + ["seed", "rot"]
     + [f"{k}_{i}" for i in range(4) for k in ("reward", "score", "rank", "status")]
-    + ["seconds"]
+    + ["steps", "seconds"]
 )
 
 
