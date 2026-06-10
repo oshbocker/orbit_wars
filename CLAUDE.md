@@ -5,7 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Goal
 
 Kaggle Orbit Wars competition.
-**Primary purpose: learn reinforcement learning and win competition.** The apex rule-based agent is the current benchmark; the main effort is one or more agents using modern RL (PPO, self-play, MARL). The agents should be capable of training in Kaggle (GPU), Google Colab (GPU), or locally (no GPU). The evaluation should be capable of running in Kaggle or locally (no GPU).
+**Primary purpose: learn reinforcement learning and win competition.** The gate metric is
+the local arena (`scripts/arena.py`) vs the vendored public agents (`agents/external/`;
+producer = the 1287-tier flow-diff planner). The shipped competition agent is our producer
+fork `agents/v5/`; the RL effort (v2 ExIt) re-anchors its teachers/opponents to that tier.
+Training runs on Kaggle (GPU), Google Colab (GPU), or locally (no GPU); evaluation runs on
+Kaggle or locally (no GPU). The apex/hybrid rule-based agents were retired 2026-06-11 —
+design + post-mortem in `rl_research/EXPLORED_AND_ABANDONED.md` Cluster 5.
 
 ## Repository Structure
 
@@ -30,18 +36,18 @@ orbit_wars/
 │   ├── features.py          # Feature encoding, fleet transit, SourceDecision
 │   ├── policy.py            # TransformerPolicy (v1 arch; TransformerBlock reused by v2)
 │   ├── ppo.py               # sample_actions (used by opponents); v1 ppo_update kept but inert
-│   ├── opponents.py         # Apex, Random, SelfPlay, Hybrid, Distilled opponents + _policy_act()
+│   ├── opponents.py         # Random/SelfPlay/Distilled/ChampionPool + NamedAgentOpponent fallthrough
 │   ├── logging.py           # TrainLogger (TensorBoard + CSV), EvalResult, periodic eval
 │   ├── simulator.py         # Lightweight positional forward sim (SimState, sim_step, evaluate_state)
 │   └── config.py            # TrainConfig dataclasses
-├── agents/                  # Rule-based agents (benchmarks)
-│   ├── apex.py              # Apex rule-based agent (THE benchmark)
-│   └── hybrid.py            # Mission-based + timeline agent
-├── configs/                 # YAML configs — v2_exit*.yaml are live; v2/v3/v4 PPO configs kept for reference
+├── agents/                  # __init__.load_named_agent(name) = central agent resolver (+ fast_env obs shim)
+│   ├── external/            # Vendored public agents (producer 1287, tamrazov_1224, distance_1100, ...)
+│   └── v5/                  # Our producer fork (SHIPPED): endgame horizon clamp + 4P nearest-opponent
+├── configs/                 # v2_exit.yaml, v2_exit_embed256.yaml, v2_exit_gumbel.yaml (all live, producer-anchored)
 ├── evaluation/              # evaluate.py — run_games, head_to_head, print_results (used by v2 eval)
 ├── notebooks/               # train_colab.ipynb (A100 v2 BC→ExIt) + explore.ipynb (scratch)
-├── rl_research/             # STRONGER_EXPERT_SEARCH_PLAN.md (live) + EXPLORED_AND_ABANDONED.md (graveyard)
-├── scripts/                 # eval_fast.py, replay.py, download_checkpoint.py, run_embed_ab.py, tests
+├── rl_research/             # LEADERBOARD_CLIMB_PLAN.md (LIVE) + EXPLORED_AND_ABANDONED.md (graveyard)
+├── scripts/                 # arena.py (THE gate), eval_fast.py, replay.py, build_v5_bundle.py, download_checkpoint.py, tests
 ├── outputs/                 # .gitignored — checkpoints/, logs/, submissions/
 ├── pyproject.toml
 ├── requirements.txt
@@ -50,17 +56,42 @@ orbit_wars/
 
 ## Common Commands
 
-### v2 Expert Iteration (primary pipeline — `v2/`)
+### Arena (THE gate metric — real Kaggle env, side-alternated paired seeds)
 
 ```bash
-# ExIt: BC pretrain from apex → collect → search-improve → distill (the live effort)
-uv run python -m v2.exit_train --config configs/v2_exit.yaml
+# 2P round-robin matrix (resumable CSV — bump --games to extend)
+uv run python scripts/arena.py \
+    --agents v5,producer,ow_proto,enders_1000 --games 30 --workers 6
 
-# v2 PPO (BC warm start → PPO + mixed self-play) — reference baseline
-uv run python -m v2.train --config configs/v2_default.yaml
+# 4P FFA (every 4-agent combo, seat-rotated, rank by reward + final board score)
+uv run python scripts/arena.py --players 4 \
+    --agents v5,producer,enders_1000,tamrazov_1224 --games 4
+
+# v5 config A/B without code edits ("v5:key=val+key=val")
+uv run python scripts/arena.py --agents "v5:roi_threshold=1.2,producer" --games 60
+```
+
+⚠️ Measurement rules (hard-won): the A/A noise floor of n=60 mirror games is ~±6%
+(44% measured on IDENTICAL agents) — never act on n<100 mirror results; every
+small-n outlier in this project has regressed at high n. The public pool ceilings
+at ~99% for producer-level agents, so mirror A/Bs vs producer/v5 are the only
+sensitive instrument for improvements to the base.
+
+### v2 Expert Iteration (the RL pipeline — `v2/`)
+
+```bash
+# ExIt: BC pretrain from the expert (producer) → collect → search-improve → distill
+uv run python -m v2.exit_train --config configs/v2_exit.yaml
 
 # On Colab/Kaggle (no uv)
 python -m v2.exit_train --config configs/v2_exit.yaml
+```
+
+### Build + verify the v5 submission bundle
+
+```bash
+# main.py + orbit_lite_v5/ at archive root; verifies via Kaggle's file loader
+uv run python scripts/build_v5_bundle.py
 ```
 
 ### Download checkpoints from Google Drive
@@ -96,21 +127,21 @@ uv run python scripts/download_checkpoint.py --list
 ### Evaluate a trained checkpoint locally
 
 ```bash
-# Fast, side-alternated, paired-seed scorer (the reliable one — high variance, use games>=60).
-# Resolves outputs/checkpoints/<run>/ckpt_<iter>.pt. Local CPU ~20s/game → prefer Colab for high n.
+# Fast, side-alternated, paired-seed scorer on fast_env (use games>=60; --opponent =
+# any agents.load_named_agent name). Local CPU is slow → prefer Colab for high n.
 uv run python scripts/eval_fast.py \
-    --run v2_exit_a100 --config configs/v2_exit.yaml \
-    --iters 20 --opponent apex --games 60
+    --run v2_exit_embed256 --config configs/v2_exit_embed256.yaml \
+    --iters last --opponent producer --games 60
 ```
 
 ### Replay a game with HTML export
 
 ```bash
-# ExIt checkpoint vs apex — exports game_replay.html
+# ExIt checkpoint vs producer — exports game_replay.html
 uv run python scripts/replay.py --exit \
     --checkpoint outputs/checkpoints/v2_exit_a100/ckpt_000020.pt \
     --config configs/v2_exit.yaml \
-    --opponent apex --seed 42 --output replay_vs_apex.html
+    --opponent producer --seed 42 --output replay_vs_producer.html
 ```
 
 ### Monitor training
@@ -306,18 +337,19 @@ Per-planet sequential decisions: for each turn, iterate over owned planets (most
 
 ### Imitation / BC
 
-BC-from-apex (DAgger-style: collect expert demos → supervised pretrain → PPO with a decaying
-imitation anchor) lives in the **v2** pipeline (`v2/imitation.py`). The v1 `src/imitation.py`
-was removed; see `rl_research/EXPLORED_AND_ABANDONED.md`.
+BC-from-expert (DAgger-style: collect expert demos → supervised pretrain → train with a
+decaying imitation anchor) lives in the **v2** pipeline (`v2/imitation.py`); the expert is
+`imitation.bc_expert` (default `producer`, resolved via `agents.load_named_agent`). The v1
+`src/imitation.py` was removed; see `rl_research/EXPLORED_AND_ABANDONED.md`.
 
 ### Opponents (`src/opponents.py`)
 
 - `_policy_act(policy, obs, cfg, device, deterministic)` — shared helper for all policy-based opponents (~40 lines, sequential per-planet decisions with transit updates)
-- `ApexOpponent` — wraps `agents.apex.agent`
 - `KaggleRandomOpponent` — wraps Kaggle's built-in `random_agent`
-- `HybridOpponent` — wraps `agents.hybrid.agent` (slow, 50-800ms/step)
 - `SelfPlayOpponent` — maintains a separate `TransformerPolicy`; `sync_from()` copies weights from training policy
 - `DistilledOpponent` — loads a BC-pretrained `.pt` checkpoint, fast inference (~1ms/step via `_policy_act()`)
+- `NamedAgentOpponent` — `build_opponent()` fallthrough: any `agents.load_named_agent`
+  name (v5, producer, tamrazov_1224, ...) becomes an opponent
 - `build_opponent(name, cfg, device, checkpoint_path)` — factory for all opponent types
 
 ### Config
@@ -353,43 +385,57 @@ Each `.pt` file contains `{"update": int, "policy": state_dict, "optimizer": sta
 Milestones reached, in order (the abandoned branches and *why* are in
 `rl_research/EXPLORED_AND_ABANDONED.md`):
 
-1. **Apex / Hybrid** (done): rule-based benchmarks in `agents/`.
+1. **Apex / Hybrid rule-based benchmarks** (done, RETIRED 2026-06-11 — Cluster 5 in the
+   graveyard; they anchored everything at ≈ LB p55).
 2. **v1 transformer PPO + DAgger + mixed self-play** (done, then superseded by v2).
 3. **v2 OrbitNet** (done): simultaneous all-planet model, one forward pass/step.
-4. **Model-free PPO** (incl. v4_ceiling): **confirmed dead end** — structural credit-assignment
-   stall, 0–10% vs apex regardless of capacity/reward/opponent machinery.
-5. **Expert Iteration (ExIt)** (current): search → distill is the proven path; best agent =
-   `v2_exit_a100/ckpt_000020.pt`.
+4. **Model-free PPO** (incl. v4_ceiling): **confirmed dead end** — structural
+   credit-assignment stall regardless of capacity/reward/opponent machinery.
+5. **Expert Iteration (ExIt)** (the RL pipeline): search → distill works; Gumbel
+   selection (`exit.gumbel_search`) is the one validated search improvement (+9.4%).
+6. **Leaderboard re-anchor (2026-06-10, current)**: vendored public agents + arena
+   replaced win-vs-apex as THE metric; producer fork `agents/v5/` shipped
+   (LB ~1242, rank ~140/4212). RL track re-anchors to the producer tier.
 
-**Now:** STRONGER EXPERT SEARCH — a *learned value blended into the search* (not a hand-coded
-opponent or rollout, both of which regressed the agent). See the next section and
-`rl_research/STRONGER_EXPERT_SEARCH_PLAN.md`.
+**Now: `rl_research/LEADERBOARD_CLIMB_PLAN.md` is the live plan** (Phase 2: shot-validator
+veto on v5 + ExIt re-targeted at the producer tier).
 
-## Current best agent & next-session plan: STRONGER EXPERT SEARCH (ExIt)
+## Current state (2026-06-11)
 
-**State (2026-06-05).** Best agent = **heuristic ExIt `v2_exit_a100/ckpt_000020.pt` (iter 20)** (submitted). ExIt (search → distill) is the proven path. **Eval-gate fix + Phase 2 DONE (2026-06-05).** ⚠️ **The "77% vs apex @ n=60" headline does NOT reproduce on the trusted side-alternated scorer:** at seed 20000 iter-20 is ~33% P0 / 13% P1 (≈23% combined), and win-rate is HIGH-VARIANCE across map seeds (33% on the 20000 batch vs 83% P0 on the 31000 batch). The two decode paths are identical (896 steps, 0 diffs → submitted agent == training policy, NOT a bug), so the spread is genuine map variance and the old non-alternated eval was inflating. **Re-measure the true baseline with high-n multi-seed `eval_fast` on Colab before trusting any number** (local CPU eval ~20s/game → too slow for n≥60).
+**Active Kaggle submissions:** `producer_bundle` (LB 1242.7, rank ~140/4212) and
+`v5_bundle` (our fork: endgame horizon clamp + 4P nearest-opponent priority; climbing).
+Best RL checkpoint = `v2_exit_gumbel_on_a100/ckpt_000035.pt` (apex-era; ~31% vs the
+public pool in 2P, last in 4P — re-anchor before investing further).
 
-**Dead ends — do NOT repeat (all empirically confirmed):**
-- **Model-free PPO** (incl. the full v4_ceiling stack): structural credit-assignment stall, 0–10% vs apex / 100% vs random. More representation/critic/opponent machinery does not fix it.
-- **Neural-value search leaves** (`exit.neural_value_leaves`, Tier 3.2): *collapsed* the 77% agent to 0%. Cause: leaf states are reconstructed fleet-less (positionless `SimState`) → out-of-distribution for the value head, and `evaluate_state` (heuristic) already counts in-flight `fleet_events`, so the value head is a *worse* leaf scorer. Parked off. (`model.value_only` speedup kept.)
-- **Two-player one-ply search** (`exit.two_player_search`, committed): replays the opponent's actual apex turn-1 launch in the lookahead. Correct + cheap but it **DEGRADED** the warm-started 77% agent (`v2_exit_2p_a100`, n=60: 40% @ iter5, 43% @ iter10, never recovering to 77%). Likely mechanism: injecting the opponent makes aggressive candidates look worse → search biases toward passivity → more passive policy → worse vs apex (the exact failure mode). The sparse turn-1 opponent is the limitation. Flag defaults on in `V2ExItConfig`; **set `two_player_search: false` for the heuristic ExIt that produced the 77% agent.**
-- **Every-step in-sim rollout opponent** (`exit.rollout_search`, Phase 1, committed): the "real fix" vs turn-1 — ALL players (incl. our own continuation) launch via a cheap geometry-light rollout policy at every `sim_step`. **Also CONFIRMED NEGATIVE (2026-06-05):** `v2_exit_rollout_a100`, n=60 across 60 iters = 37,33,37,40,45,57,33,43,58,50,48 → mean ~45%, peak 58%, regressed the 77% agent and never recovered. **Diagnosis:** our own post-candidate continuation is the *weak* rollout heuristic, so candidates needing strong follow-up are undervalued → conservative/passive distilled policy → loses to apex. **AutoGo lesson: never evaluate leaves with a weak rollout — use a learned value (what AlphaZero does).** Keep `rollout_search` default OFF; keep the code (`rollout_launches`/geometry reusable for Phase 3 data gen).
+**Measurement (hard-won, do not relearn):**
+- THE metric = `scripts/arena.py` (real Kaggle env, side-alternated paired seeds, 2P
+  and `--players 4`). Win-vs-apex is retired.
+- A/A noise floor: n=60 mirror games measured 44% on IDENTICAL agents (±6%). Never
+  act on n<100 mirror results; every small-n outlier so far regressed at high n
+  (77% agent → ~23–40%; 67% smoke → 31%; 57% roi sweep → 52%).
+- The public pool ceilings at ~99% for producer-level agents → improvements to the
+  base are only measurable via mirror A/Bs (use margin metrics; arena CSVs record
+  `steps`) or the real ladder.
 
-**Full AutoGo-informed write-up: `rl_research/STRONGER_EXPERT_SEARCH_PLAN.md`.**
+**ExIt dead ends — do NOT repeat (empirically confirmed, full write-ups in
+`rl_research/EXPLORED_AND_ABANDONED.md` + `STRONGER_EXPERT_SEARCH_PLAN.md`):**
+model-free PPO (structural stall); neural-value search leaves (OOD collapse);
+two-player one-ply search (passivity bias); every-step weak-rollout opponent
+(undervalues aggression); z-scored value-leaf blend (regressed 6/6 seeds, monotonic
+in w). The one validated search win: **Gumbel/Sequential-Halving selection**
+(`exit.gumbel_search`, +9.4% over control on paired seeds).
 
-**Process bug — ✅ FIXED (2026-06-05):** in-training `run_periodic_eval` was NOT side-alternated/paired (always RL=P0 via the Kaggle harness) → inflated ~2×. Now mirrors `eval_fast`: `FastOrbitWars`, side-alternated, paired seeds (`eval_seed=20000`, shared → directly comparable), parallel via `eval_workers`. New `V2EvalConfig` fields `eval_seed`/`eval_workers`; `configs/v2_exit.yaml` → `eval_games: 40`, `eval_workers: 6`.
+**Key files:** `v2/exit_train.py` (collect→search→distill; opponent =
+`exit.opponent`, resolved via `agents.load_named_agent`; `play_single_game` is
+P0-only, NOT side-alternated), `v2/search.py` (Gumbel + heuristic leaf eval),
+`v2/imitation.py` (BC from `imitation.bc_expert`), `v2/train.py`
+(`run_periodic_eval` side-alternated/paired; `make_v2_eval_agent`),
+`agents/__init__.py` (`load_named_agent` + fast_env obs shim), `scripts/arena.py`,
+`scripts/eval_fast.py`, `scripts/build_v5_bundle.py`.
 
-**The lever = a LEARNED VALUE in the search (not a hand-coded opponent/rollout).** Sequence:
-1. **Eval-gate fix** — ✅ DONE (see above).
-2. **Phase 2 — positional simulator** — ✅ DONE. `fleet_events` now carry geometry `(…, launch_step, sx, sy, tx, ty)`; `fleet_position_at` + `_reconstruct_leaf_state` rebuild in-distribution fleets at leaves. Heuristic path bit-identical (combat/scoring read only the first 4 fields). Readiness diagnostic on iter-20: OOD collapse FIXED (neural leaf std 0.765, not degenerate), value grounded (corr(pred,outcome)=0.389); BUT neural≈heuristic sibling-ranking corr ≈ 0.0 → value too noisy to rank near-equal candidates alone.
-3. **Phase 3 — grounded learned value: BLEND, NOT SWAP.** The value head is ALREADY grounded — `play_single_game` runs to terminal and `train_epoch` already does `value_loss = MSE(out.value, terminal_outcome)` (so "~10% to terminal" is effectively 100%). Remaining work = *use* it at leaves via a **z-scored blend** `score=(1-w)·z(heur)+w·z(neural)` behind a `value_leaf_blend` knob (small w, A/B-able), warm-start iter-20, gate on the fixed eval at high n. A pure swap is the trap (sibling ranking uncorrelated). Fixes both prior failures: OOD (Phase 2) + over-trusted value (blend).
-4. (later) **Joint / multi-planet search** + capacity A/B once the value is trustworthy.
-
-**Separate track — answers the original "does a deeper net help?" question:** run the **embed-128 vs 256 capacity A/B in the ExIt regime** (capacity should help with good supervised-distillation targets, unlike PPO). Configs exist: `configs/v2_exit_embed128.yaml` / `v2_exit_embed256.yaml` (now with parallel collection); run on Colab via `scripts/run_embed_ab.py`.
-
-**Key files:** `v2/search.py` (`search_improve_planet`, `_make_dists`, neural-value helpers, `_reconstruct_leaf_state` now rebuilds in-distribution fleets — Phase 3 blend goes here), `v2/exit_train.py` (collect→search→distill; `_search_record`; `play_single_game` is P0-only vs apex, NOT side-alternated; parallel `collect_workers`/`search_workers`, `collect_fast_env`), `src/simulator.py` (`SimState`/`fleet_events` now POSITIONAL: `…, launch_step, sx, sy, tx, ty`; `fleet_position_at`; `add_fleet_event(…, src_xy, dst_xy)`; `sim_step` still has NO opponent — Phase 4(b)), `v2/train.py` (`run_periodic_eval` side-alternated/paired/parallel; `_peval_init`/`_peval_game`), `configs/v2_exit.yaml`.
-
-**Eval/ops tooling:** `scripts/eval_fast.py` (fast_env, side-alternated, paired seeds — the reliable scorer; ⚠️ win-rate is HIGH-VARIANCE across map seeds, use n≥60 and multiple seed batches; local CPU ~20s/game so run on Colab), `scripts/download_checkpoint.py --run <name> --all-ckpts`, `scripts/replay.py --exit`. Submission bundle: `v2/agent_v3.py` + `ckpt_last.pt` + `submission_config.yaml` + `v2/` + `src/` (built at `outputs/submissions/v2_exit_a100_bundle/`); bundle code == live (verified same).
+⚠️ Producer-tier opponents are ~50-100× slower per step than the retired apex
+(torch planners). ExIt collection/eval at scale belongs on Colab
+(`notebooks/train_colab.ipynb`), and BC demo caches are worth keeping.
 
 ## Config System
 
