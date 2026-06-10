@@ -30,7 +30,7 @@ dev = [
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-extend-exclude = ["outputs", "notebooks", ".venv", "agents/external"]
+extend-exclude = ["outputs", "notebooks", ".venv", "agents/external", "agents/v5"]
 
 [tool.ruff.lint]
 # E/F = pyflakes+pycodestyle, I = isort, UP = pyupgrade,
@@ -48,7 +48,7 @@ ignore = [
 
 [tool.pyright]
 include = ["src", "v2", "agents", "evaluation", "scripts"]
-exclude = ["outputs", "notebooks", "**/__pycache__", ".venv", "agents/external"]
+exclude = ["outputs", "notebooks", "**/__pycache__", ".venv", "agents/external", "agents/v5"]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
 # torch / numpy / kaggle-environments ship partial-or-no stubs; don't drown

@@ -16,6 +16,13 @@ can bump --games incrementally.
         --agents producer,apex,exit:outputs/checkpoints/v2_exit_a100/ckpt_000020.pt:configs/v2_exit.yaml \
         --games 10
 
+    # 4-player FFA mode (LB mixes 2P and 4P): every 4-agent combo from the pool,
+    # seats rotated per game, players ranked by (engine reward, final board score).
+    # --games here = games per COMBO; each pair co-occurs in C(n-2,2) combos.
+    uv run python scripts/arena.py --players 4 \
+        --agents producer,tamrazov_1224,distance_1100,enders_1000,apex \
+        --games 4 --workers 6
+
 Agent specs: vendored names from agents.external (producer, tamrazov_1224,
 distance_1100, shot_validator_hybrid, enders_1000, ow_proto, reinforce_958),
 "apex", "hybrid", or "exit:<ckpt.pt>:<config.yaml>" (label = ckpt run/iter).
@@ -50,6 +57,28 @@ def _build_agent(spec: str):
         from agents.apex import agent
 
         return agent
+    if spec == "v5":
+        # Our producer fork (agents/v5). Same fresh-exec-per-game treatment as the
+        # vendored producer: main.py keeps a module-level runtime across turns.
+        import importlib.util
+        import itertools
+
+        global _V5_COUNTER
+        if "_V5_COUNTER" not in globals():
+            _V5_COUNTER = itertools.count()
+        main_py = ROOT / "agents" / "v5" / "main.py"
+        modname = f"_v5_{next(_V5_COUNTER)}"
+        mspec = importlib.util.spec_from_file_location(modname, main_py)
+        assert mspec is not None and mspec.loader is not None
+        mod = importlib.util.module_from_spec(mspec)
+        sys.modules[modname] = mod
+        mspec.loader.exec_module(mod)
+        fn = mod.agent
+
+        def v5_agent(obs, config=None):
+            return fn(obs)
+
+        return v5_agent
     if spec == "hybrid":
         from agents.hybrid import agent
 
@@ -85,6 +114,30 @@ def _worker_init() -> None:
         pass
 
 
+def _field(entry, name: str, idx: int):
+    """Planet/fleet field access: Struct attribute first, then dict, then list."""
+    if hasattr(entry, name):
+        return getattr(entry, name)
+    if isinstance(entry, dict):
+        return entry[name]
+    return entry[idx]
+
+
+def _final_scores(env, n_players: int) -> list[float]:
+    """Per-player score (ships on owned planets + ships in owned fleets) at game end."""
+    obs = env.steps[-1][0].observation
+    scores = [0.0] * n_players
+    for p in _field(obs, "planets", 0) or []:
+        owner = int(_field(p, "owner", 1))
+        if 0 <= owner < n_players:
+            scores[owner] += float(_field(p, "ships", 5))
+    for f in _field(obs, "fleets", 0) or []:
+        owner = int(_field(f, "owner", 1))
+        if 0 <= owner < n_players:
+            scores[owner] += float(_field(f, "ships", 6))
+    return scores
+
+
 def _play(job: tuple[str, str, int, int]) -> dict:
     """One game: (spec_a, spec_b, seed, a_side). Returns a result row."""
     spec_a, spec_b, seed, a_side = job
@@ -116,6 +169,34 @@ def _play(job: tuple[str, str, int, int]) -> dict:
     }
 
 
+def _play_4p(job: tuple[tuple[str, str, str, str], int, int]) -> dict:
+    """One 4P FFA game: (specs in seat order, seed, rot). Returns a result row.
+
+    Rank is by (engine reward, final board score) descending — reward separates the
+    winner (+1) from losers (−1); board score orders the losers (engine reward alone
+    would tie all non-winners, starving the pairwise matrix of signal).
+    """
+    specs, seed, rot = job
+    from kaggle_environments import make
+
+    t0 = time.time()
+    env = make("orbit_wars", configuration={"randomSeed": seed})
+    env.run([_build_agent(s) for s in specs])
+    last = env.steps[-1]
+    rewards = [(-1.0 if s.reward is None else float(s.reward)) for s in last]
+    scores = _final_scores(env, 4)
+    keys = list(zip(rewards, scores, strict=True))
+    ranks = [1 + sum(1 for k in keys if k > keys[i]) for i in range(4)]  # ties share rank
+    row: dict = {"seed": seed, "rot": rot, "seconds": round(time.time() - t0, 1)}
+    for i in range(4):
+        row[f"agent_{i}"] = spec_label(specs[i])
+        row[f"reward_{i}"] = rewards[i]
+        row[f"score_{i}"] = round(scores[i], 1)
+        row[f"rank_{i}"] = ranks[i]
+        row[f"status_{i}"] = last[i].status
+    return row
+
+
 FIELDS = [
     "agent_a",
     "agent_b",
@@ -129,25 +210,72 @@ FIELDS = [
     "seconds",
 ]
 
+FIELDS_4P = (
+    [f"agent_{i}" for i in range(4)]
+    + ["seed", "rot"]
+    + [f"{k}_{i}" for i in range(4) for k in ("reward", "score", "rank", "status")]
+    + ["seconds"]
+)
 
-def load_done(out_csv: Path) -> set[tuple]:
+
+def load_done(out_csv: Path, players: int) -> set[tuple]:
     done = set()
     if out_csv.exists():
         with open(out_csv) as f:
             for row in csv.DictReader(f):
-                done.add((row["agent_a"], row["agent_b"], int(row["seed"]), int(row["a_side"])))
+                if players == 4:
+                    done.add((*(row[f"agent_{i}"] for i in range(4)), int(row["seed"])))
+                else:
+                    done.add((row["agent_a"], row["agent_b"], int(row["seed"]), int(row["a_side"])))
     return done
 
 
-def print_matrix(out_csv: Path, labels: list[str]) -> None:
-    rows = list(csv.DictReader(open(out_csv)))
+def pairwise_results(out_csv: Path, players: int) -> list[tuple[str, str, float]]:
+    """Flatten the CSV into (label_a, label_b, points_for_a) tuples (tie = 0.5).
+
+    4P games contribute one tuple per co-occurring pair (6 per game), decided by rank.
+    """
+    with open(out_csv) as f:
+        rows = list(csv.DictReader(f))
+    out = []
+    for r in rows:
+        if players == 4:
+            for i in range(4):
+                for j in range(i + 1, 4):
+                    ri, rj = int(r[f"rank_{i}"]), int(r[f"rank_{j}"])
+                    p = 1.0 if ri < rj else 0.0 if ri > rj else 0.5
+                    out.append((r[f"agent_{i}"], r[f"agent_{j}"], p))
+        else:
+            p = 1.0 if r["outcome"] == "a" else 0.0 if r["outcome"] == "b" else 0.5
+            out.append((r["agent_a"], r["agent_b"], p))
+    return out
+
+
+def print_mean_ranks(out_csv: Path, labels: list[str]) -> None:
+    """4P only: mean finishing rank (1=win .. 4=last) and win rate per agent."""
+    with open(out_csv) as f:
+        rows = list(csv.DictReader(f))
+    acc = {a: [0.0, 0, 0] for a in labels}  # rank_sum, games, wins
+    for r in rows:
+        for i in range(4):
+            a = r[f"agent_{i}"]
+            if a in acc:
+                acc[a][0] += int(r[f"rank_{i}"])
+                acc[a][1] += 1
+                acc[a][2] += float(r[f"reward_{i}"]) > 0
+    print("\n4P mean finishing rank (1 = winner, 4 = last) and outright-win rate:")
+    for a in sorted(labels, key=lambda x: acc[x][0] / max(acc[x][1], 1)):
+        rs, g, w = acc[a]
+        if g:
+            print(f"  {a:<28} rank {rs / g:.2f}   win {w / g:>4.0%}   ({g} games)")
+
+
+def print_matrix(results: list[tuple[str, str, float]], labels: list[str]) -> None:
     # wins[a][b] = (points, games) for a vs b; tie = 0.5
     pts: dict = {a: {b: [0.0, 0] for b in labels} for a in labels}
-    for r in rows:
-        a, b = r["agent_a"], r["agent_b"]
+    for a, b, p in results:
         if a not in pts or b not in pts[a]:
             continue
-        p = 1.0 if r["outcome"] == "a" else 0.0 if r["outcome"] == "b" else 0.5
         pts[a][b][0] += p
         pts[a][b][1] += 1
         pts[b][a][0] += 1 - p
@@ -172,29 +300,50 @@ def print_matrix(out_csv: Path, labels: list[str]) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--agents", required=True, help="comma-separated agent specs")
-    ap.add_argument("--games", type=int, default=10, help="games per pair (side-alternated)")
+    ap.add_argument(
+        "--games",
+        type=int,
+        default=10,
+        help="2P: games per pair (side-alternated). 4P: games per 4-agent combo (seat-rotated)",
+    )
+    ap.add_argument("--players", type=int, default=2, choices=(2, 4))
     ap.add_argument("--seed", type=int, default=20000, help="base map seed")
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 4) - 2))
-    ap.add_argument("--out", default="outputs/arena/arena.csv")
+    ap.add_argument("--out", default=None, help="default outputs/arena/arena[_4p].csv")
     args = ap.parse_args()
 
     specs = [s.strip() for s in args.agents.split(",") if s.strip()]
     labels = {s: spec_label(s) for s in specs}
-    out_csv = Path(args.out)
+    is_4p = args.players == 4
+    out_csv = Path(
+        args.out or ("outputs/arena/arena_4p.csv" if is_4p else "outputs/arena/arena.csv")
+    )
     out_csv.parent.mkdir(parents=True, exist_ok=True)
 
-    done = load_done(out_csv)
-    jobs = []
-    for spec_a, spec_b in combinations(specs, 2):
-        for i in range(args.games):
-            seed, a_side = args.seed + i, i % 2
-            if (labels[spec_a], labels[spec_b], seed, a_side) not in done:
-                jobs.append((spec_a, spec_b, seed, a_side))
+    done = load_done(out_csv, args.players)
+    jobs: list = []
+    if is_4p:
+        if len(specs) < 4:
+            ap.error("--players 4 needs at least 4 agent specs")
+        for combo in combinations(specs, 4):
+            for i in range(args.games):
+                seed, rot = args.seed + i, i % 4
+                seats = tuple(combo[rot:] + combo[:rot])
+                if (*(labels[s] for s in seats), seed) not in done:
+                    jobs.append((seats, seed, rot))
+    else:
+        for spec_a, spec_b in combinations(specs, 2):
+            for i in range(args.games):
+                seed, a_side = args.seed + i, i % 2
+                if (labels[spec_a], labels[spec_b], seed, a_side) not in done:
+                    jobs.append((spec_a, spec_b, seed, a_side))
     print(f"{len(jobs)} games to play ({len(done)} already in {out_csv})")
 
+    fields = FIELDS_4P if is_4p else FIELDS
+    play = _play_4p if is_4p else _play
     new_file = not out_csv.exists()
     with open(out_csv, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDS)
+        writer = csv.DictWriter(f, fieldnames=fields)
         if new_file:
             writer.writeheader()
         if jobs:
@@ -202,19 +351,32 @@ def main() -> None:
 
             t0 = time.time()
             with Pool(args.workers, initializer=_worker_init, maxtasksperchild=4) as pool:
-                for k, row in enumerate(pool.imap_unordered(_play, jobs), 1):
+                for k, row in enumerate(pool.imap_unordered(play, jobs), 1):
                     writer.writerow(row)
                     f.flush()
-                    err = " ⚠" if "ERROR" in (row["status_a"], row["status_b"]) else ""
-                    print(
-                        f"[{k}/{len(jobs)}] {row['agent_a']} vs {row['agent_b']} "
-                        f"seed={row['seed']} side={row['a_side']} -> {row['outcome']} "
-                        f"({row['seconds']}s){err}",
-                        flush=True,
-                    )
+                    if is_4p:
+                        statuses = [row[f"status_{i}"] for i in range(4)]
+                        err = " ⚠" if "ERROR" in statuses else ""
+                        order = sorted(range(4), key=lambda i: row[f"rank_{i}"])
+                        finish = " > ".join(row[f"agent_{i}"] for i in order)
+                        print(
+                            f"[{k}/{len(jobs)}] seed={row['seed']} rot={row['rot']} "
+                            f"{finish} ({row['seconds']}s){err}",
+                            flush=True,
+                        )
+                    else:
+                        err = " ⚠" if "ERROR" in (row["status_a"], row["status_b"]) else ""
+                        print(
+                            f"[{k}/{len(jobs)}] {row['agent_a']} vs {row['agent_b']} "
+                            f"seed={row['seed']} side={row['a_side']} -> {row['outcome']} "
+                            f"({row['seconds']}s){err}",
+                            flush=True,
+                        )
             print(f"done in {(time.time() - t0) / 60:.1f} min")
 
-    print_matrix(out_csv, [labels[s] for s in specs])
+    print_matrix(pairwise_results(out_csv, args.players), [labels[s] for s in specs])
+    if is_4p:
+        print_mean_ranks(out_csv, [labels[s] for s in specs])
 
 
 if __name__ == "__main__":
