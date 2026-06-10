@@ -2,7 +2,8 @@
 #
 # IDENTICAL to v2_exit_embed128.yaml except model.embed_dim and run_name. Shares
 # the same demo cache (bc_cache_path) and seed so the only difference vs arm A is
-# network width. See configs/v2_exit_embed128.yaml for the experiment rationale.
+# network width. See configs/v2_exit_embed128.yaml for the experiment rationale
+# (incl. why gumbel_search is ON in both arms as of 2026-06-09).
 run_name: v2_exit_embed256
 seed: 42
 device: auto
@@ -60,3 +61,12 @@ exit:
   search_workers: 6
   collect_workers: 6     # parallelize the games (collection is the ExIt bottleneck)
   collect_fast_env: true # engine-faithful standalone sim (no Kaggle harness overhead)
+  # ── Build 1: Gumbel / Sequential-Halving (the shipping regime, mirrors
+  # configs/v2_exit_gumbel.yaml; same in BOTH arms) ──
+  gumbel_search: true
+  gumbel_sims: 16
+  gumbel_top_m: 8
+  gumbel_c_visit: 50.0
+  gumbel_c_scale: 1.0
+  search_seed: 0
+  net_opponent: false    # Build 2 ungated + ~1000x slower; keep off in the A/B

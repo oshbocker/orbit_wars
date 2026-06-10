@@ -5,6 +5,12 @@
 # not help model-free PPO. This arm and v2_exit_embed256.yaml are IDENTICAL except
 # model.embed_dim and run_name, share ONE demo cache (embed_dim does not change
 # features), and use the same seed — so any win-rate gap is attributable to width.
+#
+# 2026-06-09: both arms now run with gumbel_search ON (Build 1 shipped: +9.4% vs
+# control on every paired seed), so the capacity question is answered in the
+# regime we actually ship — Gumbel/Sequential-Halving distillation targets, not
+# the old softmax-over-heuristic. Knobs mirror configs/v2_exit_gumbel.yaml;
+# net_opponent stays off (Build 2 ungated and ~1000x slower per search record).
 run_name: v2_exit_embed128
 seed: 42
 device: auto
@@ -64,3 +70,12 @@ exit:
   search_workers: 6      # local box has 8 cores; leave 2 for main
   collect_workers: 6     # parallelize the games (collection is the ExIt bottleneck)
   collect_fast_env: true # engine-faithful standalone sim (no Kaggle harness overhead)
+  # ── Build 1: Gumbel / Sequential-Halving (the shipping regime, mirrors
+  # configs/v2_exit_gumbel.yaml; same in BOTH arms) ──
+  gumbel_search: true
+  gumbel_sims: 16
+  gumbel_top_m: 8
+  gumbel_c_visit: 50.0
+  gumbel_c_scale: 1.0
+  search_seed: 0
+  net_opponent: false    # Build 2 ungated + ~1000x slower; keep off in the A/B
