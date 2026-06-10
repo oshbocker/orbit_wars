@@ -203,7 +203,7 @@ class V2MixedScheduler:
 class V2PFSPScheduler:
     """Prioritized Fictitious Self-Play opponent pool.
 
-    Always keeps the rule-based reference (apex) in the pool — with a probability
+    Always keeps the rule-based reference (cfg.opponent) in the pool — with a probability
     floor — and adds frozen snapshots of the training policy over time. Opponents
     are sampled by win-rate so the agent trains more against the ones it currently
     loses to (PFSP "hard" weighting, à la AlphaStar). This directly counters the
@@ -216,7 +216,7 @@ class V2PFSPScheduler:
         self._update = 0
         # Pool entries: {"name", "agent", "wins", "games"}. Apex is index 0.
         self.pool: list[dict] = [
-            {"name": "apex", "agent": rule_based, "wins": 0.0, "games": 0.0},
+            {"name": "rule_based", "agent": rule_based, "wins": 0.0, "games": 0.0},
         ]
         self._last_sampled: str | None = None
 
@@ -232,7 +232,7 @@ class V2PFSPScheduler:
         snap = V2SelfPlayOpponent(self.cfg, device=self.device, deterministic=False)
         snap.sync_from(model)
         self.pool.append({"name": f"self@{self._update}", "agent": snap, "wins": 0.0, "games": 0.0})
-        # Cap frozen snapshots (never evict apex at index 0).
+        # Cap frozen snapshots (never evict the rule-based anchor at index 0).
         frozen = self.pool[1:]
         if len(frozen) > self.cfg.pfsp_pool_size:
             self.pool = [self.pool[0]] + frozen[-self.cfg.pfsp_pool_size :]
@@ -252,8 +252,8 @@ class V2PFSPScheduler:
         opponents: list[OpponentPolicy] = []
         names: list[str] = []
         for _ in range(n_opp):
-            # Enforce the apex probability floor, else PFSP-weighted sample.
-            if random.random() < self.cfg.pfsp_apex_min_prob:
+            # Enforce the anchor probability floor, else PFSP-weighted sample.
+            if random.random() < self.cfg.pfsp_anchor_min_prob:
                 idx = 0
             else:
                 w = self._weights()
@@ -672,7 +672,7 @@ def run_periodic_eval(
     FastOrbitWars — mirrors scripts/eval_fast.py (and shares its game loop, so
     the in-training number is directly comparable to the trusted scorer).
 
-    The old implementation always played the RL agent as player 0 vs apex via the
+    The old implementation always played the RL agent as player 0 via the
     Kaggle harness with no seed control: NOT side-alternated, NOT paired. With any
     player-0 advantage it scored the favourable side every game and inflated the
     win-rate ~2x (showed 90-95% live while eval_fast showed 33-58% on the same
@@ -752,19 +752,9 @@ def _tally(opp_name: str, res: list[str], n: int) -> EvalResult:
 
 
 def _get_eval_opponent(name: str) -> Any:
-    if name == "apex":
-        from agents.apex import agent as apex_agent
+    from agents import load_named_agent
 
-        return apex_agent
-    if name == "random":
-        from kaggle_environments.envs.orbit_wars.orbit_wars import random_agent
-
-        return random_agent
-    if name == "hybrid":
-        from agents.hybrid import agent as hybrid_agent
-
-        return hybrid_agent
-    raise ValueError(f"Unknown eval opponent: {name}")
+    return load_named_agent(name)
 
 
 def main() -> None:
@@ -890,13 +880,13 @@ def main() -> None:
     sp_opponent = V2SelfPlayOpponent(cfg, device=device, deterministic=cfg.self_play_deterministic)
     sp_opponent.sync_from(model)
 
-    # Scheduler: PFSP pool (keeps apex, samples by win-rate) takes precedence;
+    # Scheduler: PFSP pool (keeps the rule-based anchor, samples by win-rate) takes precedence;
     # else the linear rule-based->self-play MixedScheduler.
     scheduler: V2MixedScheduler | V2PFSPScheduler | None = None
     if cfg.pfsp_enabled:
         scheduler = V2PFSPScheduler(cfg, rule_based_opponent, device)
         log(
-            f"  PFSPScheduler: apex_floor={cfg.pfsp_apex_min_prob}, "
+            f"  PFSPScheduler: anchor_floor={cfg.pfsp_anchor_min_prob}, "
             f"pool_size={cfg.pfsp_pool_size}, snapshot_every={cfg.pfsp_snapshot_every}, "
             f"weighting={cfg.pfsp_weighting}"
         )

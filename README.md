@@ -1,7 +1,7 @@
 # Orbit Wars — RL Agent
 
 Kaggle Orbit Wars competition. Primary goal: **learn reinforcement learning** and build a
-competitive agent. The `agents/apex.py` rule-based agent is the benchmark; the live effort is
+competitive agent. The gate metric is the local arena vs vendored public agents (`scripts/arena.py`); the live effort is
 the **v2 Expert Iteration (ExIt)** pipeline (`v2/`) — search → distill on top of an OrbitNet
 policy.
 
@@ -29,7 +29,7 @@ https://download.pytorch.org/whl/cu121 && uv sync`.
 ## Train
 
 ```bash
-# ExIt: BC pretrain from apex → collect → search-improve → distill (the live pipeline)
+# ExIt: BC pretrain from the expert (producer) → collect → search-improve → distill
 uv run python -m v2.exit_train --config configs/v2_exit.yaml
 
 # v2 PPO (BC warm start → PPO + mixed self-play) — reference baseline
@@ -45,12 +45,12 @@ with Drive persistence, use `notebooks/train_colab.ipynb`. After Colab, pull a c
 ```bash
 # Fast, side-alternated, paired-seed scorer (the reliable one — high variance, use games>=60)
 uv run python scripts/eval_fast.py \
-    --run v2_exit_a100 --config configs/v2_exit.yaml --iters 20 --opponent apex --games 60
+    --run v2_exit_a100 --config configs/v2_exit.yaml --iters 20 --opponent producer --games 60
 
-# Export an HTML replay of a game vs apex
+# Export an HTML replay of a game vs producer
 uv run python scripts/replay.py --exit \
     --checkpoint outputs/checkpoints/v2_exit_a100/ckpt_000020.pt \
-    --config configs/v2_exit.yaml --opponent apex --seed 42 --output replay.html
+    --config configs/v2_exit.yaml --opponent producer --seed 42 --output replay.html
 
 # Monitor training
 uv run tensorboard --logdir outputs/logs
@@ -68,7 +68,7 @@ bundled code is verified identical to the live training code.
 ```
 v2/          # OrbitNet + ExIt pipeline (PRIMARY) — model, search, exit_train, train, env, ...
 src/         # Shared building blocks reused by v2/ (game_types, features, policy, opponents, ...)
-agents/      # Rule-based benchmarks (apex.py = THE benchmark, hybrid.py)
+agents/      # external/ (vendored public agents) + v5/ (our producer fork, shipped)
 configs/     # YAML configs — v2_exit*.yaml are live
 evaluation/  # evaluate.py (run_games, head_to_head, print_results)
 notebooks/   # train_colab.ipynb (Colab GPU) + explore.ipynb
@@ -89,6 +89,6 @@ def my_agent(obs, config=None) -> list:
     return [[from_planet_id, angle_radians, num_ships], ...]
 
 # from evaluation.evaluate import run_games, print_results
-# from agents.apex import agent as apex
-# print_results("mine", "apex", run_games(my_agent, apex, n_games=50, verbose=True))
+# from agents import load_named_agent
+# print_results("mine", "producer", run_games(my_agent, load_named_agent("producer"), n_games=50, verbose=True))
 ```

@@ -1,10 +1,11 @@
 """Fast high-n win-rate eval for ExIt / v2 OrbitNet checkpoints.
 
 Plays games on the engine-faithful standalone FastOrbitWars (no Kaggle harness),
-in parallel across processes, with side alternation. Because the policy (eval =
-deterministic) and apex are both deterministic, each (seed, side) is a fully
-deterministic game — so the only variance is the map seed. All checkpoints are
-scored on the SAME seed/side set (paired) for low-variance ranking.
+in parallel across processes, with side alternation. With a deterministic policy
+(eval) and a deterministic opponent, each (seed, side) is a fully deterministic
+game — so the only variance is the map seed. All checkpoints are scored on the
+SAME seed/side set (paired) for low-variance ranking. Opponent = any
+agents.load_named_agent name (default producer).
 
     # every checkpoint of the exit run, 60 games each
     uv run python scripts/eval_fast.py --run v2_exit_a100 \
@@ -43,11 +44,9 @@ def _eval_init(cfg_dict: dict, state_dict: dict, opponent: str) -> None:
     model.load_state_dict(state_dict)
     model.eval()
     _E["rl"] = make_v2_eval_agent(model, cfg, torch.device("cpu"))
-    if opponent == "apex":
-        from agents.apex import agent as opp
-    else:
-        from kaggle_environments.envs.orbit_wars.orbit_wars import random_agent as opp
-    _E["opp"] = opp
+    from agents import load_named_agent
+
+    _E["opp"] = load_named_agent(opponent)
 
 
 def _eval_game(args: tuple[int, int]) -> str:
@@ -105,7 +104,7 @@ def main() -> int:
     ap.add_argument("--iters", default="all", help="comma list (e.g. 10,15,last) or 'all'")
     ap.add_argument("--games", type=int, default=60)
     ap.add_argument("--workers", type=int, default=6)
-    ap.add_argument("--opponent", default="apex", choices=["apex", "random"])
+    ap.add_argument("--opponent", default="producer", help="any agents.load_named_agent name")
     ap.add_argument("--seed", type=int, default=20000, help="base seed (shared across checkpoints)")
     args = ap.parse_args()
 

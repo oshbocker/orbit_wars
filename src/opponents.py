@@ -84,14 +84,21 @@ def _policy_act(
     return moves
 
 
-class ApexOpponent:
-    def __init__(self) -> None:
-        from agents.apex import agent as _apex_agent
+class NamedAgentOpponent:
+    """Wraps any agents.load_named_agent name (v5, producer, tamrazov_1224, ...).
 
-        self._agent = _apex_agent
+    Fresh-loads the agent once per instance; callers that need per-game freshness
+    (module-level ledgers) should build one instance per game.
+    """
+
+    def __init__(self, name: str) -> None:
+        from agents import load_named_agent
+
+        self.name = name
+        self._agent = load_named_agent(name)
 
     def act(self, observation: Any) -> list[list[float | int]]:
-        result = self._agent(observation)
+        result = self._agent(observation, None)
         return list(result) if result else []
 
 
@@ -107,19 +114,6 @@ class KaggleRandomOpponent:
             "planets": list(_obs_get(observation, "planets", [])),
         }
         return list(self._agent(payload))
-
-
-class HybridOpponent:
-    """Wraps the hybrid agent for use as an opponent (slow, ~50-800ms/step)."""
-
-    def __init__(self) -> None:
-        from agents.hybrid import agent as _hybrid_agent
-
-        self._agent = _hybrid_agent
-
-    def act(self, observation: Any) -> list[list[float | int]]:
-        result = self._agent(observation)
-        return list(result) if result else []
 
 
 class SelfPlayOpponent:
@@ -218,12 +212,8 @@ def build_opponent(
     *,
     checkpoint_path: str | Path | None = None,
 ) -> OpponentPolicy:
-    if name == "apex":
-        return ApexOpponent()
     if name == "random":
         return KaggleRandomOpponent()
-    if name == "hybrid":
-        return HybridOpponent()
     if name == "self":
         if cfg is None or device is None:
             raise ValueError("cfg and device required for self-play opponent")
@@ -238,7 +228,8 @@ def build_opponent(
                 "cfg, device, and checkpoint_path (pool_dir) required for champion_pool opponent"
             )
         return ChampionPoolOpponent(checkpoint_path, cfg, device=device)
-    raise ValueError(f"Unknown opponent: {name}")
+    # Anything else resolves as a named agent (v5, producer, tamrazov_1224, ...).
+    return NamedAgentOpponent(name)
 
 
 def _obs_get(observation: Any, key: str, default: Any) -> Any:

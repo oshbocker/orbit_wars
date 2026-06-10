@@ -131,5 +131,52 @@ kept: `train_colab.ipynb` (A100 v2 BC→ExIt), `explore.ipynb` (scratch dev).
 
 ---
 
+## Cluster 5 — Apex & Hybrid rule-based agents *(removed 2026-06-11)*
+
+**What they were.** `agents/apex.py` (~2,900 lines, "Apex v17" lineage) was THE
+benchmark and training anchor for the entire RL effort 2026-05-10 → 2026-06-09: BC
+teacher, ExIt opponent, and eval gate. `agents/hybrid.py` (~2,600 lines) was its
+slower predecessor (50–800 ms/step) and the source of most of its machinery.
+
+**Apex design (the compressed record).** A hand-tuned mission planner, merging the
+hybrid agent with ideas from a public "1103 peaking bot":
+- **World model + per-planet timeline simulation**: parse obs into a `World`;
+  for each planet, replay production + every known fleet arrival with exact combat
+  resolution (`_simulate_timeline`/`_resolve_combat`) out to horizon 110 — a
+  hand-rolled precursor of the public tier's "arrival ledger".
+- **Mission-based planning**: capture-neutral / attack / reinforce / recapture /
+  snipe / multi-source swarm (ETA-synced) / crash-exploit (strike right after two
+  enemy fleets collide) missions, scored by `_target_value` with ~30 hand-tuned
+  multipliers (hostile 2.2×, neutral 1.4×, static-target 1.22×, comet 0.85×,
+  leader-attack 1.2×, exposed-enemy bonus…).
+- **Tight ship margins** (its key efficiency edge vs naive bots): send
+  `needed = garrison + prod·ETA + margin` with margin caps 5/7, growing for
+  long trips; `_preferred_send` balances overkill vs fleet-speed.
+- **Geometry**: waypoint sun avoidance, orbit prediction with intercept search,
+  exact comet path-index prediction + remaining-life checks, beam-search opening.
+- **Defense**: threat lookahead 28 turns, reserves vs stacked enemy threats,
+  proactive defense, time budgeting (soft deadline 0.82×actTimeout).
+
+**Why retired.** The 2026-06-09 leaderboard reality check + the 2026-06-10 arena:
+apex ≈ **757 LB ≈ p55** — a *median-tier* anchor. Every week spent optimizing
+win-rate-vs-apex optimized against the middle of the field. In the vendored public
+pool (n=30/pair, real Kaggle env): apex = **43% 2P, 5% outright 4P**, and the
+Producer flow-diff planner beats it ~100%. Producer's *exact counterfactual
+flow-diff* (engine-exact projection, `safe_drain` sizing, one unified
+offense/defense scorer) structurally dominates apex's heuristic margins — it is
+apex's timeline idea taken to its logical conclusion. The producer fork
+(`agents/v5/`, LB ~1242, rank ~140/4212) replaced apex as base and gate; the
+arena (`scripts/arena.py`) replaced win-vs-apex as the metric; ExIt teachers
+re-anchor to the producer tier (see `rl_research/LEADERBOARD_CLIMB_PLAN.md`).
+
+**What survives.** Apex's good ideas already exist, better, in the public-tier
+lineage (timeline sim → arrival ledger; snipe timing; crash exploit; comet
+path prediction — producer has all of them). The 4P arena disproved the last
+reason to keep it (it isn't even a useful mid-tier 4P baseline: 5% outright).
+Code recoverable at git history ≤ 2026-06-11. The `kaggle.com` submission
+history retains apex's LB datapoints (700.8–774.7).
+
+---
+
 *Confirmed dead ends are also tracked tersely in `CLAUDE.md` and `memory/`. This file is the
 long-form "why" companion to those one-liners.*

@@ -132,16 +132,6 @@ def run_periodic_eval(
 
 
 def _get_eval_opponent(name: str) -> Any:
-    if name == "apex":
-        from agents.apex import agent as apex_agent
+    from agents import load_named_agent
 
-        return apex_agent
-    if name == "random":
-        from kaggle_environments.envs.orbit_wars.orbit_wars import random_agent
-
-        return random_agent
-    if name == "hybrid":
-        from agents.hybrid import agent as hybrid_agent
-
-        return hybrid_agent
-    raise ValueError(f"Unknown eval opponent: {name}")
+    return load_named_agent(name)

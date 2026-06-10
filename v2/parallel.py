@@ -286,7 +286,7 @@ class ParallelRolloutCollector:
             new_snapshots: list[tuple[str, dict]] = []
             for e in scheduler.pool:
                 pfsp_stats[e["name"]] = (e["wins"], e["games"])
-                if e["name"] == "apex":
+                if e["name"] == "rule_based":
                     continue
                 if e["name"] not in self._broadcast_snapshots:
                     sd = {k: v.cpu() for k, v in e["agent"].model.state_dict().items()}

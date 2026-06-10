@@ -145,9 +145,9 @@ def _build_fleet_schedule(
 
 
 # Rollout-opponent tuning (cheap greedy capture policy; calibrated loosely on
-# apex: launch when affordable, keep a small home reserve, favour cheap high-prod
+# rule-of-thumb: launch when affordable, keep a small home reserve, favour cheap high-prod
 # captures). Deliberately simple — Phase 1's value is that the opponent acts at
-# EVERY step, not that it is apex-perfect.
+# EVERY step, not that it is expert-perfect.
 ROLLOUT_MAX_TARGETS = 6  # nearest planets considered per source planet
 ROLLOUT_MIN_SHIPS = 3  # don't launch from near-empty planets
 ROLLOUT_RESERVE = 1  # ships left behind after a launch

@@ -6,26 +6,26 @@ module-level state, so every game gets a freshly-loaded agent in a worker proces
 Results append to a CSV; reruns skip already-played (pair, seed, side) games, so you
 can bump --games incrementally.
 
-    # first matrix: public pool + apex, 10 paired games per pair
+    # first matrix: public pool + v5, 10 paired games per pair
     uv run python scripts/arena.py \
-        --agents producer,tamrazov_1224,distance_1100,enders_1000,apex \
+        --agents producer,tamrazov_1224,distance_1100,enders_1000,v5 \
         --games 10 --workers 8
 
     # include our ExIt champion
     uv run python scripts/arena.py \
-        --agents producer,apex,exit:outputs/checkpoints/v2_exit_a100/ckpt_000020.pt:configs/v2_exit.yaml \
+        --agents producer,v5,exit:outputs/checkpoints/v2_exit_a100/ckpt_000020.pt:configs/v2_exit.yaml \
         --games 10
 
     # 4-player FFA mode (LB mixes 2P and 4P): every 4-agent combo from the pool,
     # seats rotated per game, players ranked by (engine reward, final board score).
     # --games here = games per COMBO; each pair co-occurs in C(n-2,2) combos.
     uv run python scripts/arena.py --players 4 \
-        --agents producer,tamrazov_1224,distance_1100,enders_1000,apex \
+        --agents producer,tamrazov_1224,distance_1100,enders_1000,v5 \
         --games 4 --workers 6
 
 Agent specs: vendored names from agents.external (producer, tamrazov_1224,
 distance_1100, shot_validator_hybrid, enders_1000, ow_proto, reinforce_958),
-"apex", "hybrid", or "exit:<ckpt.pt>:<config.yaml>" (label = ckpt run/iter).
+"v5" (+ "v5:key=val+key=val" overrides), "random", or "exit:<ckpt.pt>:<config.yaml>".
 """
 
 from __future__ import annotations
@@ -57,15 +57,10 @@ def spec_label(spec: str) -> str:
 
 def _build_agent(spec: str):
     """Fresh agent callable for one game (worker process)."""
-    if spec == "apex":
-        from agents.apex import agent
-
-        return agent
-    if spec == "v5" or spec.startswith("v5:"):
-        # Our producer fork (agents/v5). Same fresh-exec-per-game treatment as the
-        # vendored producer: main.py keeps a module-level runtime across turns.
-        # Optional config overrides: "v5:roi_threshold=1.4+horizon=20" patches both
-        # the 2P default and the 4P preset (for A/B sweeps without code edits).
+    if spec.startswith("v5:"):
+        # Our producer fork with config overrides: "v5:roi_threshold=1.4+horizon=20"
+        # patches both the 2P default and the 4P preset (A/B sweeps without code
+        # edits). Plain names (v5, producer, ...) resolve via the fallthrough.
         import dataclasses
         import importlib.util
         import itertools
@@ -74,31 +69,26 @@ def _build_agent(spec: str):
         if "_V5_COUNTER" not in globals():
             _V5_COUNTER = itertools.count()
         main_py = ROOT / "agents" / "v5" / "main.py"
-        modname = f"_v5_{next(_V5_COUNTER)}"
+        modname = f"_v5ov_{next(_V5_COUNTER)}"
         mspec = importlib.util.spec_from_file_location(modname, main_py)
         assert mspec is not None and mspec.loader is not None
         mod = importlib.util.module_from_spec(mspec)
         sys.modules[modname] = mod
         mspec.loader.exec_module(mod)
-        if spec.startswith("v5:"):
-            ftypes = {f.name: f.type for f in dataclasses.fields(mod.ProducerLiteConfig)}
-            overrides = {}
-            for kv in spec.split(":", 1)[1].split("+"):
-                k, v = kv.split("=")
-                overrides[k] = int(v) if ftypes[k] in ("int", int) else float(v)
-            cfg2 = dataclasses.replace(mod.ProducerLiteConfig(), **overrides)
-            cfg4 = dataclasses.replace(mod.CONFIG_4P, **overrides)
-            mod._config_for = lambda pc: cfg4 if int(pc) >= 4 else cfg2
+        ftypes = {f.name: f.type for f in dataclasses.fields(mod.ProducerLiteConfig)}
+        overrides = {}
+        for kv in spec.split(":", 1)[1].split("+"):
+            k, v = kv.split("=")
+            overrides[k] = int(v) if ftypes[k] in ("int", int) else float(v)
+        cfg2 = dataclasses.replace(mod.ProducerLiteConfig(), **overrides)
+        cfg4 = dataclasses.replace(mod.CONFIG_4P, **overrides)
+        mod._config_for = lambda pc: cfg4 if int(pc) >= 4 else cfg2
         fn = mod.agent
 
         def v5_agent(obs, config=None):
             return fn(obs)
 
         return v5_agent
-    if spec == "hybrid":
-        from agents.hybrid import agent
-
-        return agent
     if spec.startswith("exit:"):
         _, ckpt_path, cfg_path = spec.split(":")
         if spec not in _CACHE:
@@ -115,9 +105,9 @@ def _build_agent(spec: str):
             model.eval()
             _CACHE[spec] = make_v2_eval_agent(model, cfg, torch.device("cpu"))
         return _CACHE[spec]
-    from agents.external import load_agent
+    from agents import load_named_agent
 
-    return load_agent(spec)
+    return load_named_agent(spec)
 
 
 def _worker_init() -> None:

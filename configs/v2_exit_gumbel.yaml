@@ -27,7 +27,7 @@ device: auto
 save_dir: outputs/checkpoints
 log_dir: outputs/logs
 checkpoint_every: 5
-opponent: apex
+opponent: producer
 
 env:
   max_planets: 40
@@ -47,7 +47,7 @@ model:
 eval:
   eval_every: 5
   eval_games: 40          # side-alternated + paired seeds (see run_periodic_eval)
-  eval_opponents: [apex, random]
+  eval_opponents: [producer]
   eval_seed: 20000        # shared with scripts/eval_fast.py -> directly comparable
   eval_workers: 6         # CPU games ~20s each; set to ~vCPU count on Colab
 
@@ -69,7 +69,7 @@ exit:
   max_grad_norm: 0.5
   dataset_max_iters: 3
   four_player_prob: 0.0
-  opponent: apex
+  opponent: producer
   sample_collect: true
   search_workers: 6        # parallel CPU search (set ~vCPU count on Colab)
   collect_workers: 6       # parallel game collection (the ExIt bottleneck)

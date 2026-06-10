@@ -1,7 +1,7 @@
 """Expert Iteration (ExIt) for the V2 OrbitNet pipeline.
 
 Instead of model-free PPO (whose value-scale and rollout-length pathologies
-stalled progress vs apex), ExIt uses the *ground-truth* game simulator plus
+stalled progress vs strong rule-bases), ExIt uses the *ground-truth* game simulator plus
 per-planet lookahead search to produce improved (target, ship-fraction)
 distributions, then distills them into OrbitNet by supervised learning. With a
 perfect model available, planning is a far stronger and more stable source of
@@ -16,7 +16,7 @@ Loop per iteration:
                game outcome.
   4. EVAL    : win-rate vs baselines.
 
-Optionally BC-pretrains from apex first (imitation.enabled) for a warm start.
+Optionally BC-pretrains from the expert (imitation.bc_expert) first (imitation.enabled) for a warm start.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ class StepRecord:
     player: int
     step: int
     outcome: float = 0.0  # filled after the game ends
-    # Two-player search (Tier 3.2): the opponent's (apex) launches this turn,
+    # Two-player search (Tier 3.2): the opponent's launches this turn,
     # mapped to SimState schedule entries (from_id, target_id, ships, travel_time).
     # Replayed in search so the lookahead evaluates moves against a real response
     # instead of a passive opponent. Empty unless exit.two_player_search.
@@ -72,7 +72,7 @@ class StepRecord:
 
 
 def _map_opp_moves(opp_moves: list, game_state: Any) -> list:
-    """Map opponent apex moves [(from_id, angle, ships)] to SimState schedule
+    """Map opponent moves [(from_id, angle, ships)] to SimState schedule
     entries (from_id, target_id, ships, travel_time), using true geometry from
     the (full-information) game state to ray-cast each launch to its target."""
     from .state import predict_fleet_destination
@@ -183,9 +183,13 @@ def play_single_game(
     device: torch.device,
     seed: int,
 ) -> tuple[list[StepRecord], float]:
-    """Play ONE game of the policy (player 0) vs apex (player 1). Returns
-    (records, outcome). Backend = fast_env (cfg.exit.collect_fast_env) or Kaggle."""
-    from agents.apex import agent as apex_agent
+    """Play ONE game of the policy (player 0) vs cfg.exit.opponent (player 1).
+    Returns (records, outcome). Backend = fast_env (cfg.exit.collect_fast_env)
+    or Kaggle. Opponent resolves via agents.load_named_agent (fresh per game —
+    producer-tier agents keep module-level movement caches)."""
+    from agents import load_named_agent
+
+    opp_agent = load_named_agent(cfg.exit.opponent)
 
     game_records: list[StepRecord] = []
     two_player = cfg.exit.two_player_search
@@ -204,7 +208,7 @@ def play_single_game(
             obs0, obs1 = sim.observation(0), sim.observation(1)
             n0 = len(game_records)
             moves = _policy_decide(model, cfg, device, obs0, game_records)
-            opp_moves = apex_agent(obs1) or []
+            opp_moves = opp_agent(obs1, None) or []
             _record_opp(n0, opp_moves)
             sim.step([moves, list(opp_moves)])
         reward = sim.rewards[0]
@@ -220,7 +224,7 @@ def play_single_game(
             obs1 = _extract_obs(states[1])
             n0 = len(game_records)
             moves = _policy_decide(model, cfg, device, obs0, game_records)
-            opp_moves = apex_agent(obs1) or []
+            opp_moves = opp_agent(obs1, None) or []
             _record_opp(n0, opp_moves)
             states = env.step([moves, list(opp_moves)])
             done = _extract_status(states[0]) != "ACTIVE"
@@ -263,7 +267,7 @@ def collect_games(
     n_games: int,
     seed: int,
 ) -> tuple[list[StepRecord], list[float], float]:
-    """Play n_games of the current policy vs apex, recording per-decision
+    """Play n_games of the current policy vs cfg.exit.opponent, recording per-decision
     StepRecords for search improvement.
 
     With cfg.exit.collect_workers>1 the (independent) games are played in parallel
@@ -316,7 +320,7 @@ def _search_record(rec: StepRecord, env_cfg, exit_cfg, value_model=None) -> V2Ex
     target_probs = np.zeros((P, P + 1), dtype=np.float32)
     frac_probs = np.zeros((P, P, K), dtype=np.float32)
 
-    # Two-player search: inject the opponent's turn-1 response (its actual apex
+    # Two-player search: inject the opponent's turn-1 response (its actual
     # launches this step) into the base state, so EVERY candidate (and hold) is
     # evaluated against a real opponent instead of a passive one.
     base_sim = rec.sim_state
@@ -542,7 +546,7 @@ def main() -> None:
     save_dir = Path(cfg.save_dir)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.exit.train_lr)
 
-    # Optional BC warm start (clone apex first, then improve by search)
+    # Optional BC warm start (clone the expert first, then improve by search)
     if cfg.imitation.enabled and not args.resume:
         from .imitation import v2_bc_pretrain
         from .train import _load_or_collect_demos
@@ -605,7 +609,7 @@ def main() -> None:
             },
         )
         log(
-            f"iter={it:4d}  selfwin_vs_apex={win_rate:.0%}  decisions={len(records)}  "
+            f"iter={it:4d}  selfwin_vs_opp={win_rate:.0%}  decisions={len(records)}  "
             f"dataset={len(all_samples)}  loss={m.get('loss', 0):.4f}  "
             f"tloss={m.get('target_loss', 0):.4f}  floss={m.get('frac_loss', 0):.4f}  "
             f"vloss={m.get('value_loss', 0):.4f}  collect={t_collect:.0f}s  "

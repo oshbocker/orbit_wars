@@ -7,34 +7,26 @@ just need their own config so feature dims match the weights (v3: 24-dim planets
 v4: 28-dim planets + rich globals).
 
 Usage:
-    # ExIt checkpoint vs apex (defaults to configs/v2_exit.yaml — base-v2 arch)
+    # ExIt checkpoint vs producer (defaults to configs/v2_exit.yaml — base-v2 arch)
     uv run python scripts/replay.py \
         --checkpoint outputs/checkpoints/v2_exit_a100/ckpt_last.pt --exit
 
-    # V2 checkpoint vs apex (default)
+    # V2 checkpoint vs producer (default)
     uv run python scripts/replay.py \
-        --checkpoint outputs/checkpoints/v2_default/ckpt_last.pt
+        --checkpoint outputs/checkpoints/v2_exit_a100/ckpt_last.pt
 
-    # V4 checkpoint vs apex (defaults to configs/v4_ceiling.yaml)
-    uv run python scripts/replay.py \
-        --checkpoint outputs/checkpoints/v4_ceiling/ckpt_last.pt --v4
-
-    # V3 checkpoint vs apex (defaults to configs/v3_features.yaml)
-    uv run python scripts/replay.py \
-        --checkpoint outputs/checkpoints/v3_a100/ckpt_last.pt --v3
-
-    # ExIt checkpoint vs apex (defaults to configs/v2_exit.yaml)
+    # ExIt checkpoint vs producer (defaults to configs/v2_exit.yaml)
     uv run python scripts/replay.py \
         --checkpoint outputs/checkpoints/v2_exit_a100/ckpt_000020.pt --exit
 
-    # V2 checkpoint vs hybrid with custom output
+    # V2 checkpoint vs v5 with custom output
     uv run python scripts/replay.py \
-        --checkpoint outputs/checkpoints/v2_default/ckpt_last.pt \
-        --opponent hybrid --output my_game.html
+        --checkpoint outputs/checkpoints/v2_exit_a100/ckpt_last.pt \
+        --opponent v5 --output my_game.html
 
     # Set seed for reproducible games, play as player 1
     uv run python scripts/replay.py \
-        --checkpoint outputs/checkpoints/v2_default/ckpt_last.pt \
+        --checkpoint outputs/checkpoints/v2_exit_a100/ckpt_last.pt \
         --seed 42 --side 1
 """
 
@@ -59,7 +51,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=str,
         default=None,
-        help="Config YAML (required for --v1, default for v2: configs/v2_default.yaml)",
+        help="Config YAML (required for --v1, default: configs/v2_exit.yaml)",
     )
     parser.add_argument(
         "--v1",
@@ -69,12 +61,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--v3",
         action="store_true",
-        help="V3 OrbitNet checkpoint (defaults config to configs/v3_features.yaml)",
+        help="V3 OrbitNet checkpoint (requires --config; v3 configs were pruned)",
     )
     parser.add_argument(
         "--v4",
         action="store_true",
-        help="V4 OrbitNet checkpoint (defaults config to configs/v4_ceiling.yaml)",
+        help="V4 OrbitNet checkpoint (requires --config; v4 configs were pruned)",
     )
     parser.add_argument(
         "--exit",
@@ -84,9 +76,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--opponent",
         type=str,
-        default="apex",
-        choices=["hybrid", "apex", "random"],
-        help="Opponent to play against (default: apex)",
+        default="producer",
+        help="Opponent: any agents.load_named_agent name (default: producer)",
     )
     parser.add_argument(
         "--output",
@@ -111,19 +102,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_opponent(name: str):
-    if name == "hybrid":
-        from agents.hybrid import agent
+    from agents import load_named_agent
 
-        return agent
-    if name == "apex":
-        from agents.apex import agent
-
-        return agent
-    if name == "random":
-        from kaggle_environments.envs.orbit_wars.orbit_wars import random_agent
-
-        return random_agent
-    raise ValueError(f"Unknown opponent: {name}")
+    return load_named_agent(name)
 
 
 def load_v1_agent(ckpt_path: Path, config_path: str, device: torch.device):
@@ -173,20 +154,21 @@ def main() -> None:
             return
         rl_agent = load_v1_agent(ckpt_path, args.config, device)
         agent_label = "V1 RL"
-    elif args.v4:
-        config_path = args.config or "configs/v4_ceiling.yaml"
-        rl_agent = load_v2_agent(ckpt_path, config_path, device, label="V4")
-        agent_label = "V4 RL"
-    elif args.v3:
-        config_path = args.config or "configs/v3_features.yaml"
-        rl_agent = load_v2_agent(ckpt_path, config_path, device, label="V3")
-        agent_label = "V3 RL"
+    elif args.v4 or args.v3:
+        # v3/v4 PPO configs were pruned (rl_research/EXPLORED_AND_ABANDONED.md);
+        # replaying those checkpoints now requires supplying their config explicitly.
+        if not args.config:
+            print("--v3/--v4 require --config (their configs were removed from the repo).")
+            return
+        label = "V4" if args.v4 else "V3"
+        rl_agent = load_v2_agent(ckpt_path, args.config, device, label=label)
+        agent_label = f"{label} RL"
     elif args.exit:
         config_path = args.config or "configs/v2_exit.yaml"
         rl_agent = load_v2_agent(ckpt_path, config_path, device, label="ExIt")
         agent_label = "ExIt RL"
     else:
-        config_path = args.config or "configs/v2_default.yaml"
+        config_path = args.config or "configs/v2_exit.yaml"
         rl_agent = load_v2_agent(ckpt_path, config_path, device)
         agent_label = "V2 RL"
 

@@ -57,13 +57,13 @@ class RewardConfig:
 class EvalConfig:
     eval_every: int = 100
     eval_games: int = 10
-    eval_opponents: list[str] = field(default_factory=lambda: ["apex", "random"])
+    eval_opponents: list[str] = field(default_factory=lambda: ["producer"])
 
 
 @dataclass(slots=True)
 class ImitationConfig:
     enabled: bool = False
-    bc_expert: str = "apex"
+    bc_expert: str = "producer"
     bc_games: int = 50
     bc_demo_opponent: str = "random"
     bc_epochs: int = 20
@@ -93,7 +93,7 @@ class ExItConfig:
     value_loss_coef: float = 1.0
     entropy_coef: float = 0.01
     max_grad_norm: float = 1.0
-    opponent: str = "apex"
+    opponent: str = "producer"
     four_player_prob: float = 0.0
 
 
@@ -106,7 +106,7 @@ class TrainConfig:
     log_dir: str = "outputs/logs"
     checkpoint_every: int = 50
     log_every: int = 1
-    opponent: str = "apex"
+    opponent: str = "producer"
     self_play_update_interval: int = 50
     self_play_deterministic: bool = False
     alternate_player_sides: bool = True

@@ -127,16 +127,10 @@ def _frac_to_bin(frac: float, bins: list[float]) -> int:
 
 
 def _resolve_expert(name: str):
-    """Import and return the expert agent function by name."""
-    if name == "apex":
-        from agents.apex import agent
+    """Import and return the expert agent function by name (v5, producer, ...)."""
+    from agents import load_named_agent
 
-        return agent
-    if name == "hybrid":
-        from agents.hybrid import agent
-
-        return agent
-    raise ValueError(f"Unknown BC expert: {name!r} (expected 'apex' or 'hybrid')")
+    return load_named_agent(name)
 
 
 def _extract_obs(state_entry):
@@ -169,8 +163,8 @@ def _map_expert_moves_to_v2(
     frac_bins[i]      = expert ship-fraction bin index (0 for hold).
     supervise_mask[i] = whether this owned planet contributes to the BC loss.
 
-    We supervise genuine holds (apex launched nothing) and successful matches, but
-    DROP apex launches we couldn't faithfully map (no angular match within
+    We supervise genuine holds (the expert launched nothing) and successful matches, but
+    DROP expert launches we couldn't faithfully map (no angular match within
     tolerance, or matched target not reachable). Previously those were relabeled as
     "hold", which actively taught the clone to be passive.
     """
@@ -203,11 +197,11 @@ def _map_expert_moves_to_v2(
 
         src_moves = moves_by_src.get(src.id, [])
         if not src_moves:
-            # Genuine hold: apex launched nothing from this planet
+            # Genuine hold: the expert launched nothing from this planet
             n_hold += 1
             continue
 
-        # Apex launched: pick the largest-ships move as the primary target
+        # Expert launched: pick the largest-ships move as the primary target
         best_move = max(src_moves, key=lambda m: m[1])
         angle = best_move[0]
         total_ships = sum(s for _, s in src_moves)
@@ -315,8 +309,8 @@ def collect_v2_demonstrations(
 
     total = mapped_count + hold_count + dropped_count
     supervised = mapped_count + hold_count
-    launches = mapped_count + dropped_count  # apex launches we tried to map
-    capture = mapped_count / max(launches, 1) * 100  # of apex launches, how many mapped
+    launches = mapped_count + dropped_count  # expert launches we tried to map
+    capture = mapped_count / max(launches, 1) * 100  # of expert launches, how many mapped
     print(
         f"  V2 demo collection ({cfg.imitation.bc_expert}): {len(buffer)} samples, "
         f"{mapped_count} mapped sends, {hold_count} genuine holds, "
@@ -351,7 +345,7 @@ def compute_v2_bc_loss(
     logits = output.logits  # [B, P, P+1]
     targets = batch["target_indices"]  # [B, P]
     own_mask = batch["own_mask"]  # [B, P]
-    # Supervise only genuine holds + mapped launches; drop unmappable apex launches
+    # Supervise only genuine holds + mapped launches; drop unmappable expert launches
     # so we never teach spurious passivity.
     sup = own_mask & batch["supervise_mask"] if "supervise_mask" in batch else own_mask
 

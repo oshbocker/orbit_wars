@@ -87,10 +87,12 @@ def _ref_search_planet(state, features, sim_state, player, source_slot, env_cfg,
 
 
 def _gen_states(cfg, n_states=4, warm=30):
-    """Step fast_env with apex on both sides to reach mid-game states with
-    in-flight fleets, returning (state, features, sim_state) tuples."""
-    from agents.apex import agent as apex_agent
+    """Step fast_env with a rule-based agent on both sides to reach mid-game
+    states with in-flight fleets, returning (state, features, sim_state) tuples."""
+    from agents import load_named_agent
     from v2.fast_env import FastOrbitWars
+
+    rb0, rb1 = load_named_agent("enders_1000"), load_named_agent("enders_1000")
 
     out = []
     sim = FastOrbitWars(num_agents=2, seed=7)
@@ -102,7 +104,7 @@ def _gen_states(cfg, n_states=4, warm=30):
             feats = encode_features(state, cfg.env)
             ss = build_sim_state(state, with_geometry=True)
             out.append((state, feats, ss))
-        sim.step([apex_agent(obs0) or [], apex_agent(obs1) or []])
+        sim.step([rb0(obs0, None) or [], rb1(obs1, None) or []])
         t += 1
     return out
 

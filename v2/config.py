@@ -31,7 +31,7 @@ class V2EnvConfig:
     # Reachability viability: a target is attackable if src.ships >=
     # takeover_margin * (effective_garrison + 1). 1.0 = "capturable by sending
     # 100%" (matches the submission agent); the old 2.0 ("capturable with 50%")
-    # was over-conservative and masked many of apex's real targets.
+    # was over-conservative and masked many of the expert's real targets.
     takeover_margin: float = 1.0
     # ── v4 ceiling flags (default off → byte-identical to v2/v3) ──────────────
     # Tier 2.2: rotate/reflect the board to a canonical frame (own home at a
@@ -148,7 +148,7 @@ class V2RewardConfig:
 class V2EvalConfig:
     eval_every: int = 100
     eval_games: int = 10
-    eval_opponents: list[str] = field(default_factory=lambda: ["apex", "random"])
+    eval_opponents: list[str] = field(default_factory=lambda: ["producer"])
     # Base map seed for periodic eval. Shared with scripts/eval_fast.py (20000)
     # so in-training win-rates are directly comparable to the trusted scorer.
     eval_seed: int = 20000
@@ -161,7 +161,7 @@ class V2EvalConfig:
 @dataclass(slots=True)
 class V2ImitationConfig:
     enabled: bool = False
-    bc_expert: str = "apex"
+    bc_expert: str = "producer"
     bc_games: int = 200
     bc_demo_opponent: str = "random"
     bc_epochs: int = 50
@@ -173,7 +173,7 @@ class V2ImitationConfig:
     bc_skip_steps: int = 0
     bc_cache_path: str = ""  # if set, pickle-cache demos here and reuse across runs
     bc_match_tolerance_deg: float = (
-        90.0  # angular tolerance for matching an apex launch to a target slot
+        90.0  # angular tolerance for matching an expert launch to a target slot
     )
     # ── v4 ceiling flags (default off) ──
     # Tier 0.1: floor the imitation coefficient so the BC/expert anchor never
@@ -181,7 +181,7 @@ class V2ImitationConfig:
     # stops self-play from forgetting how to beat the script (DeepNash lesson).
     coef_floor: float = 0.0
     # Tier 3.3: optional path to extra BC/value demonstrations distilled from
-    # top-leaderboard replays (stronger teacher than apex alone).
+    # top-leaderboard replays (stronger teacher than one expert alone).
     bc_replay_path: str = ""
 
 
@@ -202,7 +202,7 @@ class V2ExItConfig:
     max_grad_norm: float = 0.5
     dataset_max_iters: int = 3  # keep this many iterations of data in the buffer
     four_player_prob: float = 0.0
-    opponent: str = "apex"
+    opponent: str = "producer"
     sample_collect: bool = True  # sample (vs argmax) during self-play collection
     search_workers: int = 0  # >1 = parallelize the (CPU-bound) search across processes
     collect_workers: int = 0  # >1 = play the games of each iteration in parallel across
@@ -216,7 +216,7 @@ class V2ExItConfig:
     # opponent (two_player_search) so the search reflects real opposition.
     neural_value_leaves: bool = False
     use_batched_env: bool = False
-    # Replay the opponent's turn-1 apex launch in the lookahead. Default OFF:
+    # Replay the opponent's turn-1 launch in the lookahead. Default OFF:
     # when implemented (2026-06-04) it DEGRADED the 77% agent (too-sparse one-ply
     # opponent biases the search toward passivity). Opt in only for experiments.
     two_player_search: bool = False
@@ -273,7 +273,7 @@ class V2Config:
     log_dir: str = "outputs/logs"
     checkpoint_every: int = 50
     log_every: int = 1
-    opponent: str = "apex"
+    opponent: str = "producer"
     alternate_player_sides: bool = True
     self_play_update_interval: int = 50
     self_play_deterministic: bool = False
@@ -282,11 +282,11 @@ class V2Config:
     rule_based_prob_end: float = 0.2
     rule_based_decay_updates: int = 2000
     # PFSP (prioritized fictitious self-play). When enabled, replaces the linear
-    # rule-based decay with a pool of {apex (always kept), frozen self-snapshots}
+    # rule-based decay with a pool of {rule-based anchor (always kept), frozen self-snapshots}
     # sampled by win-rate so the agent trains more against what it loses to —
-    # which prevents self-play from forgetting how to beat apex.
+    # which prevents self-play from forgetting how to beat the anchor.
     pfsp_enabled: bool = False
-    pfsp_apex_min_prob: float = 0.3  # floor on probability of facing apex each episode
+    pfsp_anchor_min_prob: float = 0.3  # floor on probability of facing the anchor each episode
     pfsp_pool_size: int = 5  # max frozen self-snapshots retained
     pfsp_snapshot_every: int = 50  # add a frozen self-snapshot every N updates
     pfsp_weighting: str = "hard"  # "hard" (favor low win-rate) or "uniform"

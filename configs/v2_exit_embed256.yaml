@@ -10,7 +10,7 @@ device: auto
 save_dir: outputs/checkpoints
 log_dir: outputs/logs
 checkpoint_every: 5
-opponent: apex
+opponent: producer
 
 env:
   max_planets: 40
@@ -30,17 +30,17 @@ model:
 eval:
   eval_every: 5
   eval_games: 15
-  eval_opponents: [apex, random]
+  eval_opponents: [producer]
 
 imitation:
   enabled: true
-  bc_expert: apex
+  bc_expert: producer
   bc_games: 150
   bc_demo_opponent: random
   bc_epochs: 50
   bc_lr: 0.001
   bc_batch_size: 256
-  bc_cache_path: experiments/demos_apex_exit_ab.pkl
+  bc_cache_path: experiments/demos_producer_embed256.pkl
 
 exit:
   enabled: true
@@ -56,7 +56,7 @@ exit:
   max_grad_norm: 0.5
   dataset_max_iters: 3
   four_player_prob: 0.0
-  opponent: apex
+  opponent: producer
   sample_collect: true
   search_workers: 6
   collect_workers: 6     # parallelize the games (collection is the ExIt bottleneck)
