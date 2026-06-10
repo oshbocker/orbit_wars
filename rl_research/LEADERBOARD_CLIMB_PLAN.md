@@ -140,15 +140,29 @@ submission gating — LB episodes mix both formats.
 ### Phase 1 — "v5 base": best public skeleton + our orthogonal fixes (days 1–3)
 Pick the arena winner as the base (expected: Producer flow-diff). Add what it
 measurably lacks (each gated on arena games vs the full pool):
-- Comet handling (Producer ignores comets; the 1224 agent's exact-path comet logic +
-  our comet evacuation are drop-ins).
-- Endgame: total-war dump + late-game capture-refusal windows (from 1224).
+- ~~Comet handling~~ **CLOSED 2026-06-10 — premise was wrong.** Producer does NOT
+  ignore comets: `_apply_comet_paths` projects exact comet path positions + expiry
+  (`alive_by_step`), and `safe_drain` + the exact flow-diff implicitly evacuate
+  doomed comets (saved ships score ≈ their count). Audit (producer vs 1224, seeds
+  31000/31001): producer captured 2/1 comets, lost only 1/7 ships to expiry; the
+  1224 agent with "exact comet logic" lost 33. Nothing to port.
+- ✅ Endgame (2026-06-10, in `agents/v5/`): planning horizon clamped to remaining
+  game steps (config-level replace; `garrison_status(max_horizon<build)` is broken
+  upstream). Makes the flow-diff exact wrt termination → late capture-refusal +
+  total-war drains fall out for free. Gate pending.
 - Snipe + crash-exploit timing missions (from the v4 lineage) if the flow-diff scorer
   doesn't already subsume them (check in arena).
-- 4P preset tuning: nearest-opponent priority vs Producer's leader-guard — A/B in
-  4-player arena games (LB plays both modes; we've been blind to 4P).
+- ✅ 4P preset tuning (2026-06-10, in `agents/v5/`): nearest-opponent priority
+  (1.25×/0.55× score mult on enemy-owned targets, distance-1100 lineage) added on
+  top of Producer's leader-guard bonuses; knobs default-off, on in the 4P preset.
+  Gate pending (4P arena).
 - ROI threshold / horizon sweep (1.5/18 are hand-tuned for *their* pool, not the
   current LB meta).
+
+**v5 status 2026-06-10:** fork = `agents/v5/` (package renamed `orbit_lite_v5`),
+arena spec `v5`, bundle builder `scripts/build_v5_bundle.py` (verified via Kaggle
+file loader). Gate runs queued: 2P v5-vs-producer n=60 + 4P co-occurrence n=32,
+paired seeds (`outputs/arena/gate_v5*.csv`).
 
 ### Phase 2 — ML edge on top (days 3–6, the RL-learning track)
 In order of expected value-per-day:
@@ -169,6 +183,12 @@ In order of expected value-per-day:
 - Every improvement that beats the incumbent in the arena (n≥60, multi-seed, both 2P
   and 4P) gets submitted same-day; keep the better of the 2 active slots pinned.
 - Track LB score deltas per submission in this file.
+
+**Submission log:**
+| date | bundle | LB score | note |
+|---|---|---|---|
+| 2026-06-04 | v2_exit_a100 iter-20 | 736.7 → 725.3 (drifting) | ExIt champion vs apex |
+| 2026-06-10 15:23 | producer_bundle | 695.0 (hours old) | ladder starts low; judge ≥1 day |
 
 ### Explicit non-goals this week
 - No more search-hyperparameter A/Bs vs apex (collect the in-flight Colab results,
