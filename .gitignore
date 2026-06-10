@@ -49,3 +49,6 @@ experiments/margin_vs_apex.json
 
 # Research paper PDFs (downloaded locally; keep the .md write-ups)
 rl_research/*.pdf
+
+# Arena logs (CSV results are tracked; logs are not)
+outputs/arena/*.log
