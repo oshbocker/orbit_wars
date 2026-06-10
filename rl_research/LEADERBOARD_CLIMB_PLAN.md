@@ -156,8 +156,11 @@ measurably lacks (each gated on arena games vs the full pool):
   (1.25×/0.55× score mult on enemy-owned targets, distance-1100 lineage) added on
   top of Producer's leader-guard bonuses; knobs default-off, on in the 4P preset.
   Gate pending (4P arena).
-- ROI threshold / horizon sweep (1.5/18 are hand-tuned for *their* pool, not the
-  current LB meta).
+- ~~ROI threshold / horizon sweep~~ **CLOSED 2026-06-10/11, no change.** Mirror
+  A/B vs producer: roi 1.8 = 42%, horizon 14 = 37%, horizon 22 = 42% (all noise
+  or worse, n=60); roi 1.2 looked like 57% at n=60 but converged to **52.2% ±
+  3.7% at n=180** (fresh 120 games: exactly 50.0%) — regression to the mean.
+  Producer's hand-tuned 1.5/18 survive. (`outputs/arena/sweep_roi.csv`)
 
 **v5 status 2026-06-10 (end of day): SHIPPED.** Fork = `agents/v5/` (package renamed
 `orbit_lite_v5`), arena spec `v5` (+ parametrized `v5:key=val+key=val` for sweeps),
@@ -211,7 +214,7 @@ In order of expected value-per-day:
 |---|---|---|---|
 | 2026-06-04 | v2_exit_a100 iter-20 | 736.7 → 729.4 | ExIt champion vs apex; slot freed 06-10 |
 | 2026-06-10 15:23 | producer_bundle | 695.0 → **1242.7** (same day) | **rank 140/4212 (top 3.3%)**, was 1762 |
-| 2026-06-10 ~23:00 | v5_bundle | pending | producer + endgame clamp + 4P nearest-opp; replaced ExIt slot |
+| 2026-06-10 19:48 | v5_bundle | **1110.5** (hours old, climbing) | producer + endgame clamp + 4P nearest-opp; replaced ExIt slot |
 
 ### Explicit non-goals this week
 - No more search-hyperparameter A/Bs vs apex (collect the in-flight Colab results,
