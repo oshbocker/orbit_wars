@@ -215,5 +215,48 @@ into `agents/v5/orbit_lite_v5/` — their presence auto-enables the veto.
 
 ---
 
+## Cluster 7 — Second candidate size per (source, target) *(closed 2026-06-11, code kept default-off)*
+
+**What it was.** Phase 2 Track 1 of the leaderboard climb: attack producer's
+known single-size structural limit. `plan_lite_waves` builds exactly one
+candidate per (source, target) with size = full `safe_drain`; we added a
+config-gated second "just enough to capture" variant (`cheap_capture_margin`):
+size = ceil(capture floor at the cheap fleet's own arrival turn + margin),
+capped at the drain, never on owned targets. Candidate axis C = S×T → 2·S×T;
+the exact flow-diff scorer arbitrates, greedy's one-wave-per-target mask keeps
+the sizes mutually exclusive. Implementation clean: off-state verified
+move-identical over a full game; on-state 29ms mean step (budget 1s).
+
+**Result: STRUCTURALLY INERT.** Gate arena (margin=4, n=120 per pairing,
+side-alternated paired seeds): 45.4% vs plain v5, 53.8% vs producer, steps
+margins flat — i.e. an A/A measurement. Instrumented diagnostic explained why:
+in a full 246-step game the greedy selector fired 81 attack waves and chose the
+cheap variant **0 times**.
+
+**Why the scorer can never prefer it.** Fleet speed grows with size, so the
+full-drain candidate is a strict superset in reachability and arrives no later;
+earlier capture banks more production inside the horizon; ships sent vs ships
+kept home are the same ships to the flow projection; and `safe_drain` already
+protects the source's defense needs, so draining has no modeled downside. Hence
+score(full) ≥ score(cheap) always, and exact ties break by lower candidate
+index = the full variant. The premise "the exact scorer will arbitrate" was
+wrong — within producer's no-opponent projection, full drain is provably
+(weakly) optimal, so the second size can only ever win when the target's
+projected floor *drops* between the two arrival turns (a third-party in-flight
+fleet smashing the defender first) — rare in 2P, unobserved in practice.
+Margin sweeps cannot fix a candidate that never gets selected; the planned
+margin=8 run was cancelled on this finding.
+
+**What survives.** The gated code in `agents/v5/main.py` (`cheap_capture_margin
+< 0` default = byte-identical), the gate CSV
+(`outputs/arena/gate_cheap_capture_2p.csv` — doubles as a clean n=120 A/A
+reference: 45.4%/53.8%), and the lesson: **any "alternative candidate" for the
+producer planner must come with a scoring term that can actually distinguish
+it** — the flow diff is indifferent to where ships sit and strictly prefers
+speed, so candidate-axis extensions need either a modeled opponent response or
+an explicit risk/commitment term before they can matter.
+
+---
+
 *Confirmed dead ends are also tracked tersely in `CLAUDE.md` and `memory/`. This file is the
 long-form "why" companion to those one-liners.*
