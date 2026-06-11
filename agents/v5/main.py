@@ -100,6 +100,12 @@ class ProducerLiteConfig:
     # scale candidate scores on enemy-owned targets by near/far opponent. 1.0 = off.
     ffa_near_opponent_mult: float = 1.0
     ffa_far_opponent_mult: float = 1.0
+    # v5: second "just enough to capture" candidate size per (source, target):
+    # size = ceil(capture floor at arrival + margin) alongside the full
+    # safe_drain candidate; the exact flow-diff scorer arbitrates. Attacks the
+    # single-size structural limit (full-drain captures of small neutrals strand
+    # ships the scorer would rather keep home). < 0 (default) = OFF, byte-identical.
+    cheap_capture_margin: float = -1.0
 
 
 def _movement_config(config: ProducerLiteConfig, *, player_count: int) -> MovementConfig:
@@ -243,6 +249,43 @@ def plan_lite_waves(
         & source_exists.view(S, 1) & target_exists.view(1, T)
     )                                                                            # [S, T]
 
+    # --- v5: optional second, cheaper size per (source, target) -----------------
+    # Just-enough-to-capture: ceil(floor_at_arr + margin), capped at the drain.
+    # The smaller fleet is slower, so its floor is re-gated at its OWN (later)
+    # arrival turn; if defenders outgrow the margin in flight the variant drops
+    # and the full-size candidate stays on the board. Greedy's one-wave-per-target
+    # mask keeps the two sizes mutually exclusive; the scorer picks between them.
+    two_sizes = float(config.cheap_capture_margin) >= 0.0
+    if two_sizes:
+        sizes2 = (floor_at_arr + float(config.cheap_capture_margin)).ceil().clamp(min=1.0)
+        sizes2 = torch.minimum(sizes2, sizes)                                    # [S, T]
+        # Only when strictly cheaper than the drain candidate, and never on owned
+        # targets (their floor is 1 — a token reinforcement is junk).
+        distinct = (sizes2 < sizes) & ~target_is_mine.view(1, T)
+        active2 = reachable_mask(
+            movement, source_idx=source_idx, target_idx=target_idx,
+            fleet_sizes=sizes2.unsqueeze(-1), eta_cap=eta_cap,
+        ).squeeze(-1) & distinct
+        aim2 = intercept_angle(
+            movement,
+            source_idx.unsqueeze(1),
+            target_idx.unsqueeze(0),
+            sizes2,
+            active=active2,
+        )
+        angle2 = aim2["angle"]                                                   # [S, T]
+        eta2 = aim2["eta"]
+        viable2 = aim2["viable"] & (eta2 <= eta_cap.view(1, T))
+        if K > 0:
+            k_arr2 = (eta2.clamp(min=1.0, max=float(K)).ceil().long() - 1).clamp(0, K - 1)
+            floor_at_arr2 = floor.unsqueeze(0).expand(S, T, K).gather(-1, k_arr2.unsqueeze(-1)).squeeze(-1)
+        else:
+            floor_at_arr2 = torch.ones(S, T, dtype=dtype, device=device)
+        valid2 = (
+            viable2 & (sizes2 >= floor_at_arr2) & (sizes2 >= 1.0) & distinct
+            & src_neq_tgt & source_exists.view(S, 1) & target_exists.view(1, T)
+        )                                                                        # [S, T]
+
     # --- pack one candidate per (source, target); contributor axis L = 1 --------
     L = 1
     C = S * T
@@ -255,6 +298,23 @@ def plan_lite_waves(
     cand_active = valid.reshape(C, L)
     cand_valid = valid.reshape(C)
     cand_is_def = target_is_mine[cand_tgt_short]                                  # [C]
+    if two_sizes:
+        # Append the cheap-size variants: candidate axis C -> 2C. Everything
+        # downstream (scoring, FFA bonuses, greedy) is shape-generic over C.
+        cand_src = torch.cat([cand_src, cand_src], dim=0)
+        cand_tgt_slot = torch.cat([cand_tgt_slot, cand_tgt_slot], dim=0)
+        cand_tgt_short = torch.cat([cand_tgt_short, cand_tgt_short], dim=0)
+        cand_send = torch.cat(
+            [cand_send, torch.where(valid2, sizes2, torch.zeros_like(sizes2)).reshape(C, L)], dim=0
+        )
+        cand_angle = torch.cat([cand_angle, angle2.reshape(C, L)], dim=0)
+        cand_eta = torch.cat(
+            [cand_eta, torch.where(valid2, eta2, torch.ones_like(eta2)).reshape(C, L)], dim=0
+        )
+        cand_active = torch.cat([cand_active, valid2.reshape(C, L)], dim=0)
+        cand_valid = torch.cat([cand_valid, valid2.reshape(C)], dim=0)
+        cand_is_def = torch.cat([cand_is_def, cand_is_def], dim=0)
+        C = 2 * C
 
     launches = make_launch_set(
         source_slots=cand_src,
