@@ -38,7 +38,11 @@ def _normalize_obs(obs):
     ip = obs.get("initial_planets") or []
     if ip and isinstance(ip[0], dict):
         out["initial_planets"] = [[p[k] for k in _PLANET_KEYS] for p in ip]
-    return out
+    # Struct, not plain dict: some vendored agents read obs.angular_velocity /
+    # obs.step attribute-style (real-env Struct semantics).
+    from kaggle_environments.utils import Struct
+
+    return Struct(**out)
 
 
 def load_named_agent(name: str):

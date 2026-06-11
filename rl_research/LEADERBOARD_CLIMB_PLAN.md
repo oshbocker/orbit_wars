@@ -225,6 +225,21 @@ In order of expected value-per-day:
    - **To launch: open the notebook on Colab (A100), run cells 1→4 with
      PIPELINE='producer256'.** Gate after: download ckpt, arena vs pool + mirror
      vs producer/v5 (n≥120).
+
+   **RESULT 2026-06-11 — the re-anchor WORKED; new RL champion (not shipped):**
+   Colab run `v2_exit_producer256_a100` (40 iters, 20 min wall-clock). In-training
+   eval vs producer read 0% throughout — that's the producer ceiling, not failure.
+   Real-env arena (n=30/pair): **mean 55%, #3 in the pool** — beats ow_proto 87%,
+   enders_1000 87%, and the old champion exit_embed256 **97%** (old champion: 15%
+   mean, last place); still 3% vs producer and v5. fast_env iter sweep vs
+   ow_proto: BC clone 37% → iter-25 **97%** → iter-40 97% (ExIt added +60pp;
+   plateaued by iter 25). Best ckpt = `v2_exit_producer256_a100/ckpt_000025.pt`.
+   Diagnosed limits for the next run: (a) zero collection wins vs producer →
+   outcome/value signal constant (vloss→0.0002) — needs a mixed/beatable opponent
+   pool; (b) search fraction targets ~uniform (floss≈ln4) — sizing doesn't distill,
+   and exact sizing is precisely producer's edge; (c) launch rate 0.37/step
+   (passive vs producer). NOT submitted: ~1100–1180 LB tier would sacrifice one of
+   the two slots (1222.8 producer / 1174.1 v5).
 3. (Stretch) **Learned value from real episodes**: pull top-team episodes via Meta
    Kaggle, train the 16-feature global value, use it for candidate re-ranking in the
    flow-diff planner (re-rank near-ties only — respects our sibling-ranking finding).
