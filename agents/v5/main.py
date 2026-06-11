@@ -414,9 +414,11 @@ CONFIG_4P = dataclasses.replace(
     max_regroup_targets_per_source=8,
     ffa_leader_attack_bonus=0.035,
     ffa_target_prod_bonus=0.08,
-    # v5: nearest-opponent priority (1.25x/0.55x, per the distance-1100 lineage)
-    ffa_near_opponent_mult=1.25,
-    ffa_far_opponent_mult=0.55,
+    # v5: nearest-opponent priority OFF (was 1.25x/0.55x per the distance-1100
+    # lineage; neutral in local 4P arena but the ladder converged v5 71 pts below
+    # producer 2026-06-11 — this was the most-active delta, so reverted to parity).
+    ffa_near_opponent_mult=1.0,
+    ffa_far_opponent_mult=1.0,
 )
 
 
