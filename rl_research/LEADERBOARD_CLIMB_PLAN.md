@@ -264,6 +264,90 @@ In order of expected value-per-day:
      GATE after: download ckpts; arena must (1) beat the iter-25 champion
      head-to-head AND (2) raise the pool mean >55%, n≥30/pair; plus mirror vs
      producer/v5 at n≥60. Never act on n<100 outliers (A/A ±6% @ n=60).
+
+   **RESULT 2026-06-11 — GATE FAILED both conditions; champion UNCHANGED
+   (`v2_exit_producer256_a100/ckpt_000025.pt`).** Colab run
+   `v2_exit_producer256_v2_a100` (60 iters, 87 min): the data fixes landed as
+   designed (vloss alive 0.001–0.03 vs 0.0002 starved; steady wins vs
+   enders/ow_proto in collection; tloss 0.35→0.27) but did NOT translate:
+   - Head-to-head vs incumbent (n=30 each): iter-25 43%, iter-50 40%,
+     iter-60 43% — pooled 42% over 90 games, consistently below 50%.
+   - Pool (n=30/pair, same 4 opponents; incumbent = 3/3/87/87 → 45%):
+     new iter-60 = 0/3/73/80 → 39%; new iter-25 = 0/3/73/90 → 42%. Every
+     pair flat or down. floss stayed ≈ln4 throughout.
+   Verdict: mixed-pool + 3× data mildly REGRESSED the champion. The
+   "value signal" hypothesis is refuted as the lever — **nothing in the
+   pipeline consumes the value head** (search leaves are heuristic
+   `evaluate_state`; the head is only read by the graveyarded
+   neural_value_leaves/value_leaf_blend paths), so restoring vloss could not
+   improve the policy; meanwhile 75% of collection games shifted to
+   sub-producer states and diluted the distillation distribution.
+
+   **ROOT CAUSE FOUND (floss diagnostic, 2026-06-11): the search is
+   horizon-blind.** Measured on collection-distribution decisions: only
+   **16.8%** of enumerated candidates arrive within the depth-12 horizon
+   (median travel time 28.5 turns, p75≈48). For the rest the launched fleet is
+   still in flight at the leaf, and `evaluate_state` counts in-flight ships at
+   full value → the leaf eval is IDENTICAL to hold (measured per-decision
+   candidate q-spread: 0.0 at p90, across targets AND fractions). Gumbel's
+   completed-Q then degenerates (`_minmax` → all 0.5) and pi' = softmax(prior
+   logits + const) = **the prior itself**: ~5 of 6 decisions distill the prior
+   back into itself. This explains floss≈ln4 (fraction siblings differ only by
+   fleet speed — virtually never resolve differently in-horizon), the iter-25
+   plateau, and why producer's long-range exact sizing never distills.
+
+   **Next single-variable bet: arrival-resolving search horizon** — simulate
+   each candidate to `tt + settle_margin` (capped) instead of fixed depth-12,
+   so every candidate's consequence (capture succeeds/fails at THIS size)
+   reaches the leaf. Directly creates the missing fraction signal. Cost is
+   bounded per candidate and search is not the bottleneck (8–16s/iter vs
+   40–75s collect on Colab). Graveyard caveat to respect: the passive in-sim
+   opponent never reinforces, so longer horizons may overrate distant
+   captures — gate vs the champion on paired seeds, flag default-off.
+
+   **Phase 2.2c — arrival-resolving horizon, BUILT + mechanism-verified
+   2026-06-11 (ready for Colab):**
+   - `exit.arrival_horizon` (default OFF, bit-identity re-verified via
+     `scripts/test_gumbel_search.py`) + `arrival_settle_margin` (4) +
+     `arrival_horizon_cap` (60) in `v2/search.py::_decision_depth`: per-decision
+     depth = min(cap, ceil(max candidate tt) + margin), UNIFORM across the
+     decision's candidates INCLUDING hold (evaluate_state's production term
+     grows with depth → mixed-depth leaves are not comparable). Threaded
+     through `_simulate_descriptor` on both the legacy and Gumbel paths.
+   - **Mechanism probe (`scripts/diag_arrival_horizon.py`, champion ckpt, 1
+     game vs ow_proto, 30 records): the fix works exactly where signal is
+     possible, and the residual flatness is NOT horizon-blindness.** ON vs OFF:
+     hostile-candidate resolution 0%→100% @p50; hostile decisions with live
+     q-spread 24%→49%; capture-capable (src≥10) 35%→65%; spread magnitude p90
+     32→123; fraction-entropy p10 1.06→0.02 (decisions with signal get
+     near-deterministic sizing targets). cap=90 ≡ cap=60 (cap not binding).
+   - **Two exact cancellation mechanisms explain the still-flat decisions —
+     both correct, neither fixable by depth:** (1) friendly transfers conserve
+     ships → q ≡ hold by construction; (2) a FAILED attack on the (best) enemy
+     trades ships 1:1 and `evaluate_state` scores `my − best_enemy`, so the
+     trade cancels exactly (matches producer's priced-in-attrition worldview —
+     the same property that killed the shot-validator veto). Net: the lever
+     unlocks sizing signal on capture-capable attack decisions specifically —
+     which is precisely producer's edge we failed to distill. Expect floss to
+     drop below ln4 but NOT to 0; pi'=prior on consequence-free decisions is
+     correct deference, not degeneracy.
+   - Single-variable run: `configs/v2_exit_producer256_v3.yaml` = champion
+     recipe (fresh BC from producer-mirror demos, producer opponent, NOT the
+     2.2b pool) + the three arrival flags; eval adds ow_proto. Notebook
+     `PIPELINE='producer256_v3'` (new default).
+   - Local smoke (2 iters, 4 games, warm-start, ON vs OFF same seeds): both
+     complete; search 11–13s ON vs 4–7s OFF (~2–3×, still ≪ collect 30–49s →
+     off the critical path, no gumbel_sims trim needed). floss ON ≈ OFF at
+     2 iters (1.36 both) — EXPECTED: floss separates only as distillation
+     converges; the probe's target-entropy sharpening is the leading
+     indicator. On Colab watch floss over the full 40 iters (2.2b reference:
+     pinned ≈1.386 throughout) and expect a drop toward ~1.15–1.25, NOT 0
+     (~78% of decisions are consequence-free → correctly keep prior targets).
+   - **Launch = user, on Colab: cells 1→4, PIPELINE='producer256_v3'.** GATE
+     after: download ckpts; beat `v2_exit_producer256_a100/ckpt_000025.pt`
+     head-to-head AND raise the 4-opponent pool mean (>45%), n≥30/pair; mirror
+     vs producer/v5 n≥60. Watch for the aggression signature (launch rate up +
+     mirror losses) → lever is cap/margin, not an opponent model.
 3. (Stretch) **Learned value from real episodes**: pull top-team episodes via Meta
    Kaggle, train the 16-feature global value, use it for candidate re-ranking in the
    flow-diff planner (re-rank near-ties only — respects our sibling-ranking finding).

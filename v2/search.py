@@ -188,6 +188,25 @@ def _enumerate_candidates(
     return src, descs
 
 
+def _decision_depth(descs: list[tuple], exit_cfg: V2ExItConfig) -> int:
+    """Sim depth for ONE source-planet decision (Phase 2.2c arrival horizon).
+
+    Flag off -> the fixed exit_cfg.search_depth (byte-identical legacy behaviour).
+    Flag on -> min(cap, ceil(max tt over the enumerated candidates) + settle
+    margin), so every candidate's fleet ARRIVES and the capture resolves before
+    the leaf is scored. The depth is UNIFORM across the decision's candidates,
+    including hold: evaluate_state's production term grows with sim depth, so
+    leaves at different depths are not comparable — a deeper leaf would win/lose
+    on accumulated production, not on the action.
+    """
+    if not bool(getattr(exit_cfg, "arrival_horizon", False)):
+        return int(exit_cfg.search_depth)
+    max_tt = max((d[4] for d in descs if d[0] == "frac"), default=0.0)
+    margin = int(getattr(exit_cfg, "arrival_settle_margin", 4))
+    cap = int(getattr(exit_cfg, "arrival_horizon_cap", 60))
+    return min(cap, int(math.ceil(max_tt)) + margin)
+
+
 def _advance(
     sc: SimState,
     depth: int,
@@ -392,7 +411,7 @@ def _gumbel_search_planet(
     rng = np.random.default_rng(rng_seed)
     g = rng.gumbel(0.0, 1.0, size=C)
 
-    depth = exit_cfg.search_depth
+    depth = _decision_depth(descs, exit_cfg)
     c_visit = float(exit_cfg.gumbel_c_visit)
     c_scale = float(exit_cfg.gumbel_c_scale)
     qcache: dict[int, float] = {}
@@ -527,14 +546,13 @@ def search_improve_planet(
     # candidate enumeration (legacy path simulates them all eagerly).
     src, descs = _enumerate_candidates(state, features, source_slot, env_cfg, exit_cfg)
     src_id = src.id if src is not None else -1
+    depth = _decision_depth(descs, exit_cfg)
     leaves: list[tuple[str, int, int, SimState]] = [
         (
             d[0],
             d[1],
             d[2],
-            _simulate_descriptor(
-                d, sim_state, src_id, exit_cfg.search_depth, rollout_players, launch_fn, every
-            ),
+            _simulate_descriptor(d, sim_state, src_id, depth, rollout_players, launch_fn, every),
         )
         for d in descs
     ]

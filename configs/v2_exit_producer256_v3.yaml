@@ -1,0 +1,103 @@
+# Phase 2.2c — arrival-resolving search horizon (LEADERBOARD_CLIMB_PLAN Phase 2,
+# item 2, "ROOT CAUSE FOUND" block).
+#
+# SINGLE-VARIABLE change vs configs/v2_exit_producer256.yaml (the recipe that
+# produced the champion `v2_exit_producer256_a100/ckpt_000025.pt`): the three
+# exit.arrival_horizon knobs, plus ow_proto in eval (visible progress below the
+# producer ceiling). Producer opponent (NOT the 2.2b mixed pool — that regressed),
+# fresh BC from the Drive producer-mirror demo cache, embed-256, Gumbel ON.
+#
+# Why: the fixed depth-12 search is horizon-blind — only 16.8% of candidates
+# ARRIVE within the lookahead (median tt 28.5); unresolved leaves count the
+# in-flight fleet at full value, eval identical to hold (q-spread 0.0 @ p90),
+# Gumbel's completed-Q degenerates, and pi' = the prior on ~5/6 decisions
+# (floss≈ln4, iter-25 plateau, producer's long-range sizing never distills).
+# With arrival_horizon the decision's depth = min(cap, max-candidate-tt + settle
+# margin), uniform across its candidates INCLUDING hold, so every capture
+# resolves at the leaf and fraction siblings separate.
+#
+# Known risk (watch, don't pre-fix): the passive in-sim opponent never
+# reinforces, so longer horizons may overrate distant captures. If the run
+# regresses with an AGGRESSION signature, the lever is cap/settle_margin.
+#
+#   python -m v2.exit_train --config configs/v2_exit_producer256_v3.yaml
+#
+# GATE: scripts/arena.py — beat ckpt_000025 head-to-head AND raise the
+# 4-opponent pool mean (>45%), n>=30/pair; mirror vs producer/v5 at n>=60.
+run_name: v2_exit_producer256_v3
+seed: 42
+device: auto
+save_dir: outputs/checkpoints
+log_dir: outputs/logs
+checkpoint_every: 5
+opponent: producer
+
+env:
+  max_planets: 40
+  allocation_threshold: 0.05
+  min_ships_to_send: 1
+  ship_fractions: [0.25, 0.5, 0.75, 1.0]
+
+model:
+  embed_dim: 256
+  n_heads: 4
+  n_layers: 3
+  ff_dim: 256
+  planet_feat_dim: 22
+  global_feat_dim: 8
+  n_fractions: 4
+
+eval:
+  eval_every: 5
+  eval_games: 40          # side-alternated + paired seeds (run_periodic_eval)
+  eval_opponents: [producer, ow_proto]
+  eval_seed: 20000        # shared with scripts/eval_fast.py -> directly comparable
+  eval_workers: 6         # set to ~vCPU count on Colab
+
+imitation:
+  enabled: true
+  bc_expert: producer
+  bc_games: 150
+  bc_demo_opponent: producer   # mirror demos: on-distribution states
+  bc_side_alternate: true
+  bc_collect_workers: 6        # set to ~vCPU count on Colab
+  bc_epochs: 50
+  bc_lr: 0.001
+  bc_batch_size: 256
+  bc_cache_path: experiments/demos_producer_mirror_v1.pkl
+
+exit:
+  enabled: true
+  iterations: 40
+  games_per_iter: 8
+  search_depth: 12
+  search_candidates: 10
+  search_temperature: 1.0   # unused on the gumbel path (kept for control A/Bs)
+  train_epochs: 4
+  train_batch_size: 256
+  train_lr: 0.0003
+  value_loss_coef: 0.5
+  max_grad_norm: 0.5
+  dataset_max_iters: 3
+  four_player_prob: 0.0
+  opponent: producer
+  sample_collect: true
+  search_workers: 6         # set to ~vCPU count on Colab
+  collect_workers: 6        # collection is the ExIt bottleneck
+  collect_fast_env: true    # engine-faithful standalone sim (no Kaggle harness)
+  collect_side_alternate: true
+  # ── Gumbel / Sequential-Halving (validated +9.4%; keep ON) ──
+  gumbel_search: true
+  gumbel_sims: 16
+  gumbel_top_m: 8
+  gumbel_c_visit: 50.0
+  gumbel_c_scale: 1.0
+  search_seed: 0
+  # ── Phase 2.2c: arrival-resolving horizon (THE single variable of this run) ──
+  arrival_horizon: true
+  arrival_settle_margin: 4
+  arrival_horizon_cap: 60
+  # ── strong-net in-sim opponent: still ungated, ~1000x slower; keep OFF ──
+  net_opponent: false
+  net_opponent_self: true
+  net_opponent_every: 1

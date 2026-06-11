@@ -269,6 +269,18 @@ class V2ExItConfig:
     gumbel_c_scale: float = 1.0  # dial DOWN to strengthen prior-anchoring of pi'
     # Deterministic per-(record, source) Gumbel seed base (reproducible runs).
     search_seed: int = 0
+    # ── Phase 2.2c (2026-06-11): arrival-resolving search horizon ──────────────
+    # Root cause of the floss≈ln4 plateau: only 16.8% of candidates ARRIVE within
+    # the fixed depth-12 lookahead (median tt 28.5); unresolved leaves count the
+    # in-flight fleet at full value, so they eval identical to hold and pi'
+    # collapses to the prior on ~5/6 decisions. When ON, the depth for a decision
+    # becomes min(arrival_horizon_cap, ceil(max tt over its enumerated candidates)
+    # + arrival_settle_margin) — UNIFORM across the decision's candidates,
+    # INCLUDING hold (evaluate_state's production term grows with sim depth, so
+    # leaves at different depths are not comparable). Default OFF -> byte-identical.
+    arrival_horizon: bool = False
+    arrival_settle_margin: int = 4  # post-arrival steps: capture resolves + a few prod ticks
+    arrival_horizon_cap: int = 60  # hard depth cap (passive in-sim opponent overrates far futures)
     # ── Build 2 (2026-06-07): strong-net in-sim opponent ──────────────────────
     # Roll out the CURRENT distilled net as the in-sim opponent during a leaf's
     # lookahead (AlphaZero-family always opposes with the current strong policy;
