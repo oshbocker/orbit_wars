@@ -278,7 +278,22 @@ In order of expected value-per-day:
 |---|---|---|---|
 | 2026-06-04 | v2_exit_a100 iter-20 | 736.7 → 729.4 | ExIt champion vs apex; slot freed 06-10 |
 | 2026-06-10 15:23 | producer_bundle | 695.0 → **1242.7** (same day) | **rank 140/4212 (top 3.3%)**, was 1762 |
-| 2026-06-10 19:48 | v5_bundle | **1110.5** (hours old, climbing) | producer + endgame clamp + 4P nearest-opp; replaced ExIt slot |
+| 2026-06-10 19:48 | v5_bundle | 1110.5 → 1174.1 → **1159.7 CONVERGED LOW** | producer + endgame clamp + 4P nearest-opp mult; −71 vs producer → mult diagnosed as the suspect delta |
+| 2026-06-11 16:07 | v5_bundle (v5.1) | 835.6 → climbing | **mult OFF** (clamp only) — parity reclaim; once converged, v5.1 vs producer = clean ladder A/B of the clamp |
+| 2026-06-11 16:42 | producer_bundle | re-climbing | resubmit — v5.1 evicted it (active window = latest 2; every ship now = candidate + producer resubmit pair) |
+
+**Phase 2 local-track results (2026-06-11):**
+- **Track 1 (second candidate size) CLOSED — structurally inert.** Flow-diff provably
+  prefers full drain (speed grows with size; 0/81 cheap picks in an instrumented
+  game); gate n=120×2 was pure A/A. Post-mortem: EXPLORED_AND_ABANDONED.md Cluster 7.
+  Code kept gated default-off (`cheap_capture_margin`).
+- **Track 2 knob sweep (ffa_leader_attack_bonus) — NO SIGNAL.** Scan at n=40/agent
+  said 0.15 ≫ incumbent (rank 1.57 vs 1.77); focused confirm at n=48 flipped it
+  (v5 1.60 vs 0.15's 1.71). Pooled head-to-head over 72 games: exactly 50.0%.
+  4P-arena noise floor at n≈40 is ±10%+ — small local 4P deltas are unresolvable
+  at affordable n; the ladder is the only credible 4P instrument.
+- **Next real information = ladder convergence (~06-12):** v5.1 vs producer A/Bs the
+  endgame clamp on the real ladder. Don't spend slots on locally-unresolvable knobs.
 
 ### Explicit non-goals this week
 - No more search-hyperparameter A/Bs vs apex (collect the in-flight Colab results,
