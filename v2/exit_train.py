@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import random
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -137,6 +138,18 @@ def _comet_ids(obs) -> list[int] | None:
 # ── Phase 1: collect games with the current policy ───────────────────────────
 
 
+def resolve_collect_opponent(opponent: str | list[str], seed: int) -> str:
+    """Pick the opponent NAME for one collection game. A single name passes
+    through; a list is sampled deterministically from the game seed (its own
+    RNG stream, so the choice is uncorrelated with the seed%2 side-alternation
+    and collection stays reproducible)."""
+    if isinstance(opponent, (list, tuple)):
+        if not opponent:
+            raise ValueError("exit.opponent is an empty list")
+        return str(opponent[random.Random(seed).randrange(len(opponent))])
+    return str(opponent)
+
+
 def _policy_decide(model, cfg, device, obs0, game_records: list[StepRecord]):
     """Run the policy on obs0, append a StepRecord, return player-0 moves."""
     state = parse_observation(obs0)
@@ -188,10 +201,18 @@ def play_single_game(
     policy sits at seat 0, or alternates seats by seed parity when
     cfg.exit.collect_side_alternate is set (side matters on this engine — see
     the eval-gate lesson). Opponent resolves via agents.load_named_agent (fresh
-    per game — producer-tier agents keep module-level movement caches)."""
+    per game — producer-tier agents keep module-level movement caches); a list
+    opponent is sampled per game by seed (resolve_collect_opponent), and the
+    special name "self" plays a frozen, deterministic copy of the current net."""
     from agents import load_named_agent
 
-    opp_agent = load_named_agent(cfg.exit.opponent)
+    opp_name = resolve_collect_opponent(cfg.exit.opponent, seed)
+    if opp_name == "self":
+        from .train import make_v2_eval_agent
+
+        opp_agent = make_v2_eval_agent(model, cfg, device)
+    else:
+        opp_agent = load_named_agent(opp_name)
 
     game_records: list[StepRecord] = []
     two_player = cfg.exit.two_player_search
@@ -233,9 +254,7 @@ def play_single_game(
             pair = [moves, list(opp_moves)]
             states = env.step(pair if side == 0 else pair[::-1])
             done = _extract_status(states[side]) != "ACTIVE"
-        reward = (
-            states[side]["reward"] if isinstance(states[side], dict) else states[side].reward
-        )
+        reward = states[side]["reward"] if isinstance(states[side], dict) else states[side].reward
 
     outcome = max(-1.0, min(1.0, float(reward) if reward is not None else 0.0))
     for r in game_records:
@@ -590,6 +609,21 @@ def main() -> None:
         records, outcomes, win_rate = collect_games(
             model, cfg, device, cfg.exit.games_per_iter, next_seed
         )
+        # Per-opponent win breakdown (outcomes are in seed order, so the same
+        # deterministic sampling recovers who each game was against).
+        opp_mix = ""
+        if isinstance(cfg.exit.opponent, (list, tuple)):
+            per: dict[str, list[float]] = {}
+            for gi, o in enumerate(outcomes):
+                name = resolve_collect_opponent(cfg.exit.opponent, next_seed + gi)
+                per.setdefault(name, []).append(o)
+            opp_mix = (
+                "  ["
+                + " ".join(
+                    f"{n}:{sum(1 for o in v if o > 0)}/{len(v)}" for n, v in sorted(per.items())
+                )
+                + "]"
+            )
         next_seed += cfg.exit.games_per_iter
         t_collect = time.time() - t_it
 
@@ -620,7 +654,7 @@ def main() -> None:
             f"dataset={len(all_samples)}  loss={m.get('loss', 0):.4f}  "
             f"tloss={m.get('target_loss', 0):.4f}  floss={m.get('frac_loss', 0):.4f}  "
             f"vloss={m.get('value_loss', 0):.4f}  collect={t_collect:.0f}s  "
-            f"search={t_search:.0f}s  train={t_train:.0f}s"
+            f"search={t_search:.0f}s  train={t_train:.0f}s{opp_mix}"
         )
 
         if cfg.eval.eval_every > 0 and it % cfg.eval.eval_every == 0:

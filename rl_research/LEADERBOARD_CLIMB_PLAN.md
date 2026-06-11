@@ -240,6 +240,30 @@ In order of expected value-per-day:
    and exact sizing is precisely producer's edge; (c) launch rate 0.37/step
    (passive vs producer). NOT submitted: ~1100–1180 LB tier would sacrifice one of
    the two slots (1222.8 producer / 1174.1 v5).
+
+   **Phase 2.2b — data-maxxed follow-up, PREP DONE 2026-06-11 (ready for Colab):**
+   targets diagnosed limits (a)+(c) via data/signal, capacity explicitly out of
+   scope (collection inference runs on CPU workers).
+   - `exit.opponent` now accepts a LIST sampled per game, deterministic by game
+     seed (`v2/exit_train.py resolve_collect_opponent`; uncorrelated with the
+     seed%2 side-alternation; single-name backward compat; special name `self`
+     = frozen deterministic copy of the current net). The iter log prints a
+     per-opponent win breakdown, e.g. `[ow_proto:1/1 producer:0/1 v5:0/2]`.
+   - `configs/v2_exit_producer256_v2.yaml`: pool [producer, v5, ow_proto,
+     enders_1000], games_per_iter 8→24, dataset_max_iters 3→5, iterations 60,
+     eval_opponents [producer, ow_proto] (visible progress below the producer
+     ceiling), NO BC — warm-start from `v2_exit_producer256_a100/ckpt_000025.pt`
+     via `--resume`. Gumbel ON, embed-256.
+   - Notebook: `PIPELINE='producer256_v2'` (new default) wires the config +
+     WARM_START from Drive; run_name `v2_exit_producer256_v2_a100`.
+   - Local smoke (2 iters, 4 games/iter, warm-start + pool): mixing works and
+     the value signal is BACK — vloss 0.76/0.41 (vs 0.0002 starved), wins vs
+     ow_proto/enders in collection, eval reads 0% producer / 100% ow_proto as
+     designed. floss still ≈ln4 (sizing distillation = known open item).
+   - **Launch = user, on Colab: run cells 1→4 with PIPELINE='producer256_v2'.**
+     GATE after: download ckpts; arena must (1) beat the iter-25 champion
+     head-to-head AND (2) raise the pool mean >55%, n≥30/pair; plus mirror vs
+     producer/v5 at n≥60. Never act on n<100 outliers (A/A ±6% @ n=60).
 3. (Stretch) **Learned value from real episodes**: pull top-team episodes via Meta
    Kaggle, train the 16-feature global value, use it for candidate re-ranking in the
    flow-diff planner (re-rank near-ties only — respects our sibling-ranking finding).

@@ -209,7 +209,13 @@ class V2ExItConfig:
     max_grad_norm: float = 0.5
     dataset_max_iters: int = 3  # keep this many iterations of data in the buffer
     four_player_prob: float = 0.0
-    opponent: str = "producer"
+    # Collection opponent: one agents.load_named_agent name, or a LIST of names
+    # sampled per game (deterministic by game seed — reproducible collection).
+    # Mixing beatable opponents un-flattens the outcome/value signal when the
+    # anchor opponent is unbeatable (producer256 lesson 2026-06-11: 0 collection
+    # wins vs producer -> the value head only ever saw -1, vloss->0.0002 by
+    # iter 5). The special name "self" plays a frozen copy of the current net.
+    opponent: str | list[str] = "producer"
     sample_collect: bool = True  # sample (vs argmax) during self-play collection
     search_workers: int = 0  # >1 = parallelize the (CPU-bound) search across processes
     collect_workers: int = 0  # >1 = play the games of each iteration in parallel across

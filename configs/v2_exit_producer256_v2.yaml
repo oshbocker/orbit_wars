@@ -1,0 +1,104 @@
+# Phase 2.2b — "data-maxxed" follow-up to the v2_exit_producer256 re-anchor run
+# (LEADERBOARD_CLIMB_PLAN Phase 2 item 2, RESULT block 2026-06-11).
+#
+# The first producer256 run made ExIt work at the producer tier (iter-25 ckpt =
+# #3 in the arena pool, 55% mean) but was data/signal-starved: 20 min wall-clock
+# with the GPU idle, and (a) ZERO collection wins vs producer -> the value head
+# only ever saw -1 (vloss->0.0002 by iter 5), (b) eval vs producer alone reads
+# 0% for anything below ~1200 — a useless instrument. Fixes here (capacity and
+# search are explicitly OUT of scope — collection inference runs on CPU workers):
+#
+#   - exit.opponent is now a POOL [producer, v5, ow_proto, enders_1000] sampled
+#     per game (deterministic by seed) -> mixed outcomes restore the value/
+#     outcome signal and keep producer/v5 pressure in the data.
+#   - 3x data per update (games_per_iter 8 -> 24) and a deeper replay window
+#     (dataset_max_iters 3 -> 5), iterations 40 -> 60.
+#   - eval.eval_opponents adds ow_proto so progress is visible below the
+#     producer ceiling.
+#   - NO BC phase: warm-start from the iter-25 champion via
+#       --resume .../checkpoints/v2_exit_producer256_a100/ckpt_000025.pt
+#     (the notebook's WARM_START does this). imitation.enabled stays true only
+#     as a fallback if no warm-start checkpoint is found.
+#
+#   python -m v2.exit_train --config configs/v2_exit_producer256_v2.yaml \
+#       --resume outputs/checkpoints/v2_exit_producer256_a100/ckpt_000025.pt
+#
+# GATE: scripts/arena.py — must beat the iter-25 champion head-to-head AND
+# raise the pool mean (>55%), n>=30/pair; movement vs producer/v5 mirror at
+# n>=60. Never act on n<100 outliers (A/A noise ±6% @ n=60).
+run_name: v2_exit_producer256_v2
+seed: 42
+device: auto
+save_dir: outputs/checkpoints
+log_dir: outputs/logs
+checkpoint_every: 5
+opponent: producer
+
+env:
+  max_planets: 40
+  allocation_threshold: 0.05
+  min_ships_to_send: 1
+  ship_fractions: [0.25, 0.5, 0.75, 1.0]
+
+model:
+  embed_dim: 256
+  n_heads: 4
+  n_layers: 3
+  ff_dim: 256
+  planet_feat_dim: 22
+  global_feat_dim: 8
+  n_fractions: 4
+
+eval:
+  eval_every: 5
+  eval_games: 40          # side-alternated + paired seeds (run_periodic_eval)
+  eval_opponents: [producer, ow_proto]  # ow_proto = the sensitive instrument below the producer ceiling
+  eval_seed: 20000        # shared with scripts/eval_fast.py -> directly comparable
+  eval_workers: 6         # set to ~vCPU count on Colab
+
+imitation:
+  enabled: true           # FALLBACK ONLY — the intended launch warm-starts via --resume (skips BC)
+  bc_expert: producer
+  bc_games: 150
+  bc_demo_opponent: producer   # mirror demos: on-distribution states
+  bc_side_alternate: true
+  bc_collect_workers: 6        # set to ~vCPU count on Colab
+  bc_epochs: 50
+  bc_lr: 0.001
+  bc_batch_size: 256
+  bc_cache_path: experiments/demos_producer_mirror_v1.pkl
+
+exit:
+  enabled: true
+  iterations: 60
+  games_per_iter: 24        # 3x the starved run — data per update, not more updates
+  search_depth: 12
+  search_candidates: 10
+  search_temperature: 1.0   # unused on the gumbel path (kept for control A/Bs)
+  train_epochs: 4
+  train_batch_size: 256
+  train_lr: 0.0003
+  value_loss_coef: 0.5
+  max_grad_norm: 0.5
+  dataset_max_iters: 5      # deeper replay window to match the bigger per-iter haul
+  four_player_prob: 0.0
+  # Mixed pool, sampled per game by seed (resolve_collect_opponent): the
+  # beatable members un-flatten the outcome signal; producer/v5 keep the data
+  # anchored to the tier that matters.
+  opponent: [producer, v5, ow_proto, enders_1000]
+  sample_collect: true
+  search_workers: 6         # set to ~vCPU count on Colab
+  collect_workers: 6        # collection is the ExIt bottleneck
+  collect_fast_env: true    # engine-faithful standalone sim (no Kaggle harness)
+  collect_side_alternate: true
+  # ── Gumbel / Sequential-Halving (validated +9.4%; keep ON) ──
+  gumbel_search: true
+  gumbel_sims: 16
+  gumbel_top_m: 8
+  gumbel_c_visit: 50.0
+  gumbel_c_scale: 1.0
+  search_seed: 0
+  # ── strong-net in-sim opponent: still ungated, ~1000x slower; keep OFF ──
+  net_opponent: false
+  net_opponent_self: true
+  net_opponent_every: 1
