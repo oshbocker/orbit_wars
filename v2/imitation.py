@@ -239,47 +239,40 @@ def _map_expert_moves_to_v2(
 # ── Demo Collection ──────────────────────────────────────────────────────────
 
 
-def collect_v2_demonstrations(
-    n_games: int,
+def _demo_game(
+    game_i: int,
     cfg: V2Config,
-    opponent_name: str = "random",
-) -> V2DemonstrationBuffer:
-    """Run expert agent for n_games, record V2 features + target indices per step."""
+    opponent_name: str,
+) -> tuple[V2DemonstrationBuffer, int, int, int]:
+    """ONE expert demo game on the real Kaggle env.
+
+    Returns (buffer, mapped, hold, dropped). The expert sits at seat 0, or
+    alternates seats by game parity when imitation.bc_side_alternate is set.
+    """
+    from kaggle_environments import make
+
     from src.opponents import build_opponent
 
     expert_agent = _resolve_expert(cfg.imitation.bc_expert)
     opponent = build_opponent(opponent_name)
+    side = game_i % 2 if cfg.imitation.bc_side_alternate else 0
     buffer = V2DemonstrationBuffer()
-    mapped_count = 0
-    hold_count = 0
-    dropped_count = 0
+    mapped_count = hold_count = dropped_count = 0
 
-    for game_i in range(n_games):
-        from kaggle_environments import make
+    env = make("orbit_wars", configuration={"seed": game_i + 100}, debug=False)
+    env.reset(num_agents=2)
+    states = env.step([[], []])
+    done = False
 
-        env = make("orbit_wars", configuration={"seed": game_i + 100}, debug=False)
-        env.reset(num_agents=2)
-        states = env.step([[], []])
-        done = False
+    while not done:
+        obs_e = _extract_obs(states[side])
+        obs_o = _extract_obs(states[1 - side])
 
-        while not done:
-            obs_p0 = _extract_obs(states[0])
-            obs_p1 = _extract_obs(states[1])
+        state = parse_observation(obs_e)
+        expert_moves = expert_agent(obs_e) or []
 
-            state = parse_observation(obs_p0)
-
-            # Skip early-game steps if configured
-            if state.step < cfg.imitation.bc_skip_steps:
-                expert_moves = expert_agent(obs_p0) or []
-                opp_moves = opponent.act(obs_p1)
-                states = env.step([list(expert_moves), opp_moves])
-                done = _extract_status(states[0]) != "ACTIVE"
-                continue
-
-            # Get expert moves
-            expert_moves = expert_agent(obs_p0) or []
-
-            # Encode V2 features
+        # Skip early-game steps if configured
+        if state.step >= cfg.imitation.bc_skip_steps:
             features = encode_features(state, cfg.env)
 
             # Map expert moves to V2 target indices + fraction bins
@@ -299,13 +292,79 @@ def collect_v2_demonstrations(
             if features.own_mask.any():
                 buffer.add(features, targets, frac_bins, supervise_mask)
 
-            # Step environment
-            opp_moves = opponent.act(obs_p1)
-            states = env.step([list(expert_moves), opp_moves])
-            done = _extract_status(states[0]) != "ACTIVE"
+        opp_moves = opponent.act(obs_o)
+        pair = [list(expert_moves), opp_moves]
+        states = env.step(pair if side == 0 else pair[::-1])
+        done = _extract_status(states[side]) != "ACTIVE"
 
-        if (game_i + 1) % max(1, n_games // 5) == 0:
-            print(f"  demo game {game_i + 1}/{n_games}  buffer={len(buffer)}")
+    return buffer, mapped_count, hold_count, dropped_count
+
+
+def _demo_worker_init() -> None:
+    import os
+
+    os.environ["OMP_NUM_THREADS"] = "1"
+    torch.set_num_threads(1)
+
+
+def _demo_game_job(args: tuple[int, dict, str]) -> tuple[V2DemonstrationBuffer, int, int, int]:
+    game_i, cfg_dict, opponent_name = args
+    from .config import v2_config_from_dict
+
+    return _demo_game(game_i, v2_config_from_dict(cfg_dict), opponent_name)
+
+
+def collect_v2_demonstrations(
+    n_games: int,
+    cfg: V2Config,
+    opponent_name: str = "random",
+) -> V2DemonstrationBuffer:
+    """Run expert agent for n_games, record V2 features + target indices per step.
+
+    With imitation.bc_collect_workers>1 the (independent) games fan out across
+    processes — producer-tier experts make serial collection take hours.
+    """
+    buffer = V2DemonstrationBuffer()
+    mapped_count = hold_count = dropped_count = 0
+
+    def _merge(game_buf: V2DemonstrationBuffer) -> None:
+        buffer.planet_features.extend(game_buf.planet_features)
+        buffer.global_features.extend(game_buf.global_features)
+        buffer.planet_mask.extend(game_buf.planet_mask)
+        buffer.own_mask.extend(game_buf.own_mask)
+        buffer.reachability_mask.extend(game_buf.reachability_mask)
+        buffer.target_indices.extend(game_buf.target_indices)
+        buffer.frac_bins.extend(game_buf.frac_bins)
+        buffer.supervise_mask.extend(game_buf.supervise_mask)
+
+    workers = cfg.imitation.bc_collect_workers
+    done_games = 0
+    if workers and workers > 1 and n_games > 1:
+        from concurrent.futures import ProcessPoolExecutor
+
+        from .config import v2_config_to_dict
+
+        cfg_dict = v2_config_to_dict(cfg)
+        jobs = [(gi, cfg_dict, opponent_name) for gi in range(n_games)]
+        with ProcessPoolExecutor(max_workers=workers, initializer=_demo_worker_init) as ex:
+            for game_buf, n_mapped, n_hold, n_dropped in ex.map(_demo_game_job, jobs):
+                _merge(game_buf)
+                mapped_count += n_mapped
+                hold_count += n_hold
+                dropped_count += n_dropped
+                done_games += 1
+                if done_games % max(1, n_games // 5) == 0:
+                    print(f"  demo game {done_games}/{n_games}  buffer={len(buffer)}")
+    else:
+        for game_i in range(n_games):
+            game_buf, n_mapped, n_hold, n_dropped = _demo_game(game_i, cfg, opponent_name)
+            _merge(game_buf)
+            mapped_count += n_mapped
+            hold_count += n_hold
+            dropped_count += n_dropped
+            done_games += 1
+            if done_games % max(1, n_games // 5) == 0:
+                print(f"  demo game {done_games}/{n_games}  buffer={len(buffer)}")
 
     total = mapped_count + hold_count + dropped_count
     supervised = mapped_count + hold_count

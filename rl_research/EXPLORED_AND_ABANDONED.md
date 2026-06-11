@@ -178,5 +178,42 @@ history retains apex's LB datapoints (700.8–774.7).
 
 ---
 
+## Cluster 6 — Shot-validator veto on v5 *(closed 2026-06-11, code kept default-off)*
+
+**What it was.** Phase 2.1 of the leaderboard climb: replicate konbu17's public
+reject-only shot validator (+19pp on their v4-lineage base) on our producer fork.
+24-feature MLP (24→64→32→1, ~2.4K params), trained on 274K dense per-shot labels
+("did we own the ray-cast target within [arrival, arrival+10]?") harvested from
+400 real-env games among {v5, producer, ow_proto, enders_1000} (incl. mirrors);
+veto applied to v5's emitted attack waves, own-planet reinforcements exempt.
+The model itself was good: val AUC 0.82 (game-level split), veto precision on
+v5's shots 84–95% across thresholds.
+
+**Result: CONFIRMED NEGATIVE, dose-responsive.** Mirror arena vs un-vetoed v5
+(side-alternated paired seeds, n=60 per threshold): t=0.10 (19% of attacks
+vetoed) → **37%**, t=0.25 (31%) → **41%**, t=0.40 (41%) → **33%**. All at or
+below the 40% signal line; heavier veto = worse. Not extended to n≥120 because
+the monotone dose-response is exactly the signature of removing real value, not
+noise.
+
+**Why it failed here but worked publicly.** konbu's base fires margin-heuristic
+shots, many genuinely wasted — a reject-only filter prunes true errors. The
+producer flow-diff only fires when the *exact counterfactual flow score* clears
+ROI 1.5: its "failed-ownership" shots are mostly deliberate attrition/pressure
+trades whose value the ownership label cannot see. The veto therefore
+systematically deletes priced-in aggression → passivity → loss. Same failure
+family as the weak-rollout opponent and value-leaf blend: **a coarse learned
+signal second-guessing a stronger exact planner regresses it** (5th consecutive
+instance of this lesson).
+
+**What survives.** `agents/v5/orbit_lite_v5/shot_validator.py` (encoder + veto,
+inert without a weights file — v5 byte-identical), `scripts/harvest_shots.py`
+(dense per-shot label harvester, reusable for value/aux training data),
+`scripts/train_shot_validator.py`, the `v5v[:threshold]` arena spec, and the
+274K-shot dataset in `outputs/validator/raw/`. Do NOT ship validator weights
+into `agents/v5/orbit_lite_v5/` — their presence auto-enables the veto.
+
+---
+
 *Confirmed dead ends are also tracked tersely in `CLAUDE.md` and `memory/`. This file is the
 long-form "why" companion to those one-liners.*

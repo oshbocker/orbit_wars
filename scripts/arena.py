@@ -48,6 +48,10 @@ def spec_label(spec: str) -> str:
     if spec.startswith("exit:"):
         ckpt = Path(spec.split(":")[1])
         return f"exit_{ckpt.parent.name}_{ckpt.stem.removeprefix('ckpt_')}"
+    if spec == "v5v" or spec.startswith("v5v:"):
+        # v5 + shot-validator veto: "v5v" (threshold 0.4) or "v5v:0.45"
+        thresh = spec.split(":", 1)[1] if ":" in spec else "0.4"
+        return f"v5v_t{thresh}"
     if spec.startswith("v5:"):
         # "v5:roi_threshold=1.4+horizon=20" -> "v5_roi_threshold1.4_horizon20"
         kvs = spec.split(":", 1)[1].split("+")
@@ -55,26 +59,49 @@ def spec_label(spec: str) -> str:
     return spec
 
 
+def _load_v5_module():
+    """Exec a FRESH copy of agents/v5/main.py (module-level runtime state)."""
+    import importlib.util
+    import itertools
+
+    global _V5_COUNTER
+    if "_V5_COUNTER" not in globals():
+        _V5_COUNTER = itertools.count()
+    main_py = ROOT / "agents" / "v5" / "main.py"
+    modname = f"_v5ov_{next(_V5_COUNTER)}"
+    mspec = importlib.util.spec_from_file_location(modname, main_py)
+    assert mspec is not None and mspec.loader is not None
+    mod = importlib.util.module_from_spec(mspec)
+    sys.modules[modname] = mod
+    mspec.loader.exec_module(mod)
+    return mod
+
+
 def _build_agent(spec: str):
     """Fresh agent callable for one game (worker process)."""
+    if spec == "v5v" or spec.startswith("v5v:"):
+        # v5 + shot-validator veto (Phase 2.1 A/B): "v5v" or "v5v:<threshold>".
+        # Weights default to the locally trained outputs/validator/ file; override
+        # with VALIDATOR_WEIGHTS env var.
+        threshold = float(spec.split(":", 1)[1]) if ":" in spec else 0.4
+        weights = os.environ.get(
+            "VALIDATOR_WEIGHTS", str(ROOT / "outputs" / "validator" / "validator_weights.npz")
+        )
+        mod = _load_v5_module()
+        mod.set_validator(weights, threshold)
+        fn = mod.agent
+
+        def v5v_agent(obs, config=None):
+            return fn(obs)
+
+        return v5v_agent
     if spec.startswith("v5:"):
         # Our producer fork with config overrides: "v5:roi_threshold=1.4+horizon=20"
         # patches both the 2P default and the 4P preset (A/B sweeps without code
         # edits). Plain names (v5, producer, ...) resolve via the fallthrough.
         import dataclasses
-        import importlib.util
-        import itertools
 
-        global _V5_COUNTER
-        if "_V5_COUNTER" not in globals():
-            _V5_COUNTER = itertools.count()
-        main_py = ROOT / "agents" / "v5" / "main.py"
-        modname = f"_v5ov_{next(_V5_COUNTER)}"
-        mspec = importlib.util.spec_from_file_location(modname, main_py)
-        assert mspec is not None and mspec.loader is not None
-        mod = importlib.util.module_from_spec(mspec)
-        sys.modules[modname] = mod
-        mspec.loader.exec_module(mod)
+        mod = _load_v5_module()
         ftypes = {f.name: f.type for f in dataclasses.fields(mod.ProducerLiteConfig)}
         overrides = {}
         for kv in spec.split(":", 1)[1].split("+"):

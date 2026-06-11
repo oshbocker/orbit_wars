@@ -17,8 +17,8 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import torch
-from torch import Tensor
-
+from orbit_lite_v5.adapter import single_obs_to_tensor, sparse_action_row_to_moves
+from orbit_lite_v5.distance_cache import build_distance_cache
 from orbit_lite_v5.geometry import fleet_speed
 from orbit_lite_v5.intercept_aim import intercept_angle
 from orbit_lite_v5.movement import MovementConfig, PlanetMovement
@@ -30,7 +30,6 @@ from orbit_lite_v5.movement_step import (
     infer_planned_launches_from_entries,
 )
 from orbit_lite_v5.obs import parse_obs
-from orbit_lite_v5.distance_cache import build_distance_cache
 from orbit_lite_v5.planner_core import (
     _candidate_indices,
     _empty_entries,
@@ -43,15 +42,33 @@ from orbit_lite_v5.planner_core import (
     largest_initial_player_count,
     make_launch_set,
     reachable_mask,
-    reinforcement_timing_factor,
     safe_drain,
     score_candidates,
 )
-from orbit_lite_v5.adapter import single_obs_to_tensor, sparse_action_row_to_moves
-
+from orbit_lite_v5.shot_validator import DEFAULT_THRESHOLD, NumpyValidator, apply_veto
+from torch import Tensor
 
 # Last step at which the engine still runs production/combat (game ends at 498).
 END_STEP = 498
+
+# v5: reject-only shot validator (Phase 2.1). Auto-enabled when trained weights
+# ship inside the package (the bundle build copies them); absent weights = the
+# planner's moves pass through untouched, byte-identical to plain v5.
+_VALIDATOR_WEIGHTS = os.path.join(_HERE, "orbit_lite_v5", "validator_weights.npz")
+_VALIDATOR: NumpyValidator | None = None
+_VETO_THRESHOLD = DEFAULT_THRESHOLD
+if os.path.exists(_VALIDATOR_WEIGHTS):
+    try:
+        _VALIDATOR = NumpyValidator(_VALIDATOR_WEIGHTS)
+    except Exception:
+        _VALIDATOR = None
+
+
+def set_validator(weights_path: str | None, threshold: float = DEFAULT_THRESHOLD) -> None:
+    """Enable/disable the shot veto on this module instance (arena A/B hook)."""
+    global _VALIDATOR, _VETO_THRESHOLD
+    _VALIDATOR = NumpyValidator(weights_path) if weights_path else None
+    _VETO_THRESHOLD = threshold
 
 
 @dataclass(frozen=True)
@@ -455,4 +472,7 @@ def agent(obs):
     obs_tensors = single_obs_to_tensor(obs, player_id=player_id)
     with torch.no_grad():
         sparse_row = _RUNTIME.tensor_action(obs_tensors)
-    return sparse_action_row_to_moves(sparse_row, obs, player_id=player_id)
+    moves = sparse_action_row_to_moves(sparse_row, obs, player_id=player_id)
+    if _VALIDATOR is not None:
+        moves = apply_veto(moves, obs, _VALIDATOR, _VETO_THRESHOLD)
+    return moves

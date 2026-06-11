@@ -183,16 +183,19 @@ def play_single_game(
     device: torch.device,
     seed: int,
 ) -> tuple[list[StepRecord], float]:
-    """Play ONE game of the policy (player 0) vs cfg.exit.opponent (player 1).
-    Returns (records, outcome). Backend = fast_env (cfg.exit.collect_fast_env)
-    or Kaggle. Opponent resolves via agents.load_named_agent (fresh per game —
-    producer-tier agents keep module-level movement caches)."""
+    """Play ONE game of the policy vs cfg.exit.opponent. Returns (records,
+    outcome). Backend = fast_env (cfg.exit.collect_fast_env) or Kaggle. The
+    policy sits at seat 0, or alternates seats by seed parity when
+    cfg.exit.collect_side_alternate is set (side matters on this engine — see
+    the eval-gate lesson). Opponent resolves via agents.load_named_agent (fresh
+    per game — producer-tier agents keep module-level movement caches)."""
     from agents import load_named_agent
 
     opp_agent = load_named_agent(cfg.exit.opponent)
 
     game_records: list[StepRecord] = []
     two_player = cfg.exit.two_player_search
+    side = seed % 2 if cfg.exit.collect_side_alternate else 0
 
     def _record_opp(n_before: int, opp_moves: list) -> None:
         # If _policy_decide appended a record this turn, attach the opponent's
@@ -205,13 +208,14 @@ def play_single_game(
 
         sim = FastOrbitWars(num_agents=2, seed=seed)
         while not sim.done:
-            obs0, obs1 = sim.observation(0), sim.observation(1)
+            obs_p, obs_o = sim.observation(side), sim.observation(1 - side)
             n0 = len(game_records)
-            moves = _policy_decide(model, cfg, device, obs0, game_records)
-            opp_moves = opp_agent(obs1, None) or []
+            moves = _policy_decide(model, cfg, device, obs_p, game_records)
+            opp_moves = opp_agent(obs_o, None) or []
             _record_opp(n0, opp_moves)
-            sim.step([moves, list(opp_moves)])
-        reward = sim.rewards[0]
+            pair = [moves, list(opp_moves)]
+            sim.step(pair if side == 0 else pair[::-1])
+        reward = sim.rewards[side]
     else:
         from kaggle_environments import make
 
@@ -220,15 +224,18 @@ def play_single_game(
         states = env.step([[], []])
         done = False
         while not done:
-            obs0 = _extract_obs(states[0])
-            obs1 = _extract_obs(states[1])
+            obs_p = _extract_obs(states[side])
+            obs_o = _extract_obs(states[1 - side])
             n0 = len(game_records)
-            moves = _policy_decide(model, cfg, device, obs0, game_records)
-            opp_moves = opp_agent(obs1, None) or []
+            moves = _policy_decide(model, cfg, device, obs_p, game_records)
+            opp_moves = opp_agent(obs_o, None) or []
             _record_opp(n0, opp_moves)
-            states = env.step([moves, list(opp_moves)])
-            done = _extract_status(states[0]) != "ACTIVE"
-        reward = states[0]["reward"] if isinstance(states[0], dict) else states[0].reward
+            pair = [moves, list(opp_moves)]
+            states = env.step(pair if side == 0 else pair[::-1])
+            done = _extract_status(states[side]) != "ACTIVE"
+        reward = (
+            states[side]["reward"] if isinstance(states[side], dict) else states[side].reward
+        )
 
     outcome = max(-1.0, min(1.0, float(reward) if reward is not None else 0.0))
     for r in game_records:

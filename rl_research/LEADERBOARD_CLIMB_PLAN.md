@@ -191,15 +191,40 @@ re-anchoring of ExIt is mandatory if the RL track is to matter.
 
 ### Phase 2 — ML edge on top (days 3–6, the RL-learning track)
 In order of expected value-per-day:
-1. **Shot-validator veto** on the v5 base: harvest dense per-shot labels from arena
-   self-play vs the strong pool (we already have fast_env batching), train the 24-dim
-   MLP locally, bolt on with threshold sweep. Proven +19pp pattern, fail-safe by
-   construction, CPU-trainable in hours.
+1. ~~**Shot-validator veto** on the v5 base~~ **CLOSED 2026-06-11 — CONFIRMED
+   NEGATIVE** (full post-mortem: EXPLORED_AND_ABANDONED.md Cluster 6). Built the
+   whole pipeline (400-game harvest → 274K labels → MLP val AUC 0.82, veto
+   precision 84–95% on v5's shots → `v5v:<t>` arena spec). Mirror gate vs plain
+   v5: t=0.10 → 37%, t=0.25 → 41%, t=0.40 → 33% (n=60 each, dose-responsive —
+   heavier veto = worse). The +19pp public pattern prunes a margin-heuristic
+   base's true errors; producer's flow-diff only fires at ROI>1.5, so its
+   "failed" shots are priced-in attrition trades the ownership label can't see.
+   5th instance of "coarse learned signal second-guessing an exact planner
+   regresses it". Infra kept (default-off; harvester reusable for value labels).
 2. **Re-target the ExIt pipeline**: BC teacher and eval/opponent pool switch from apex
    to {producer, 1224, v5}. The Gumbel search machinery (our one validated search win,
    +9.4%) stays; the expert improves because the policy prior and the opponents are
    ~500 LB points stronger. This is the same pipeline we already have — only the data
    distribution changes.
+
+   **Prep DONE 2026-06-11 (local) — ready to launch on Colab:**
+   - `configs/v2_exit_producer256.yaml`: fresh BC from producer (NO warm-start —
+     teacher distribution changed), embed-256, Gumbel ON, opponent/eval = producer.
+   - New plumbing (smoke-tested): `exit.collect_side_alternate` (play_single_game
+     was P0-only; policy seat now alternates by seed parity),
+     `imitation.bc_side_alternate` (expert seat alternates by game parity),
+     `imitation.bc_collect_workers` (parallel demo games),
+     `imitation.bc_demo_opponent: producer` (MIRROR demos — on-distribution
+     states instead of producer-crushes-random).
+   - Demo cache collected locally (150 mirror games, 13,968 samples, 79%
+     launch-capture) and seeded to Drive:
+     `gdrive:orbit_wars_outputs/demos_producer_mirror_v1.pkl`.
+   - `notebooks/train_colab.ipynb` rewritten: PIPELINE ∈ {producer256 (default),
+     embed256, exit}, dead pipelines/configs/apex references pruned, submission
+     cell always bundles via `v2/agent_v3.py`, eval cell evals vs producer.
+   - **To launch: open the notebook on Colab (A100), run cells 1→4 with
+     PIPELINE='producer256'.** Gate after: download ckpt, arena vs pool + mirror
+     vs producer/v5 (n≥120).
 3. (Stretch) **Learned value from real episodes**: pull top-team episodes via Meta
    Kaggle, train the 16-feature global value, use it for candidate re-ranking in the
    flow-diff planner (re-rank near-ties only — respects our sibling-ranking finding).

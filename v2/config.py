@@ -172,6 +172,13 @@ class V2ImitationConfig:
     distilled_opponent: bool = True
     bc_skip_steps: int = 0
     bc_cache_path: str = ""  # if set, pickle-cache demos here and reuse across runs
+    # >1 = fan demo games across processes (producer-tier experts are ~50-100x
+    # slower per step than the retired apex; serial collection vs a strong
+    # opponent takes hours). 0/1 = sequential.
+    bc_collect_workers: int = 0
+    # Alternate the expert's seat (game_i % 2) during demo collection so BC
+    # states aren't all from the player-0 perspective.
+    bc_side_alternate: bool = False
     bc_match_tolerance_deg: float = (
         90.0  # angular tolerance for matching an expert launch to a target slot
     )
@@ -209,6 +216,10 @@ class V2ExItConfig:
     # processes (collection is the ExIt bottleneck, ~linear win)
     collect_fast_env: bool = False  # collect games on the standalone fast_env (engine-faithful,
     # no Kaggle harness overhead) instead of make("orbit_wars")
+    # Alternate which seat the policy occupies during collection (seed % 2).
+    # play_single_game is otherwise P0-only, which biases the search dataset to
+    # one perspective (the eval-gate lesson: side matters on this engine).
+    collect_side_alternate: bool = False
     # ── v4 ceiling flags (default off) ──
     # Tier 3.2: score search leaves with OrbitNet's value head instead of the
     # handcrafted heuristic eval (requires a trustworthy value head — do Tier 1

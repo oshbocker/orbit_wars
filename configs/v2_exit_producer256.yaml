@@ -1,0 +1,98 @@
+# Phase 2.2 — the re-anchored ExIt run (LEADERBOARD_CLIMB_PLAN Phase 2, item 2).
+#
+# Everything points at the producer tier: FRESH BC from producer demos (the
+# teacher distribution changed completely vs the apex era, so no warm-start
+# from the apex-anchored champion), producer as the collection/eval opponent,
+# embed-256 (beat 128 on every seed in the Gumbel regime, 2026-06-10), Gumbel/
+# Sequential-Halving ON (the one validated search win, +9.4%).
+#
+# New vs the apex-era configs:
+#   - imitation.bc_demo_opponent: producer  -> demos are producer-vs-producer
+#     MIRROR games (on-distribution states; vs random the expert only crushes)
+#   - imitation.bc_side_alternate + exit.collect_side_alternate: seats alternate
+#     by game parity (play_single_game/demos were P0-only; side matters on this
+#     engine — eval-gate lesson 2026-06-05)
+#   - imitation.bc_collect_workers: demo games fan out across processes
+#     (producer is ~50-100x slower per step than the retired apex)
+#
+# Producer-tier opponents make collection the wall-clock bottleneck: run on
+# Colab (notebooks/train_colab.ipynb) with the demo cache on Drive; a locally
+# collected cache can be seeded to Drive via rclone first.
+#
+#   python -m v2.exit_train --config configs/v2_exit_producer256.yaml
+#
+# GATE: scripts/arena.py vs the public pool AND mirror vs producer/v5
+# (n>=120, side-alternated paired seeds) — NOT eval_fast alone.
+run_name: v2_exit_producer256
+seed: 42
+device: auto
+save_dir: outputs/checkpoints
+log_dir: outputs/logs
+checkpoint_every: 5
+opponent: producer
+
+env:
+  max_planets: 40
+  allocation_threshold: 0.05
+  min_ships_to_send: 1
+  ship_fractions: [0.25, 0.5, 0.75, 1.0]
+
+model:
+  embed_dim: 256
+  n_heads: 4
+  n_layers: 3
+  ff_dim: 256
+  planet_feat_dim: 22
+  global_feat_dim: 8
+  n_fractions: 4
+
+eval:
+  eval_every: 5
+  eval_games: 40          # side-alternated + paired seeds (run_periodic_eval)
+  eval_opponents: [producer]
+  eval_seed: 20000        # shared with scripts/eval_fast.py -> directly comparable
+  eval_workers: 6         # set to ~vCPU count on Colab
+
+imitation:
+  enabled: true
+  bc_expert: producer
+  bc_games: 150
+  bc_demo_opponent: producer   # mirror demos: on-distribution states
+  bc_side_alternate: true
+  bc_collect_workers: 6        # set to ~vCPU count on Colab
+  bc_epochs: 50
+  bc_lr: 0.001
+  bc_batch_size: 256
+  bc_cache_path: experiments/demos_producer_mirror_v1.pkl
+
+exit:
+  enabled: true
+  iterations: 40
+  games_per_iter: 8
+  search_depth: 12
+  search_candidates: 10
+  search_temperature: 1.0   # unused on the gumbel path (kept for control A/Bs)
+  train_epochs: 4
+  train_batch_size: 256
+  train_lr: 0.0003
+  value_loss_coef: 0.5
+  max_grad_norm: 0.5
+  dataset_max_iters: 3
+  four_player_prob: 0.0
+  opponent: producer
+  sample_collect: true
+  search_workers: 6         # set to ~vCPU count on Colab
+  collect_workers: 6        # collection is the ExIt bottleneck
+  collect_fast_env: true    # engine-faithful standalone sim (no Kaggle harness)
+  collect_side_alternate: true
+  # ── Gumbel / Sequential-Halving (validated +9.4%; keep ON) ──
+  gumbel_search: true
+  gumbel_sims: 16
+  gumbel_top_m: 8
+  gumbel_c_visit: 50.0
+  gumbel_c_scale: 1.0
+  search_seed: 0
+  # ── strong-net in-sim opponent: still ungated, ~1000x slower; keep OFF ──
+  net_opponent: false
+  net_opponent_self: true
+  net_opponent_every: 1
