@@ -34,8 +34,9 @@ game_replay.html
 game_replay*.html
 replay_*.html
 
-# Local Claude Code settings
-.claude/
+# Local Claude Code settings (but keep shared skills versioned)
+.claude/*
+!.claude/skills/
 
 # Experiment artifacts — keep configs + reports (*.md), drop heavy generated files
 experiments/checkpoints/
