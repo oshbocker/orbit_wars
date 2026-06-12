@@ -1,9 +1,99 @@
 # Leaderboard Climb Plan — 2026-06-09
 
-**Where we are:** rank **1762 / 4143** ("Oshbocker", score **736.7**), agent = ExIt
-`v2_exit_a100/ckpt_000020.pt` submitted 2026-06-04. Final submission deadline
-**2026-06-23** (kaggle CLI). Only the **latest 2 submissions** are tracked/scored —
-our older rule-based subs (apex 756.7, apex3 774.7, hybrid v1 780.5) are inactive.
+**Where we are (updated 2026-06-11 22:35 UTC):** rank **411 / 4307** ("Oshbocker",
+score **1178.7**). Active slots: v5.1 (clamp-only, 1178.7) + producer resubmit
+(1176.1) — both resubmitted ~16:00–16:45 today and **still converging** (producer's
+prior converged rating was 1230.9 ≈ rank ~156). Final submission deadline
+**2026-06-23** — 12 days left.
+
+## Update 2026-06-11 (late) — ladder check + public-meta refresh
+
+### Ladder state
+- v5.1 1178.7 vs producer 1176.1 — statistically tied mid-climb; **the clamp A/B
+  verdict needs ≥1 day of episodes (judge 06-12/13)**, per Tamrazov's noise warning.
+- Score → rank bands (full LB CSV, 4307 teams): **1230 ≈ rank 156, 1300 ≈ top 75,
+  1400 ≈ top 37, 1500 ≈ top 13**; #1 = 1721 (Jake Will). The 1450–1580 band is
+  newly crowded (12 teams) — the public tier has climbed since 06-09.
+
+### Public-meta refresh (6 new notebooks pulled + analyzed, /tmp/kpull/)
+The producer base went *mainstream*: pilkwang published **"ProducerLite: Flow-Diff
+Submission"** (60 votes, variant `exp59`) on 06-11. Expect the ladder to saturate
+with producer-family clones → our converged rating at that tier will compress, and
+**the differentiator becomes (a) winning producer-family mirrors and (b) 4P**.
+
+Findings, by actionability:
+1. **Terminal-phase config (pilkwang exp59, NEW idea):** at step ≥ 460
+   (`terminal_phase_turns=40`): `roi_threshold 1.5→1.0`, `max_waves 7→8`, regroup
+   OFF. Complementary to our exact-horizon clamp (theirs loosens ROI, ours makes
+   the flow-diff exact wrt termination). exp59 of a long tuning series by the
+   lineage author — likely load-bearing. **Port gated default-off; ladder-only
+   measurable** (mirror games end by elimination step 106–282, pre-terminal).
+2. **Conservative mirror tuning (counter-producer, shionao7):** 2P
+   `max_waves_per_turn=4` (vs our 6), claim = "limit unnecessary attacks, preserve
+   fleet strength". Targets exactly the mirror matchup that now decides our tier.
+   **Locally measurable** → Track 3 below.
+3. **roi 1.55 + pressure heuristics (better-flowdiff):** safe-haven 1.5× /
+   meat-grinder 0.5× scoring mods + CCW/CW directional bias 1.2/0.9 + an NN
+   sidekick (30% weight). No reported score; ROI 1.55 is a cheap Track-3 knob,
+   the rest is unvalidated.
+4. **4P FFA bonuses — convergent constants:** `ffa_leader_attack_bonus=0.035`,
+   `ffa_target_prod_bonus=0.08` appear in TWO independent forks (hybrid-v4
+   lineage). Much gentler than our ladder-regressed 1.25×/0.55× mult. Locally
+   unresolvable (4P noise floor ±10% @ n≈40) → **ladder A/B candidate, queued
+   behind the clamp verdict**.
+5. **Sun-crossing "bug fix" (hybrid-producer-v5): does NOT apply to us** —
+   verified our vendored `orbit_lite` already masks sun-crossing candidates
+   exactly (`movement_aiming.py`, `intercept_aim.py` swept-segment checks). They
+   forked an older/lite base.
+6. **Multi-size candidates (pilkwang 0.5/0.75/1.0 ×drain; anthonytherrien
+   floor-matched +2/+10%):** divergent with our Cluster 7 closure (0/81 cheap
+   picks, n=120 A/A). No public win-rate evidence offered → **keep closed**; our
+   gated `cheap_capture_margin` code can replicate theirs in minutes if ladder
+   evidence ever appears.
+7. **Comet expiry guard (veto captures of comets expiring < eta+3):** our 06-10
+   audit showed producer loses ~1 ship/game to expiry → immaterial, skip.
+8. **Data: Slawek Biel publishes a daily-refreshed top-10% replay dataset**
+   (`am-i-in-the-top-10-replays-yet`, ~4.8K replays/snapshot). Curated 1300+
+   -tier episodes — upgrade for the Phase-2 stretch (learned value) AND a
+   candidate BC-teacher corpus *above* producer tier for the ExIt track.
+
+### Re-prioritized actions (in order)
+1. **Track 3 (NEW, running): local 2P mirror knob A/Bs vs producer** — the one
+   locally-measurable lever for the tier that now decides our rank. n≥120,
+   margin metrics, one knob at a time. Gate: <40%/>60% @ n=60 to proceed,
+   decision at n≥120.
+   - `max_waves_per_turn=4` (counter-producer claim): **CLOSED 2026-06-11 —
+     45.4% @ n=120** (A/A band 45.4–53.8%) → no signal, leaning negative; the
+     "conservative waves" claim does not survive a producer mirror.
+   - `roi_threshold=1.55` (better-flowdiff; also already the 4P preset value):
+     **CLOSED 2026-06-11 — 52.3% ± 3.2% @ n=240** (read 55.0% in the first 120
+     games, 49.6% in the second — third consecutive regression-to-the-mean on
+     a roi knob). No change.
+   - early-horizon 24 (hybrid-v5): **DEPRIORITIZED** — our prior sweep already
+     measured global horizon 22 at 42% @ n=60 (noise-or-worse), and the
+     early-only variant needs code for an unvalidated public claim. Revisit
+     only if the ladder shows we lose long openings.
+
+   **Track 3 verdict: all three public mirror-knob claims fail the producer
+   mirror locally.** Producer's hand-tuned 1.5/6/18 survive (again). The
+   remaining levers are ladder A/Bs (clamp → terminal-phase → ffa bonuses) and
+   the RL track.
+2. **Judge the clamp ladder A/B (~06-12)** — decision rule unchanged: if v5.1 ≥
+   producer, clamp stays; if it lags like v5.0 did, revert to pure producer.
+3. ✅ **Terminal-phase port BUILT 2026-06-11** (`agents/v5/main.py`:
+   `terminal_phase_turns` (0 = OFF, byte-identical) + `terminal_roi_threshold`
+   1.0 / `terminal_max_waves_per_turn` 8 / `terminal_enable_regroup` False,
+   swapped in `run_turn` for the final N turns; ruff+pyright clean; smoke =
+   real-env game vs producer DONE/DONE with `terminal_phase_turns=40`; that
+   game ended step 282 → confirms mirrors end pre-terminal, ladder-only
+   measurable). Next ship = **v5.2 = (clamp if it survived) +
+   `terminal_phase_turns=40` + any Track-3 winner**, paired with the mandatory
+   producer resubmit. 4P preset note: exp59 uses it in BOTH formats; enable in
+   both.
+4. **4P ffa bonuses (0.035/0.08)** = the ladder A/B after v5.2.
+5. **RL track unchanged:** launch Colab `PIPELINE='producer256_v3'`
+   (arrival-horizon). New stretch: BC/value data from the top-10% replay
+   dataset instead of (only) producer-mirror demos.
 
 ## The research findings that reframe everything
 
@@ -363,8 +453,8 @@ In order of expected value-per-day:
 | 2026-06-04 | v2_exit_a100 iter-20 | 736.7 → 729.4 | ExIt champion vs apex; slot freed 06-10 |
 | 2026-06-10 15:23 | producer_bundle | 695.0 → **1242.7** (same day) | **rank 140/4212 (top 3.3%)**, was 1762 |
 | 2026-06-10 19:48 | v5_bundle | 1110.5 → 1174.1 → **1159.7 CONVERGED LOW** | producer + endgame clamp + 4P nearest-opp mult; −71 vs producer → mult diagnosed as the suspect delta |
-| 2026-06-11 16:07 | v5_bundle (v5.1) | 835.6 → climbing | **mult OFF** (clamp only) — parity reclaim; once converged, v5.1 vs producer = clean ladder A/B of the clamp |
-| 2026-06-11 16:42 | producer_bundle | re-climbing | resubmit — v5.1 evicted it (active window = latest 2; every ship now = candidate + producer resubmit pair) |
+| 2026-06-11 16:07 | v5_bundle (v5.1) | 835.6 → **1178.7** @ 22:35 (climbing) | **mult OFF** (clamp only) — parity reclaim; once converged, v5.1 vs producer = clean ladder A/B of the clamp |
+| 2026-06-11 16:42 | producer_bundle | → **1176.1** @ 22:35 (climbing) | resubmit — v5.1 evicted it (active window = latest 2; every ship now = candidate + producer resubmit pair) |
 
 **Phase 2 local-track results (2026-06-11):**
 - **Track 1 (second candidate size) CLOSED — structurally inert.** Flow-diff provably

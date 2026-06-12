@@ -106,6 +106,16 @@ class ProducerLiteConfig:
     # single-size structural limit (full-drain captures of small neutrals strand
     # ships the scorer would rather keep home). < 0 (default) = OFF, byte-identical.
     cheap_capture_margin: float = -1.0
+    # v5.2: terminal-phase config swap (pilkwang ProducerLite exp59 lineage).
+    # In the last ``terminal_phase_turns`` turns, ROI drops, the wave cap rises
+    # and regroup stops — score banked in fleets beats ships parked at home once
+    # nothing launched late can pay back. Complements the horizon clamp above
+    # (clamp = exact accounting; this = aggressive spending of the exact budget).
+    # 0 (default) = OFF, byte-identical.
+    terminal_phase_turns: int = 0
+    terminal_roi_threshold: float = 1.0
+    terminal_max_waves_per_turn: int = 8
+    terminal_enable_regroup: bool = False
 
 
 def _movement_config(config: ProducerLiteConfig, *, player_count: int) -> MovementConfig:
@@ -432,6 +442,16 @@ def run_turn(obs_tensors: dict, *, config: ProducerLiteConfig, player_count: int
     h_rem = max(1, min(int(config.horizon), END_STEP - step))
     if h_rem < int(config.horizon):
         config = dataclasses.replace(config, horizon=h_rem)
+
+    # v5.2: terminal phase (see ProducerLiteConfig) — swap to the aggressive
+    # endgame knobs for the final terminal_phase_turns turns.
+    if int(config.terminal_phase_turns) > 0 and step >= END_STEP - int(config.terminal_phase_turns):
+        config = dataclasses.replace(
+            config,
+            roi_threshold=float(config.terminal_roi_threshold),
+            max_waves_per_turn=int(config.terminal_max_waves_per_turn),
+            enable_regroup=bool(config.terminal_enable_regroup),
+        )
 
     movement = ensure_planet_movement(
         obs_tensors=obs_tensors,
