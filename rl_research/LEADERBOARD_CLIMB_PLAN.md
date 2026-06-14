@@ -1,10 +1,455 @@
 # Leaderboard Climb Plan — 2026-06-09
 
-**Where we are (updated 2026-06-11 22:35 UTC):** rank **411 / 4307** ("Oshbocker",
-score **1178.7**). Active slots: v5.1 (clamp-only, 1178.7) + producer resubmit
-(1176.1) — both resubmitted ~16:00–16:45 today and **still converging** (producer's
-prior converged rating was 1230.9 ≈ rank ~156). Final submission deadline
-**2026-06-23** — 12 days left.
+**Where we are (updated 2026-06-13):** rank **325 / 4386** ("Oshbocker", team
+score **1201.6** = v5.3). Active slots: **v5.3** (`v5_bundle`, sub 53615604,
+**1201.6** @21:05) + **v5.2 control** (`v5_2_bundle`, sub 53615608, **1051.1**
+@21:06). Final submission deadline **2026-06-23** — 10 days left.
+
+## Update 2026-06-13 (research) — NEW DIRECTION: climb the opponent-modeling / equilibrium ladder (solution concept, not heuristics)
+
+**Reframing (why the "out of ideas" read was wrong).** All 10 graveyard clusters
+attacked the planner in exactly two ways, both now closed: (i) *additively* — bolt a
+coarse learned/heuristic signal on top of the exact scorer (shot-validator C6, value
+re-rank C10, defensive-reserve C9, cheap-capture C7) → "coarse signal second-guessing
+an exact planner regresses it"; (ii) *extend the passive world model* — make search
+lean harder on a do-nothing sim over a longer horizon (neural leaves, rollout opp,
+arrival-horizon C8, value-blend) → "lean harder on the passive sim → lose." The
+untouched axis is the **solution concept itself**.
+
+**SOTA grounding (2P Orbit Wars = two-player zero-sum simultaneous-move
+perfect-information game — a named, well-studied class).** Producer's flow-diff is a
+one-shot **best response to a do-nothing opponent** = the *maximally exploitable* end of
+the spectrum (the DUCT/greedy class). Canonical results:
+- DUCT/best-response is most exploitable; **regret-matching / Online Outcome Sampling
+  converge toward (coarse) correlated/Nash equilibria → provably less exploitable +
+  more robust head-to-head** (Bošanský/Lisý/Lanctot/Winands, *Algorithms for Two-Player
+  Simultaneous Move Games*; *Convergence of MCTS in SM Games* arXiv 1310.8613 —
+  ε-Hannan-consistent selection → subgame-perfect ε-Nash).
+- 2024 SOTA **NN-CCE** (arXiv 2406.10411): replace per-node UCB best-response with a
+  no-regret learner (EXP-IX) approximating a coarse correlated equilibrium over the
+  stage game → beats best-response/PSRO/CFR 62–91%.
+- **Cognitive hierarchy / level-k** (Camerer et al.): level-k best-responds to level-(k-1).
+  Producer is **level-0** (assumes do-nothing opponent).
+- RL+search recipe (**ReBeL** arXiv 2007.13544; DeepMind **Player of Games**):
+  depth-limited solving *with the opponent moving*, value at leaves, iterate to equilibrium.
+
+**The bridge to our one proven win.** The reinforce-risk floor (v5.3, +150 ladder, 75%
+mirror) was a *partial level-0→level-1* step: it taught the planner the opponent
+reinforces during flight. In a mirror meta where everyone forks producer, "less
+exploitable than the shared base" IS the differentiator — which is exactly why it won.
+The rest of the level-k / equilibrium ladder is unclimbed.
+
+### Update 2026-06-13 (later) — Track 1 BUILT + gated INERT → graveyard Cluster 11
+
+`opp_inject_waves` shipped end-to-end (`_opponent_reactive_status()` in
+`agents/v5/main.py`: per enemy seat, run the EXACT planner as their level-0 BR →
+inject their attack launches into the projection → re-resolve `garrison_status` →
+score ours against the reactive world). Byte-identity OFF 0/515 vs the v5.3 ref;
+ON (w3) 15/515 (~2.9%); smoke ~60 ms/step. **Gate (`v5:opp_inject_waves=X` vs `v5`,
+n=120 mirror): waves 1→46.7%, 3→57.5%, 6→56.2% vs the 55.4% A/A floor → INERT**
+(3/6 plateau +1–2pp over floor, all CIs contain it; w1 below). Weak favorable margin
+(wins ~10 steps faster; games ~183 vs A/A ~230) but no ladder-slot-worthy win.
+**Key finding:** the mirror IS a level-1-vs-level-0 exploitability test, and the BR
+beats the base only ~+2pp ⇒ **the flow-diff's `Δnet_me − ΣΔnet_opp` scorer already
+internalizes most opponent value; a 1-ply opponent model is redundant against it.**
+This **lowers Track 2's EV** (equilibrium mix over the same candidates ≈ same
+redundancy + mirror-blindness) and leaves **Track 3** (exploitability instrument) as
+the only principled escalation — though the weak read hints at low headroom. Net:
+producer base looks ~locally-optimal for solution-concept deltas; the proven lever
+(reinforce-risk) changed the world model. Full why = `EXPLORED_AND_ABANDONED.md`
+Cluster 11. Code kept gated default-off; `_opponent_reactive_status()` is a reusable
+exact 1-ply opponent-injection primitive.
+
+### Update 2026-06-13 (later) — World-model gap audit → NO GAP (the base projection is faithful)
+
+After Track 1, audited the chosen "world-model gap" axis directly
+(`/tmp/proj_audit.py`, reusable): roll the v5 runtime over 10 real games vs producer,
+capture what `garrison_status` (the do-nothing projection) predicts for every planet at
+every horizon k, compare to the ACTUAL board k steps later (ground truth = the obs
+stream). **Decisive finding: the projection is physically faithful** — owner accuracy
+99.8% @k=1 → 87.8% @k=18 (β=2.2), and the *pure geometry* miss category (projection said
+my fleet captures it, but it ends up neutral = my fleet vanished to sun/sweep/aim) is
+**0.2%**. Orbital sweep, sun-crossing, combat ordering, intercept aim are all already
+exact. The residual error is entirely **future AGENCY**: ~50–59% = my OWN future captures
+the single-turn projection can't foresee (only recoverable by multi-turn lookahead =
+the 6-failure search pattern); ~28–33% = ENEMY agency (reinforce-risk shipped the prime
+slice; opp_inject showed the rest is scorer-redundant); ~13–17% = neutral↔enemy churn
+(mostly 4P third-party races). Cross-check: reinforce ON vs OFF — ON makes the agent's
+play track its own projection BETTER (owner acc +3.6pp @k=18), validating the instrument
+and reinforce-risk's mechanism. **Conclusion (triangulated 3 ways — opp_inject inert,
+audit faithful, whole graveyard): the producer base is at/near a LOCAL OPTIMUM for
+hand-buildable + solution-concept deltas; the only proven lever changed the WORLD MODEL,
+and the world model has no remaining renderable gap.** Remaining real levers: (a) defend
+v5.3 + meta-monitor for the next public *structural* idea (the proven channel = how
+reinforce-risk was found); (b) multi-turn search WITH a faithful opponent + learned value
+(ReBeL/Player-of-Games style) to recover the ~50% own-future-agency gap — now *justified*
+by the audit but a major build + graveyard-adjacent (the passive-sim search family is
+closed; only a faithful in-sim opponent escapes it). 4P churn (b/c our strength) is
+ladder-only measurable.
+
+### New plan — a ladder of opponent-aware solution concepts (each a gated single variable, mirror-gateable, no rollout, no passive-long-horizon sim)
+
+**Track 1 (PRIMARY, building now) — Level-1 opponent-aware planning** (= the old Axis A
+cand (b), now SOTA-justified and top priority). Mirror meta ⇒ we ARE the opponent's
+planner: run producer from each live enemy seat → their top-K best-response launches →
+inject into the projection → score OUR candidates against that reactive world instead of
+the do-nothing one. Single knob `opp_inject` (on/off, + K). Bounded cost (~2× planner
+calls/turn; producer runs ~20–35s/*game*, budget is 1s/*step*). Sidesteps every closed
+pattern: 1-ply (no rollout), uses the *exact* planner as opponent model (not Cluster-9's
+coarse mass proxy). Gate: `v5:opp_inject=on` vs `v5` mirror, n≥120; dose-response on K.
+Risk = over-reactive projection → Cluster-9 passivity; same gate catches it.
+
+**Track 2 (if T1 gates >60%) — per-turn stage-game equilibrium.** Replace
+"fire greedily while score>ROI" with the NN-CCE/OOS recipe at one-turn scale: my
+candidate set × opponent candidate set → payoff matrix via the exact flow-diff scorer →
+N rounds of **regret matching** → (possibly mixed) less-exploitable turn strategy →
+select. Single-turn, no horizon extension. Gated, mirror-gateable.
+
+**Track 3 (parallel; new measurement instrument + RL-learning capstone) — direct
+exploitability.** Fixes "mirror A/B is our only, noisy instrument." Exploitability =
+how well a best-response attacker does against you; a level-1 exploiter (producer that
+reacts to committed moves) vs candidate measures robustness directly and orthogonally to
+mirror win-rate (T1's `level-1 vs level-0` gate already IS this). Only AFTER T1/T2 does a
+learned leaf value get a principled home (ReBeL-style value on the *opponent-aware* short
+search — value failed every time in the *passive* setting, which the literature says is
+the wrong setting). Honest: graveyard-adjacent; gate hard.
+
+**Slot/time discipline unchanged:** ~10 days, ~4 A/B cycles. T1 gates locally before any
+ladder slot; never act on n<100; every ship pairs with the incumbent resubmit. Sources in
+the conversation; full reasoning in `EXPLORED_AND_ABANDONED.md` (closed patterns) +
+`MEMORY.md`.
+
+## Update 2026-06-13 — Axis 0 MEASURED (→ Axis A) + slot decision + v5.4 cand (a) built/gating
+
+**Slot hygiene (Task 1): NO submission today — keep the warm v5.3 (1201.6)
+defending.** The active-2 eviction rule auto-evicts the OLDER incumbent, and v5.2
+(21:06) is *newer* than v5.3 (21:05), so any resubmit today would cold-restart our
+hard-won 1201.6 v5.3 (ratings don't carry over) for zero benefit — the A/B needs
+both agents cold same-epoch at v5.4 ship anyway. **Team rank is driven by the best
+active sub** (LB shows us at 1201.6 = v5.3), so the passive v5.2 slot doesn't drag
+rank; it stays harmlessly until v5.4. **At v5.4 ship: submit v5.4, then resubmit
+v5.3** → active {v5.4, v5.3} clean same-epoch A/B (v5.2 evicted naturally). The
+exact v5.3 tarball is archived as `outputs/submissions/v5_3_bundle.tar.gz` (==
+on-ladder v5.3, verified contains `reinforce_size_beta=2.2`).
+
+**Axis 0 (Task 2): measured our mode-conditional rating — VERDICT = proceed with
+Axis A; Axis B (4P spec) RULED OUT.** Pulled v5.3's 86 ladder episodes via the
+Kaggle EpisodeService (`/api/i/competitions.EpisodeService/ListEpisodes`,
+`{"submissionId": 53615604}` — each episode carries every agent's match-time
+`initialScore`, so no LB join needed). Split by `num_agents`, fit 2P Elo + 4P
+Plackett-Luce winner model vs opponents' match-time ratings:
+
+| mode | n | winrate | mean opp rating | fitted perf |
+|---|---|---|---|---|
+| 2P | 46 | 50% (23/23) | 1174 | **1186** |
+| 4P | 39 | 41% (17/40, baseline 25%) | 1146 | **1290** |
+
+4P − 2P = **+106** (bootstrap 90% CI [−23, +224]; P(4P ≥50 *below* 2P, the Axis-B
+trigger) = **2.2%**; P(4P>2P) = 89.5%). **Our 4P is our STRENGTH, not our
+weakness** — opposite of the "RL self-play agents are 2P-tilted" prior. Cross-check:
+the weaker v5.2 control fits 2P 1029 / 4P 1094 (≈ its 4P baseline, as expected for a
+~random-4P agent). 2P (1186) is our weaker mode — which is exactly what **Axis A
+(2P opponent-reactivity)** targets. (Tooling: `/tmp/fit_modes.py`, `/tmp/boot_modes.py`,
+raw `/tmp/ow_episodes_raw.json`. Mode mix 53/47, matches whymelabs' 51/49.)
+
+**Axis A (Task 3): v5.4 candidate (a) = DEFENSIVE SYMMETRY — BUILT + byte-identity
+verified + gating.** The proven v5.3 reinforce-risk inflates the *attack* capture
+floor for captures the enemy can reinforce mid-flight; symmetrically, `safe_drain`
+only protects a source against fleets *already in flight* (do-nothing projection),
+so it over-commits ships away from planets the enemy can *launch* at. New knob
+`defense_size_beta` (default **0.0 = OFF, byte-identical**) subtracts
+`defense_size_beta · cheap_enemy_pressure(source)` from each source's drain —
+reusing the *exact* enemy-mass proxy the offensive floor + regroup gradient already
+use (its distance decay encodes reaction timing, no separate ρ). Edits:
+`agents/v5/main.py` (config field + reorder enemy_mass before `safe_drain` + reserve
+plumbing) and `orbit_lite_v5/planner_core.py::safe_drain` (optional `reserve` arg).
+ruff/pyright clean. **Byte-identity: 0/555 steps differ** vs the archived v5.3 bundle
+on fixed obs streams (`/tmp/byteid_final.py`; agent is deterministic on fixed obs but
+the live game is NOT — env/opponent fp wobble — so the check replays a *recorded* obs
+stream through both, the same method the reinforce port used). Knob ON (beta=3.0)
+changes 145/555 steps. **Gate FAILED decisively, dose-responsively**
+(`v5:defense_size_beta=X` vs `v5` mirror, n=120 each, `gate_defense_b*.csv`): beta
+**0.5 → 28%**, **1.5 → 10%**, **3.0 → 3%** (monotone in dose, all ≪ 50%). **Candidate
+(a) CLOSED** → graveyard Cluster 9. The asymmetry is real: declining doomed *attacks*
+(offense) frees a known-wasted commitment; hoarding ships *defensively* over-reserves
+(producer's `safe_drain` is already exact w.r.t. in-flight threats, and
+`cheap_enemy_pressure` over-credits reachable enemy mass) → passivity, fatal in 2P
+(our weak mode). Same "coarse signal second-guessing an exact planner" pattern as the
+shot-validator (Cluster 6) and arrival-horizon (Cluster 8). Code kept gated default-off
+(byte-identical). **Next: Axis-A candidate (b) = short-horizon 1-ply opponent-launch
+injection** — inject the opponent's *actual* best flow-diff sends (we ARE the
+opponent's planner) into the projection before scoring ours. Less coarse than a mass
+proxy (uses the real planner, not an estimate), but graveyard-risky: keep the
+injection horizon SHORT (1-ply, never a rollout). Heavier build (~run the planner from
+each enemy seat + inject launches + re-score + byte-identity + gate) — recommend a
+focused pass.
+
+**reinforce_size_beta sweep (cheap diligence before cand b): NULL — keep 2.2.**
+We inherited beta=2.2 from V2 upstream without sweeping it ourselves; gated
+`v5:reinforce_size_beta∈{1.5,2.2,3.0,4.0}` vs `v5` (=2.2) mirror, n=120 each
+(`gate_reinforce_b*.csv`). Result: 1.5→49.2%, **2.2→55.4% (A/A reference, BYTE-
+IDENTICAL agents!)**, 3.0→47.5%, 4.0→40.8%. The A/A reading of 55.4% (CI
+[46,64]) calibrates the noise: at n=120 in a *divergent* mirror the seat/seed
+skew is ~±9% — so no candidate clears the A/A baseline (1.5/3.0 sit *below* it),
+and only 4.0 is genuinely worse (over-conservative). **2.2 is near-optimal; no
+v5.4 candidate here.** Confirms micro-tuning of the proven term is exhausted —
+the remaining levers are cand (b) (1-ply opp injection) and Axis C.
+
+**Axis C corpus identified (Task 4, parallel/Colab v5.5):** `kaggle kernels output
+slawekbiel/am-i-in-the-top-10-replays-yet` yields only episode *summaries*
+(num_players/winner/teams/rewards, `/tmp/top10_replays/cache/*.csv`), NOT replay
+states — the per-step states for the 16-feature global-value dataset come from the
+`kaggle/orbit-wars-episodes-YYYY-MM-DD` datasets (large, daily) that the kernel itself
+downloads, or `GetEpisodeReplay` on top-team episode IDs. Confirms Axis C is a
+Colab-scale build, not inline. The Kaggle EpisodeService access pattern is now proven
+(see Axis 0) and reusable for harvesting top-team episode IDs.
+
+### Update 2026-06-13 (later) — Axis C BUILT end-to-end + gated INERT → graveyard Cluster 10
+
+**Built and gated locally without waiting on Colab/replay download** (local
+strong-agent self-play is the relevant tie-break distribution): full pipeline shipped —
+`orbit_lite_v5/value_reranker.py` (16-feature global encoder + numpy/torch MLP, shared
+harvest+inference), `value_rerank_eps` knob (default 0.0=OFF, byte-identical), near-tie
+re-rank in `_greedy_select` (fail-safe: only among candidates within eps of best that
+already clear roi_threshold), `scripts/harvest_values.py` + `scripts/train_value_model.py`.
+Model: 360 2P games {v5,producer,producer_v2} → 162K states → **val AUC 0.783,
+calibrated/monotone** across all deciles. Byte-identity verified (OFF 0/451; eps=0 with
+weights 0/451; ON eps=3.0 changes 8/451; shipped v5 0/894 vs ref after weights removed).
+
+**Gate INERT** (`v5:value_rerank_eps=X` vs `v5`, n=120 mirror, paired seeds,
+`outputs/arena/gate_value_eps{2,4,8}.0.csv`): **eps 2→46.2%, 4→47.9%, 8→48.3%** — all
+inside the A/A floor (±~4.5%), pooled ~47.5%/360, NOT dose-responsive toward harm (wider
+band ⇒ closer to 50 = noise). The learned global value (grounded but noisy) cannot beat
+the flow-diff's own lowest-index tie-break on genuine ties — exactly the Phase-2 ExIt
+diagnostic + value_leaf_blend failure, and the Cluster 6/8/9 "coarse signal second-guessing
+the exact planner" pattern. **Axis C = DEAD locally → Cluster 10.** Shipped v5 unchanged
+(code default-off). The pipeline + trained artifact (`outputs/value/`) survive; the only
+open thread (low-odds) = retrain on real 1300+ ladder replays via EpisodeService, but
+eps=8 trending to neutral (not positive) says a better ranker won't convert the tie set.
+**Net: PPO/ExIt/policy-BC/value-blend/value-rerank all exhausted — the credible levers
+left are ladder-validated planner deltas (v5.x) + Axis A cand (b).**
+
+## Update 2026-06-12 (night) — after v5.3: the v5.4-vs-v6.0 decision
+
+**Decision: v5.4, not v6.0.** Keep the shipping discipline that is working
+(producer base + gated single-variable deltas + mirror gate + paired ladder
+A/B) — but aim it at *structural* axes, not micro knobs (those are
+exhausted: every public knob claim failed the mirror; reinforce-risk won
+because it changed what the planner *models*, not a constant). A true v6.0
+(new architecture / standalone RL agent) is negative-EV with 11 days left:
+the graveyard holds 6 failed search surgeries + every big-swing RL attempt,
+and the one validated instrument we own (producer-mirror A/B) only measures
+deltas on the flow-diff base.
+
+**Evidence pulled tonight:**
+- The Producer V2 went 4 → 58 votes in one day — the clone wave is forming.
+  v5.3 = parity+ with V2 (56%); the next tier requires deltas clones lack.
+- Whyme Labs mode-split analysis (measured over 472 fresh episodes
+  2026-06-11): the matchmaker is **51% 2P / 49% 4P** — half our rating is
+  4P. Their Producer-family fork with a "player-count fix + 4P closing
+  logic" fits **~1320 in 4P** vs ~1177 in 2P (+100 over its blend). Method
+  is replicable: pull own episodes via the Kaggle episode API, split by
+  num_agents, fit 2P Elo + 4P Plackett-Luce vs opponents' LB ratings.
+  (Also: team-merger deadline 06-16 — they offer a 4P-specialist merge;
+  noted, not pursued.)
+- Top-10% replay corpus = daily output of kernel
+  `slawekbiel/am-i-in-the-top-10-replays-yet` (refreshed tonight 23:27);
+  pull via `kaggle kernels output`.
+
+### The three v5.4+ axes, in priority order
+
+**Axis 0 (first, cheap, decisive): measure OUR mode-conditional rating.**
+Replicate the whymelabs fit on our own episodes. If our 4P fitted rating
+lags 2P by ≥50 → 4P is the biggest lever and Axis B jumps the queue; if
+balanced → stay on Axis A. This converts "where does rating leak?" from
+guess to measurement in ~half a day.
+
+**Axis A (default): extend the opponent-reactivity axis in 2P.** V2's
+reinforce-risk is the first planner-side opponent-model term and the first
+mirror win; the planner still assumes do-nothing opponents everywhere else.
+Candidates, each a gated knob, each mirror-gateable vs producer_v2 (the new
+reference opponent), n≥120:
+  a. **Defensive symmetry**: the same reinforcement-risk logic on the
+     defense side — keep_needed/defense candidates currently ignore enemy
+     mass that can reach OUR planets (we decline doomed attacks now, but
+     still under-garrison planets the enemy can mass on).
+  b. **1-ply opponent launch injection**: compute the opponent's top
+     flow-diff candidate sends (we ARE the opponent's planner — mirror
+     meta) and inject them into the projection before scoring ours.
+     Bounded cost; honest caveat: graveyard says don't lean on long-range
+     sim — keep the injection horizon short.
+
+**Axis B (if Axis 0 says 4P-weak): 4P specialization.** Player-count fixes
++ "4P closing logic" analogues (whymelabs' words; reverse-engineer:
+elimination-order awareness, don't-feed-the-leader endgame, crash
+exploitation). Ladder-only measurable → costs an A/B cycle per try; only
+enter with Axis-0 evidence.
+
+**Axis C (parallel, Colab; the ML/v5.5 candidate): learned value re-ranker
+from top-10% replays.** NOT BC-the-policy (BC clones plateau below their
+teacher: producer-BC hit 3% vs producer) — instead the publicly-working
+pattern: global value model (aidensong: 16 features, GBC, AUC 0.976)
+trained on the 1300+ replay corpus, used ONLY to re-rank near-tie flow-diff
+candidates (respects our sibling-ranking finding). Gated default-off,
+mirror-gateable. This is also the project's RL-learning goal made
+competition-relevant.
+
+**Slot budget: ~4 A/B cycles to 06-23.** v5.3 verdict (06-13/14) → v5.4 =
+best Axis A/B winner (06-14/15) → v5.5 = re-ranker if it gates (06-16/18) →
+1 reserve cycle for reverts/late finds. Every ship pairs with the incumbent
+resubmit; never act on n<100.
+
+## Update 2026-06-12 (later) — public-meta refresh #2 + the v5.3 plan
+
+**v5.2/v5.1 in flight** (submitted 13:52/13:53, judge 06-13/14). Local mirror
+check of the pair (n=60, seeds 20000–20059): 40%/60% headline, but only **7/60
+games reached step 460** (terminal phase active; v5.2 won 2/7) — 53/60 games
+were byte-identical A/A, so the read is noise-dominated as predicted.
+Ladder remains the only judge for the terminal phase.
+
+### New public meta (5 notebooks pulled 06-12, /tmp/kpull2/)
+1. **The Producer V2 (slawekbiel, the ORIGINAL author, published 06-12)** — the
+   one genuinely new structural idea since the flow-diff itself: an **ETA-aware
+   enemy-reinforcement risk term on the capture floor**. `cheap_enemy_pressure`
+   = distance-decayed enemy garrison mass that can reach each target within the
+   horizon; capture floor inflated per arrival turn by
+   `reinforce_size_beta (2.2) × ρ(eta; free=3, scale=12) × reachable_enemy_mass`.
+   Fixes the known blind spot that the ROI model ignores reinforcement arriving
+   *during flight*. Other V2 deltas: waves 6, roi 1.5, min_ships_to_launch 4.
+   No stated LB score. **This will become the next clone base** — being early
+   matters under tier compression.
+2. **I'M SMARTER (tamrazov, claims 1350+):** real code = dynamic phase config
+   (step<80: roi −0.2, min_launch −1; step>400: roi +0.2, def targets +2),
+   time-budget degradation (shrink lanes/targets/waves when overage <5s),
+   `high_prod_attack_bonus=0.20`, comet_attack_bonus 3/4. Claimed anti-overkill
+   + vulture sniping are NOT in the posted code. roi 1.25 / waves 8 / horizon 20.
+3. **ProducerLite Micro-Logistics (pilkwang, 63 votes):** multi-size candidates
+   `[0.33, 0.66, 1.0]` — same family as our **Cluster-7 closure (keep closed)**;
+   no win-rate evidence offered.
+4. "No-lag 1300+" notebook = wrapper hype (external private agent). Whyme Labs
+   mode-split = meta-analysis (their producer-family fork: ~1177 2P / ~1320 4P —
+   confirms 4P is where producer-family rating headroom is).
+5. Old GitHub issue #1047 ("critical engine bugs", May): nothing actionable —
+   multi-attacker erasure is the documented combat rule; coords verified ours.
+
+### v5.3 plan (build NOW while the ladder experiment runs)
+**Primary candidate: v5.3 = (v5.2/v5.1 ladder winner) + Producer-V2
+reinforcement-risk floor.** Unlike the terminal phase / ffa knobs, this delta
+is **locally measurable** — it changes capture decisions from turn 1, so the
+producer-mirror A/B (our only sensitive instrument) can gate it BEFORE we
+spend a ladder slot. It also targets exactly the matchup that now decides the
+tier (producer-family mirrors), from the strongest possible source.
+
+1. ✅ **Vendored `producer_v2`** (2026-06-12): `agents/external/producer_v2/`
+   = V2's main.py verbatim, sharing producer/'s `orbit_lite` (file set +
+   imports verified identical; one sys.path entry so producer-vs-producer_v2
+   games don't race on the module name). Registered in the external loader;
+   `load_named_agent("producer_v2")` works; real-env smoke game DONE/DONE.
+   Diff vs our vendored producer main.py is SMALL: (i) the reinforcement-risk
+   wiring + 3 knobs (beta 2.2 / eta_free 3 / eta_scale 12); (ii) V2 drops
+   i-m-better's ffa-bonus block and CONFIG_4P overrides (V2 4P keeps roi 1.5
+   / min_ships 4; i-m-better had 1.55/5.0 + ffa bonuses). The `capture_floor
+   (reinforcement=...)` plumbing + `reinforcement_timing_factor` already
+   existed in our vendored orbit_lite — V2 only wires it.
+2. ✅ **Ported to `agents/v5/`** (2026-06-12): `reinforce_size_beta=0.0`
+   default-OFF + `reinforce_eta_free=3.0` / `reinforce_eta_scale=12.0`;
+   enemy-mass proxy hoisted and shared with the regroup gradient (as in V2).
+   ruff+pyright clean. **Byte-identity verified** (old-vs-new agent replayed
+   on identical obs streams, 2 full games, 0/328 steps mismatched). ON-path
+   smoke via arena spec `v5:reinforce_size_beta=2.2`: runs, diverges.
+3. ✅ **Local gates PASSED decisively (2026-06-12, arena.csv, paired seeds,
+   side-alternated):**
+   a. `v5:reinforce_size_beta=2.2` vs `v5` mirror: **75% @ n=120** — the
+      FIRST mirror-measurable win of the project (every prior public mirror
+      knob read 42–52%); far outside the noise floor (±~4.5% @ n=120).
+   b. `producer_v2` vs `v5`: **78% @ n=60** — the new public base crushes our
+      shipped agent; when V2 clones flood the ladder, the current base loses
+      its tier. Urgency confirmed.
+   c. `producer_v2` vs `producer` (V1): **73% @ n=60** — V2 > V1 head-on;
+      the three reads are mutually consistent (the reinforce term is the
+      driver).
+   d. `v5:reinforce_size_beta=2.2` vs `producer_v2`: **56% @ n=60** —
+      parity-or-better with the new public base (within noise of 50%; the
+      clamp/terminal-phase deltas are ladder-only visible, so mirror parity
+      is the expected good outcome). v5.3 ≥ V2 with our ladder deltas on top.
+
+   **v5.3 ship decision (pending only the 06-13/14 terminal-phase verdict):**
+   flip `reinforce_size_beta` default 0.0 → 2.2 in `agents/v5/main.py`
+   (CONFIG_4P inherits via `dataclasses.replace`, same as terminal phase) on
+   top of the v5.2/v5.1 ladder winner; archive the incumbent tarball before
+   rebuilding; submit v5.3 + resubmit the incumbent per the pairing rule.
+   Do NOT ship early — it would evict half of the live terminal-phase A/B
+   one day before its verdict.
+4. **Ship decision when the terminal-phase verdict lands (06-13/14):**
+   base = ladder winner; add reinforce-risk if mirror-positive (>60% @ n=120,
+   or clear margin signal). ~~Fallback: 4P ffa bonuses 0.035/0.08~~ **MOOT —
+   build discovery 06-12: v5's CONFIG_4P already ships
+   ffa_leader_attack_bonus=0.035 / ffa_target_prod_bonus=0.08, inherited from
+   the i-m-better base we vendored.** The "convergent constants in two forks"
+   converged because they're IN the shared base. No fallback ship; if
+   reinforce-risk fails locally, hold the slot for the RL track or the next
+   meta find.
+5. Deprioritized: tamrazov phase-config knobs (every public mirror knob has
+   failed our producer mirror — only port if a mirror A/B is free), time-budget
+   degradation (we've never been near the overage limit), micro-logistics
+   multi-size (Cluster 7 stays closed).
+6. **RL track unchanged and parallel:** BC from slawekbiel's top-10% replay
+   dataset (1400+-tier teachers).
+
+## Update 2026-06-12 — clamp ladder A/B VERDICT: KEEP. Next ship = v5.2
+
+### The experiment's final conclusion
+**The endgame horizon clamp is kept.** After ~24h of same-epoch episodes (both
+bundles resubmitted 06-11 16:00–16:45), v5.1 (clamp-only) = **1191.1** vs the
+byte-identical-base producer resubmit = **1131.3** → clamp = **+59.8** in the
+only instrument that can see it. Combined with v5.0's history (clamp + 4P mult
+= 1159.7, −71 vs producer), the attribution is now clean: **the 4P
+nearest-opponent mult was the regression; the clamp is positive (or at worst
+neutral) on the ladder.** Yesterday's 6h read (1178.7 vs 1176.1, "tied") was
+pre-convergence — the spread emerged with episode volume, exactly per
+Tamrazov's noise warning.
+
+Secondary finding — **tier compression is real and fast**: the *same*
+producer_bundle that converged 1230.9 in the 06-10 epoch converged ~1131 in
+the 06-11 epoch (−100 in two days), while rank bands held (1230 ≈ rank 153,
+1300 ≈ top 79, 1400 ≈ top 37). The producer-family population is flooding in
+(ProducerLite went public 06-11) and squeezing the rating out of the shared
+base. Standing still = drifting down; only deltas the clones don't have
+(endgame, 4P, ML edge) hold rating.
+
+### Decision rule updates
+- **Pinned-baseline slot switches from producer to v5.1.** The clamp is the
+  new incumbent base; producer's slot has served its purpose (the A/B is
+  decided). Every future ship = candidate + v5.1-incumbent pair, giving each
+  new delta a clean same-epoch single-variable A/B.
+- Slot budget: ~5 ladder A/B cycles left before the deadline (each needs
+  ~1–2 days to converge). Spend them on single-variable producer-family
+  deltas, best-validated first.
+
+### Next ships (in order)
+1. **v5.2 = v5.1 + `terminal_phase_turns=40`** (port already BUILT + smoked
+   2026-06-11, default-off). To ship: flip the default in
+   `agents/v5/main.py` (CONFIG_4P inherits via `dataclasses.replace` — exp59
+   runs it in both formats), archive the v5.1 tarball
+   (`outputs/submissions/v5_bundle.tar.gz` → `v5_1_bundle.tar.gz`) BEFORE
+   rebuilding, `scripts/build_v5_bundle.py`, submit v5.2, then immediately
+   resubmit the archived v5.1 → active = {v5.2, v5.1}, judge 06-13/14.
+   Decision rule: v5.2 ≥ v5.1 → terminal phase stays; else revert default.
+2. **v5.3 = winner + 4P ffa bonuses (0.035/0.08)** — the convergent public
+   constants (two independent forks), gentler than the regressed 1.25×/0.55×
+   mult. Ladder-only measurable; same pairing protocol.
+3. **RL track PIVOT (Phase 2.2c arrival-horizon FAILED 06-12** — h2h 17/17/3%
+   vs champion, worsens with training; 6th search-surgery failure, the
+   search-surgery pattern is CLOSED — only selection/anchoring (Gumbel) ever
+   won). New RL bet = **BC from the top-10% replay dataset** (slawekbiel's
+   daily dataset, ~4.8K replays/snapshot): filter episodes of 1400+ teams,
+   map their moves into the v2 action space (existing
+   `_map_expert_moves_to_v2`, 45° angular matching), BC-pretrain embed-256,
+   gate in the arena vs pool + champion + v5. Rationale: imitation is the one
+   ML pattern that has worked here (BC-from-producer cloned its tier); this
+   swaps the teacher from producer (1230-epoch, now 1131) to the 1400–1700
+   tier — above everything we can write by hand. Stretch unchanged: 16-feature
+   global value from the same episodes for near-tie re-ranking.
 
 ## Update 2026-06-11 (late) — ladder check + public-meta refresh
 
@@ -78,8 +523,8 @@ Findings, by actionability:
    mirror locally.** Producer's hand-tuned 1.5/6/18 survive (again). The
    remaining levers are ladder A/Bs (clamp → terminal-phase → ffa bonuses) and
    the RL track.
-2. **Judge the clamp ladder A/B (~06-12)** — decision rule unchanged: if v5.1 ≥
-   producer, clamp stays; if it lags like v5.0 did, revert to pure producer.
+2. ✅ **Clamp ladder A/B JUDGED 2026-06-12: KEEP** (v5.1 1191.1 vs producer
+   1131.3, +59.8 same-epoch — see the 06-12 update at the top).
 3. ✅ **Terminal-phase port BUILT 2026-06-11** (`agents/v5/main.py`:
    `terminal_phase_turns` (0 = OFF, byte-identical) + `terminal_roi_threshold`
    1.0 / `terminal_max_waves_per_turn` 8 / `terminal_enable_regroup` False,
@@ -438,6 +883,35 @@ In order of expected value-per-day:
      head-to-head AND raise the 4-opponent pool mean (>45%), n≥30/pair; mirror
      vs producer/v5 n≥60. Watch for the aggression signature (launch rate up +
      mirror losses) → lever is cap/margin, not an opponent model.
+
+   **RESULT 2026-06-12 — GATE FAILED, decisively; champion UNCHANGED
+   (`v2_exit_producer256_a100/ckpt_000025.pt`).** Colab run
+   `v2_exit_producer256_v3_a100` (fresh BC + 40 iters, 26 min). The mechanism
+   FIRED but made the agent worse:
+   - In-run: floss spiked 2.48 at iter 1 (sharp sizing targets meeting the BC
+     model — proof the targets sharpened), dipped to 1.04, settled ~1.355
+     (below the 2.2b reference 1.386, above the hoped 1.15–1.25). Eval vs
+     ow_proto: BC 25% → iter-5 72% → declined to 52–57% by iters 20–40.
+   - Arena h2h vs champion (n=30/pair, paired seeds): **iter-5 17%, iter-35
+     17%, iter-40 3%** — pooled 12% over 90 games, worsening with training.
+     Pool screen skipped (condition 1 failed everywhere).
+   - Loss signature: median game runs the full 499 steps and loses on score —
+     overextension/misallocation, not early elimination. The sharpened targets
+     are tuned to a world where NOBODY contests for 30–60 steps: the passive
+     sim rewards greedy distant expansion with prod_weight × prod_advantage,
+     and distilling that EXACTLY is worse than the depth-12 blur (which only
+     trusted short-horizon consequences the sim gets right).
+   - **Verdict: 6th leaf/horizon/opponent search experiment to regress the
+     champion** (neural leaves, rollout opp, 2P one-ply, value blend, mixed
+     pool, arrival horizon). The pattern is now sharp: anything that makes the
+     search lean HARDER on the passive sim's long-range predictions loses; the
+     one winner (Gumbel) changed selection/anchoring, not the world model.
+     Possible salvage (cap/settle_margin small, e.g. cap 20–24) is another
+     Colab run for a third-order knob — NOT worth it before the deadline.
+     Infra stays (default-off, byte-identical); flag goes in the config
+     graveyard. RL track: stop horizon-style search surgery; remaining
+     credible RL lever = learning from above-producer data (Slawek top-10%
+     replay dataset, action 5 in the 06-11 refresh).
 3. (Stretch) **Learned value from real episodes**: pull top-team episodes via Meta
    Kaggle, train the 16-feature global value, use it for candidate re-ranking in the
    flow-diff planner (re-rank near-ties only — respects our sibling-ranking finding).
@@ -453,8 +927,12 @@ In order of expected value-per-day:
 | 2026-06-04 | v2_exit_a100 iter-20 | 736.7 → 729.4 | ExIt champion vs apex; slot freed 06-10 |
 | 2026-06-10 15:23 | producer_bundle | 695.0 → **1242.7** (same day) | **rank 140/4212 (top 3.3%)**, was 1762 |
 | 2026-06-10 19:48 | v5_bundle | 1110.5 → 1174.1 → **1159.7 CONVERGED LOW** | producer + endgame clamp + 4P nearest-opp mult; −71 vs producer → mult diagnosed as the suspect delta |
-| 2026-06-11 16:07 | v5_bundle (v5.1) | 835.6 → **1178.7** @ 22:35 (climbing) | **mult OFF** (clamp only) — parity reclaim; once converged, v5.1 vs producer = clean ladder A/B of the clamp |
-| 2026-06-11 16:42 | producer_bundle | → **1176.1** @ 22:35 (climbing) | resubmit — v5.1 evicted it (active window = latest 2; every ship now = candidate + producer resubmit pair) |
+| 2026-06-11 16:07 | v5_bundle (v5.1) | 835.6 → **1193.4 @ 06-12** | **mult OFF** (clamp only) — **A/B verdict: clamp KEEP (+60 vs producer same-epoch)**; evicted 06-12 by the v5.2 ship |
+| 2026-06-11 16:42 | producer_bundle | → **1126.0 @ 06-12** | resubmit; A/B duty done (lost to clamp), evicted 06-12 by the v5.1 resubmit — baseline role passes to v5.1 |
+| 2026-06-12 13:52 | v5_bundle (v5.2) | 1147.0 @ eviction (~7h) | clamp + terminal phase ON — A/B cut short by the v5.3 ship, but led v5.1 1147 vs 1134 mid-climb → kept as the control line |
+| 2026-06-12 13:53 | v5_1_bundle (v5.1 resubmit) | 1134.0 @ eviction (~7h) | trailed v5.2 by 13 mid-climb; evicted by the v5.2 control resubmit |
+| 2026-06-12 21:05 | v5_bundle (v5.3) | **1201.6 @ 06-13 (rank 313/4381)** | **v5.2 + reinforce-risk floor (beta 2.2, Producer V2 lineage)** — mirror gate 75% @ n=120. **A/B VERDICT: KEEP — +150 same-epoch vs v5.2 control (1201.6 vs 1051.1); first decisive local↔ladder agreement.** New pinned baseline. |
+| 2026-06-12 21:06 | v5_2_bundle (v5.2 resubmit) | 1051.1 @ 06-13 (rank ~1005) | pinned control; LOST the A/B by 150 → reinforce-risk is a real ladder win, not noise. Baseline role passes to v5.3. |
 
 **Phase 2 local-track results (2026-06-11):**
 - **Track 1 (second candidate size) CLOSED — structurally inert.** Flow-diff provably

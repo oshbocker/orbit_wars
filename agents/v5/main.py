@@ -42,10 +42,12 @@ from orbit_lite_v5.planner_core import (
     largest_initial_player_count,
     make_launch_set,
     reachable_mask,
+    reinforcement_timing_factor,
     safe_drain,
     score_candidates,
 )
 from orbit_lite_v5.shot_validator import DEFAULT_THRESHOLD, NumpyValidator, apply_veto
+from orbit_lite_v5.value_reranker import ValueModel, candidate_value_scores
 from torch import Tensor
 
 # Last step at which the engine still runs production/combat (game ends at 498).
@@ -69,6 +71,18 @@ def set_validator(weights_path: str | None, threshold: float = DEFAULT_THRESHOLD
     global _VALIDATOR, _VETO_THRESHOLD
     _VALIDATOR = NumpyValidator(weights_path) if weights_path else None
     _VETO_THRESHOLD = threshold
+
+
+# v5.5 (Axis C): learned global-value tie-breaker. Auto-enabled only when BOTH the
+# weights ship in the package AND a config sets value_rerank_eps > 0 (default 0.0,
+# so a bundled model alone changes nothing — byte-identical to v5.4).
+_VALUE_WEIGHTS = os.path.join(_HERE, "orbit_lite_v5", "value_model_weights.npz")
+_VALUE_MODEL: ValueModel | None = None
+if os.path.exists(_VALUE_WEIGHTS):
+    try:
+        _VALUE_MODEL = ValueModel(_VALUE_WEIGHTS)
+    except Exception:
+        _VALUE_MODEL = None
 
 
 @dataclass(frozen=True)
@@ -106,16 +120,63 @@ class ProducerLiteConfig:
     # single-size structural limit (full-drain captures of small neutrals strand
     # ships the scorer would rather keep home). < 0 (default) = OFF, byte-identical.
     cheap_capture_margin: float = -1.0
+    # v5.3: ETA-aware reinforcement risk (The Producer V2, slawekbiel
+    # 2026-06-12). Inflate the capture floor by ``reinforce_size_beta * rho(eta)
+    # * C_k`` where C_k is enemy supply reachable to the target during the
+    # fleet's flight, so the agent *declines* captures the enemy will reinforce
+    # mid-flight instead of sinking its whole garrison into a doomed attack
+    # (the flow scorer projects opponents do-nothing, so it can't see reactive
+    # reinforcement). 0.0 = OFF, byte-identical to v5.2. Default ON (2.2 = V2
+    # upstream) since v5.3 — gate: 75% vs v5.2 mirror @ n=120, 56% vs
+    # producer_v2 @ n=60. CONFIG_4P inherits via ``dataclasses.replace``.
+    reinforce_size_beta: float = 2.2
+    reinforce_eta_free: float = 3.0
+    reinforce_eta_scale: float = 12.0
+    # v5.4 (Axis A candidate a): DEFENSIVE symmetry of the v5.3 reinforce-risk win.
+    # The reinforce floor (above) inflates the *attack* send size for captures the
+    # enemy can reinforce mid-flight; symmetrically, ``safe_drain`` only protects a
+    # source against fleets *already in flight* (the do-nothing projection), so it
+    # over-commits ships away from planets the enemy can *launch* at. This holds
+    # back ``defense_size_beta * reachable-enemy-mass(source)`` ships per source —
+    # reusing the exact ``cheap_enemy_pressure`` proxy that the regroup gradient and
+    # the offensive floor already use (its distance decay encodes reaction timing,
+    # so no separate rho ramp). 0.0 = OFF, byte-identical to v5.3.
+    defense_size_beta: float = 0.0
     # v5.2: terminal-phase config swap (pilkwang ProducerLite exp59 lineage).
     # In the last ``terminal_phase_turns`` turns, ROI drops, the wave cap rises
     # and regroup stops — score banked in fleets beats ships parked at home once
     # nothing launched late can pay back. Complements the horizon clamp above
     # (clamp = exact accounting; this = aggressive spending of the exact budget).
-    # 0 (default) = OFF, byte-identical.
-    terminal_phase_turns: int = 0
+    # 0 = OFF, byte-identical to v5.1. Default ON (40) since v5.2; applies to
+    # both formats (CONFIG_4P inherits — exp59 runs it in 2P and 4P).
+    terminal_phase_turns: int = 40
     terminal_roi_threshold: float = 1.0
     terminal_max_waves_per_turn: int = 8
     terminal_enable_regroup: bool = False
+    # v5.5 (Axis C): learned global-value tie-breaker. When > 0, among flow-diff
+    # candidates within ``value_rerank_eps`` of the about-to-be-selected best (and
+    # only those that already clear roi_threshold), pick the one the value model
+    # rates highest P(win) instead of the lowest slot index. Tie-break ONLY — the
+    # exact flow scorer stays authoritative; never fires a wave flow-diff wouldn't.
+    # 0.0 = OFF, byte-identical to v5.4. Requires value_model_weights.npz bundled
+    # in the package (auto-loaded); absent weights => OFF regardless of eps.
+    value_rerank_eps: float = 0.0
+    # v5.4 Track 1 (level-1 opponent-aware planning). The flow-diff projects all
+    # opponents as do-nothing (a one-shot best-response to a passive world = the
+    # maximally *exploitable* solution-concept class for a 2-player zero-sum
+    # simultaneous-move game; SOTA literature: regret/equilibrium play is less
+    # exploitable). This is the next rung of the cognitive hierarchy: we ARE the
+    # opponent's planner (mirror meta), so run the planner from each live enemy
+    # seat (level-0, best-responding to the do-nothing baseline), inject their
+    # top-N best-response ATTACK launches into the projection, then score OUR
+    # candidates against that reactive world. Generalizes the v5.3 reinforce-risk
+    # win (which modeled only one reactive term — mid-flight reinforcement) to the
+    # opponent's full offensive response, using the EXACT planner as the opponent
+    # model (not Cluster-9's coarse mass proxy) and the EXACT engine projection to
+    # propagate it. 1-ply (no rollout) and side-effect-free on the rolling cache
+    # (the projection is snapshotted/restored). 0 = OFF, byte-identical to v5.3;
+    # N>0 injects up to N attack waves per enemy seat (the dose-response knob).
+    opp_inject_waves: int = 0
 
 
 def _movement_config(config: ProducerLiteConfig, *, player_count: int) -> MovementConfig:
@@ -208,17 +269,50 @@ def plan_lite_waves(
 
     source_ships = obs.ships[source_idx.clamp(0, P - 1)].to(dtype)                # [S]
     H_eff = torch.full((), float(H), dtype=dtype, device=device)
+
+    # Reachable-enemy-mass proxy ([P]) — computed ONCE and reused for ALL THREE of:
+    # the offensive reinforcement-risk floor margin (below), the v5.4 defensive
+    # reserve (safe_drain, right here), and the regroup gradient (further down). Its
+    # decay distance-scale is the attack reach K_eta. (Producer V2 + v5.4 symmetry.)
+    beta = float(config.reinforce_size_beta)
+    defense_beta = float(config.defense_size_beta)
+    enemy_mass = (
+        cheap_enemy_pressure(obs, cache, horizon=float(K_eta), player_id=pid)    # [P]
+        if beta > 0.0 or defense_beta > 0.0 or bool(config.enable_regroup) else None
+    )
+
+    # v5.4 defensive symmetry: hold back ``defense_beta * enemy_mass(source)`` ships
+    # on each source so the planner under-commits planets the enemy can mass on
+    # (None when OFF → safe_drain byte-identical to v5.3).
+    defense_reserve = (
+        defense_beta * enemy_mass[source_idx.clamp(0, P - 1)]                    # [S]
+        if defense_beta > 0.0 and enemy_mass is not None else None
+    )
     drain = safe_drain(
         garrison_status, source_idx=source_idx, source_ships=source_ships,
-        H_eff=H_eff, player_id=pid,
+        H_eff=H_eff, player_id=pid, reserve=defense_reserve,
     )                                                                            # [S]
 
     # Uniform reach cap = K_eta (= horizon).
     eta_cap = torch.full((T,), float(K_eta), dtype=dtype, device=device)          # [T]
 
+    # ETA-aware reinforcement risk: inflate the capture floor by ``beta * rho(k)
+    # * reachable-enemy-mass(target)``. The per-arrival-turn growth comes from
+    # the rho(k) timing ramp. Gated by beta > 0 (OFF = bare floor, byte-identical).
+    reinforcement = None
+    if beta > 0.0 and enemy_mass is not None:
+        enemy_mass_t = enemy_mass[target_idx.clamp(0, P - 1)]                    # [T]
+        k_arange = torch.arange(1, K_eta + 1, device=device, dtype=dtype)
+        rho = reinforcement_timing_factor(
+            k_arange, eta_free=float(config.reinforce_eta_free),
+            eta_scale=float(config.reinforce_eta_scale),
+        )                                                                        # [K_eta]
+        reinforcement = beta * rho.view(1, K_eta) * enemy_mass_t.view(T, 1)      # [T, K_eta]
+
     floor = capture_floor(
         garrison_status, target_idx=target_idx, k_max=K_eta,
         capture_overhead=1.0, player_id=pid,
+        reinforcement=reinforcement,
     )                                                                            # [T, K]
     K = int(floor.shape[-1])
 
@@ -401,23 +495,150 @@ def plan_lite_waves(
             score = score * mult_short[cand_tgt_short]
     score = torch.where(cand_valid, score, torch.full_like(score, float("-inf")))
 
+    # v5.5 Axis C: learned value of each candidate's first-order resulting board,
+    # consumed only as a near-tie re-rank inside the greedy. Computed once over all
+    # candidates (cheap: ~C tiny-MLP rows). OFF (eps<=0 or no model) => None =>
+    # greedy is byte-identical to v5.4.
+    cand_value = None
+    if float(config.value_rerank_eps) > 0.0 and _VALUE_MODEL is not None:
+        cand_value = candidate_value_scores(
+            obs=obs, prod=prod, obs_tensors=obs_tensors,
+            target_idx=target_idx, cand_tgt_short=cand_tgt_short,
+            cand_send=cand_send, cand_active=cand_active,
+            model=_VALUE_MODEL, player_count=int(player_count), player_id=pid,
+        )
+
     wave_entries, leftover = _greedy_select(
         P=P, W=W, device=device, dtype=dtype, score=score,
         cand_src=cand_src, cand_send=cand_send, cand_angle=cand_angle, cand_eta=cand_eta,
         cand_active=cand_active, cand_tgt_slot=cand_tgt_slot, cand_tgt_short=cand_tgt_short,
         cand_is_def=cand_is_def, source_budget=obs.ships.to(dtype).clone(),
         target_exists=target_exists, roi_threshold=float(config.roi_threshold),
+        cand_value=cand_value, value_rerank_eps=float(config.value_rerank_eps),
     )
 
     if not bool(config.enable_regroup):
         return wave_entries
-    enemy_mass = cheap_enemy_pressure(obs, cache, horizon=float(K_eta), player_id=pid)  # [P]
+    # Reuse the enemy-mass proxy already computed above (one [P, P] reduction
+    # serves both the reinforcement floor and this regroup gradient).
+    assert enemy_mass is not None
     regroup_entries = _plan_regroup(
         movement=movement, obs=obs, obs_tensors=obs_tensors, garrison_status=garrison_status,
         leftover=leftover, original_ships=obs.ships.to(dtype), pressure=enemy_mass,
         config=config, H=H,
     )
     return concat_launch_entries([wave_entries, regroup_entries])
+
+
+# --- v5.4 Track 1: level-1 opponent-aware planning --------------------------
+# Names of the mutable projection tensors on PlanetMovement that
+# ``record_fleet_arrivals`` + ``garrison_status`` touch. We snapshot/restore
+# exactly these around a hypothetical opponent injection so the persistent
+# rolling cache (and next turn's projection) is byte-identical to never having
+# injected — i.e. the opponent model is a pure read of "what would the board
+# look like if the enemy launched its best response".
+_PROJECTION_STATE = (
+    "fleet_buckets",
+    "garrison_owner_cache",
+    "garrison_ships_cache",
+    "garrison_pre_combat_owner_cache",
+    "garrison_pre_combat_ships_cache",
+    "garrison_dirty_from",
+)
+
+
+def _snapshot_projection(movement) -> dict:
+    return {
+        name: (t.clone() if (t := getattr(movement, name, None)) is not None else None)
+        for name in _PROJECTION_STATE
+    }
+
+
+def _restore_projection(movement, snap: dict) -> None:
+    for name, t in snap.items():
+        setattr(movement, name, t)
+
+
+def _opponent_reactive_status(
+    *,
+    movement: PlanetMovement,
+    obs,
+    obs_tensors: dict,
+    cache,
+    base_status,
+    prod: Tensor,
+    alive_by_step: Tensor,
+    config: ProducerLiteConfig,
+    player_count: int,
+    H: int,
+):
+    """Inject each live enemy's level-0 best-response and return a reactive status.
+
+    For every opponent seat ``o != pid`` with a launchable garrison, re-parse the
+    SAME observation from ``o``'s perspective (everything but the ownership masks
+    is absolute) and run the producer planner for ``o`` against the *do-nothing*
+    baseline projection (``base_status`` — so each opponent is level-0, assuming
+    everyone else holds). Their best-response ATTACK launches (regroup off; capped
+    at ``opp_inject_waves`` waves) are injected into the projection's arrival
+    buckets; ``garrison_status`` then re-resolves the engine-exact timeline with
+    those fleets present. The projection is snapshotted and restored so this has
+    no effect on the persistent cache. Returns ``base_status`` unchanged when no
+    enemy launches (so the result is exactly the do-nothing status in that case).
+    """
+    pid = int(obs.player_id)
+    n = int(player_count)
+    opp_waves = int(config.opp_inject_waves)
+    # Opponent sub-plan: attacks only (regroup is internal logistics that mostly
+    # shores up enemy defense → modeling it pushes US toward passivity, the
+    # Cluster-9 failure mode; the threat that should reshape our plan is the
+    # enemy's offense). Faithful otherwise — same horizon / reinforce-risk / FFA
+    # knobs, so the model is "the opponent is also v5.x".
+    opp_config = dataclasses.replace(
+        config, enable_regroup=False, max_waves_per_turn=opp_waves
+    )
+
+    tgt_chunks, own_chunks, ship_chunks, eta_chunks, valid_chunks = [], [], [], [], []
+    for o in range(n):
+        if o == pid:
+            continue
+        obs_o = parse_obs(obs_tensors, player_id=o)
+        launchable = (
+            obs_o.owned & obs_o.alive & (obs_o.ships >= float(opp_config.min_ships_to_launch))
+        )
+        if not bool(launchable.any()):
+            continue
+        entries_o = plan_lite_waves(
+            movement=movement, obs=obs_o, obs_tensors=obs_tensors, cache=cache,
+            garrison_status=base_status, prod=prod, alive_by_step=alive_by_step,
+            config=opp_config, player_count=n,
+        )
+        launches_o = infer_planned_launches_from_entries(
+            obs_tensors=obs_tensors, movement=movement, entries=entries_o, player_id=o,
+        )
+        if not bool(launches_o.valid.any()):
+            continue
+        tgt_chunks.append(launches_o.target_slots)
+        own_chunks.append(torch.full_like(launches_o.target_slots, int(o)))
+        ship_chunks.append(launches_o.ships)
+        eta_chunks.append(launches_o.eta_turns)
+        valid_chunks.append(launches_o.valid)
+
+    if not tgt_chunks:
+        return base_status
+
+    snap = _snapshot_projection(movement)
+    try:
+        movement.record_fleet_arrivals(
+            target_slots=torch.cat(tgt_chunks),
+            owner_ids=torch.cat(own_chunks),
+            ships=torch.cat(ship_chunks),
+            eta=torch.cat(eta_chunks),
+            valid=torch.cat(valid_chunks),
+        )
+        reactive = movement.garrison_status(max_horizon=H)
+    finally:
+        _restore_projection(movement, snap)
+    return reactive
 
 
 def run_turn(obs_tensors: dict, *, config: ProducerLiteConfig, player_count: int, memory) -> dict:
@@ -463,6 +684,16 @@ def run_turn(obs_tensors: dict, *, config: ProducerLiteConfig, player_count: int
     H = int(config.horizon)
     status = movement.garrison_status(max_horizon=H)
     alive_by_step = movement.alive_by_step[: H + 1]
+
+    # v5.4 Track 1: replace the do-nothing projection with a level-1 reactive one
+    # (each enemy's best-response attacks injected) before scoring our candidates.
+    # OFF (opp_inject_waves == 0) => skipped => status unchanged => byte-identical.
+    if int(config.opp_inject_waves) > 0 and int(player_count) >= 2:
+        status = _opponent_reactive_status(
+            movement=movement, obs=obs, obs_tensors=obs_tensors, cache=cache,
+            base_status=status, prod=movement.planet_prod, alive_by_step=alive_by_step,
+            config=config, player_count=int(player_count), H=H,
+        )
 
     entries = plan_lite_waves(
         movement=movement, obs=obs, obs_tensors=obs_tensors, cache=cache,

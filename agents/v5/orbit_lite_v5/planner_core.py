@@ -363,11 +363,21 @@ def reachable_mask(
 def _greedy_select(
     *, P, W, device, dtype, score, cand_src, cand_send, cand_angle, cand_eta,
     cand_active, cand_tgt_slot, cand_tgt_short, cand_is_def, source_budget,
-    target_exists, roi_threshold,
+    target_exists, roi_threshold, cand_value=None, value_rerank_eps=0.0,
 ) -> LaunchEntries:
     """Masking-only greedy over [C, L] candidates: pick the best wave each iter,
     one per target, source-budget aware across all L contributors. Enforces the
-    role mutex: a reinforced planet can't also be a source, and vice-versa."""
+    role mutex: a reinforced planet can't also be a source, and vice-versa.
+
+    Axis-C tie-break (``cand_value`` + ``value_rerank_eps > 0``, both default off):
+    among the candidates whose flow score is within ``value_rerank_eps`` of the
+    iteration's best AND that independently clear ``roi_threshold``, pick the one
+    with the highest learned ``cand_value`` instead of the lowest slot index. The
+    re-rank set is the flow-diff's own indifference band, so it never overrides a
+    strictly-preferred candidate and never fires a wave flow-diff would not. With
+    ``cand_value is None`` or ``value_rerank_eps <= 0`` the selection is
+    byte-identical to the bare greedy."""
+    rerank = cand_value is not None and float(value_rerank_eps) > 0.0
     C, L = int(cand_src.shape[0]), int(cand_src.shape[1])
     target_taken = ~target_exists.clone()                                        # [T]
     defended = torch.zeros(P, dtype=torch.bool, device=device)                   # reinforced this turn
@@ -390,11 +400,20 @@ def _greedy_select(
         contrib_defended = (defended[cand_src] & cand_active).any(dim=-1)       # [C]
         mask = torch.isfinite(score) & ~taken_cand & can_fund & ~tgt_used_as_src & ~contrib_defended
         masked = torch.where(mask, score, torch.full_like(score, float("-inf")))
-        best_c = _stable_argmax(masked)                                         # scalar, device-stable
-        best_score = masked[best_c]
+        best_score = masked.max()
         fired = bool(torch.isfinite(best_score) & (best_score > roi_threshold))
         if not fired:
             break
+        if rerank:
+            # tie-break within the flow-diff indifference band by learned value;
+            # restrict to candidates that themselves clear roi_threshold (fail-safe).
+            tie = mask & torch.isfinite(masked) & (masked > roi_threshold) & (
+                masked >= best_score - float(value_rerank_eps)
+            )
+            ranked = torch.where(tie, cand_value, torch.full_like(cand_value, float("-inf")))
+            best_c = _stable_argmax(ranked)                                     # device-stable
+        else:
+            best_c = _stable_argmax(masked)                                     # scalar, device-stable
 
         sel_src = cand_src[best_c]                   # [L]
         sel_send = cand_send[best_c]
@@ -591,6 +610,7 @@ def safe_drain(
     source_ships: Tensor,          # [S] float — current garrison at those slots
     H_eff: Tensor,                 # scalar float — horizon to protect the source over
     player_id: int = 0,
+    reserve: Tensor | None = None,  # [S] float — extra ships to hold back (defensive)
 ) -> Tensor:
     """Max ships a source can shed while staying held over ``H_eff``. ``[S]``.
 
@@ -601,10 +621,16 @@ def safe_drain(
     ``min_t(ships_traj[t])`` — leaving the planet at 0 ships on the worst held turn
     is allowed. Capped by ``source_ships`` (can't send more than we hold now):
 
-        safe_drain = clamp(min(min_t held(ships_traj), source_ships), 0)
+        safe_drain = clamp(min(min_t held(ships_traj), source_ships) - reserve, 0)
 
     A *doomed* source (no turn is held within ``H_eff``) has nothing to protect:
     ``min_slack`` is ``+inf`` and the cap collapses to ``source_ships`` naturally.
+
+    ``reserve`` (optional, ``[S]``, defaults to 0) is the **defensive-symmetry**
+    margin: ships held back against enemy mass that could *launch* at this source
+    (the do-nothing projection only sees fleets already in flight, so it can't see
+    reactive offense). Subtracted before the final clamp; ``None`` ⇒ today's
+    behaviour, byte-identical.
     """
     S = source_idx.shape[0]
     ships_cache = garrison_status.ships
@@ -630,4 +656,7 @@ def safe_drain(
     inf_fill = torch.full_like(src_ships_traj, float("inf"))
     cap_traj = torch.where(held, src_ships_traj, inf_fill)
     min_slack = cap_traj.min(dim=-1).values                                       # [S]
-    return torch.minimum(min_slack, source_ships.to(dtype)).clamp(min=0.0)
+    drain = torch.minimum(min_slack, source_ships.to(dtype))
+    if reserve is not None:
+        drain = drain - reserve.to(dtype=dtype, device=device)
+    return drain.clamp(min=0.0)

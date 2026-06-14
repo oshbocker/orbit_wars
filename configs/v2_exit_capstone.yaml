@@ -1,0 +1,102 @@
+# v2 ExIt — CAPSTONE: faithful-opponent search + learned value at leaves
+# (ReBeL / Player-of-Games-lite). 2026-06-14.
+#
+# WHY THIS CONFIG (the one principled escape from the closed search family):
+# Every prior value-at-leaves experiment (neural swap, z-blend) and every longer-
+# horizon search regressed because they leaned on the PASSIVE (do-nothing) in-sim
+# world. The 2026-06-14 world-model audit proved the do-nothing projection is
+# physically faithful (0.2% geometry error) — its ONLY large residual error is
+# future AGENCY (~50% our own future captures, recoverable only by multi-turn
+# lookahead; ~30% enemy). SOTA (ReBeL, Player of Games) + the audit agree: search
+# + leaf value is sound ONLY when the leaf reflects REAL opposition. So this
+# config layers, for the FIRST time together:
+#   - gumbel_search   (the one validated search win, +9.4%)         [selection]
+#   - net_opponent    (strong distilled net drives BOTH sides in-sim) [faithful world]
+#   - value_leaf_blend (learned value at the leaves, now in-distribution) [tail value]
+#
+# WARM START (required): --resume from the producer-anchored champion
+#   outputs/checkpoints/v2_exit_producer256_a100/ckpt_000025.pt
+# (download via scripts/download_checkpoint.py). BC is disabled — the teacher
+# distribution is unchanged from producer256, we only change the search.
+#
+# COST: net_opponent runs net forwards inside every leaf rollout (~1000x the
+# heuristic leaf at sims=16/every=1). Tamed here: gumbel_sims 16->8, top_m 8->4,
+# net_opponent_every 1->3 (~80x heuristic). Still GPU/Colab-only; collection is
+# the bottleneck (collect_workers). iterations capped at 25 (ExIt plateaus ~iter
+# 25 in every prior run); checkpoint_every 5 to gate intermediate ckpts.
+#
+# GATE (arena, real Kaggle env, paired/side-alternated): a capstone ckpt must
+#   (1) beat the champion v2_exit_producer256_a100/ckpt_000025.pt head-to-head
+#       (n>=30/pair), AND (2) raise the pool mean, AND (3) mirror vs producer/v5
+#       n>=120. Run the A/B as THREE arms to attribute: champion (control) vs
+#       net_opponent-only (blend=0) vs capstone (net_opponent + blend=0.3) — so we
+#       learn whether the faithful opponent and/or the leaf value is the lever.
+#   Never act on n<100. If flat: this confirms even faithful-opponent search can't
+#   beat the producer tier in our budget — the RL learning capstone still stands.
+
+run_name: v2_exit_capstone
+seed: 42
+device: auto
+save_dir: outputs/checkpoints
+log_dir: outputs/logs
+checkpoint_every: 5
+opponent: producer
+
+env:
+  max_planets: 40
+  allocation_threshold: 0.05
+  min_ships_to_send: 1
+  ship_fractions: [0.25, 0.5, 0.75, 1.0]
+
+model:
+  embed_dim: 256
+  n_heads: 4
+  n_layers: 3
+  ff_dim: 256
+  planet_feat_dim: 22
+  global_feat_dim: 8
+  n_fractions: 4
+
+eval:
+  eval_every: 5
+  eval_games: 40
+  eval_opponents: [producer, ow_proto]
+  eval_seed: 20000
+  eval_workers: 6
+
+imitation:
+  enabled: false   # warm-start from the producer256 champion via --resume
+
+exit:
+  enabled: true
+  iterations: 25
+  games_per_iter: 8
+  search_depth: 12
+  search_candidates: 10
+  search_temperature: 1.0
+  train_epochs: 4
+  train_batch_size: 256
+  train_lr: 0.0003
+  value_loss_coef: 0.5
+  max_grad_norm: 0.5
+  dataset_max_iters: 3
+  four_player_prob: 0.0
+  opponent: producer
+  sample_collect: true
+  search_workers: 6
+  collect_workers: 6
+  collect_fast_env: true
+  collect_side_alternate: true
+  # --- the one validated search win (keep ON) ---
+  gumbel_search: true
+  gumbel_sims: 8          # 16 -> 8: halve leaf rollouts (net_opponent cost)
+  gumbel_top_m: 4         # 8 -> 4: fewer simulated candidates
+  gumbel_c_visit: 50.0
+  gumbel_c_scale: 1.0
+  search_seed: 0
+  # --- CAPSTONE: faithful in-sim opponent (Build 2) ---
+  net_opponent: true
+  net_opponent_self: true     # drive OUR continuation with the net too (both sides real)
+  net_opponent_every: 3       # subsample net forwards (cost): every 3rd sim step
+  # --- CAPSTONE: learned value at the (now in-distribution) leaves ---
+  value_leaf_blend: 0.3       # q = 0.7*minmax(heuristic) + 0.3*minmax(neural). 0 = control arm.

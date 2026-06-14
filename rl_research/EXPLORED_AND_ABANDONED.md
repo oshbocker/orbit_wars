@@ -258,5 +258,237 @@ an explicit risk/commitment term before they can matter.
 
 ---
 
+## Cluster 8 — Arrival-resolving search horizon (ExIt) *(closed 2026-06-12, code kept default-off)*
+
+**What:** `exit.arrival_horizon` (+ `arrival_settle_margin`, `arrival_horizon_cap`)
+in `v2/search.py::_decision_depth` — per-decision sim depth = min(cap, ceil(max
+candidate travel time) + margin), uniform across a decision's candidates
+including hold, so every candidate's capture resolves at the leaf instead of
+evaluating identical to hold (at fixed depth-12 only ~10–17% of candidates
+arrived in-horizon; pi' degenerated to the prior on ~5/6 decisions, floss≈ln4).
+
+**Mechanism verification PASSED** (`scripts/diag_arrival_horizon.py`):
+hostile-candidate resolution 0%→100% @p50, capture-capable decisions with live
+q-spread 35%→65%, fraction-target entropy p10 1.06→0.02. The residual flat
+decisions are exact `evaluate_state` cancellations (friendly transfers conserve
+ships; failed attacks on the best enemy trade 1:1 in `my − best_enemy`) — i.e.
+correct, not horizon-blindness.
+
+**Gate FAILED decisively** (run `v2_exit_producer256_v3_a100`, fresh BC + 40
+iters, single variable vs the champion recipe): arena h2h vs
+`v2_exit_producer256_a100/ckpt_000025.pt` at n=30/pair = **17% (iter 5), 17%
+(iter 35), 3% (iter 40)** — worsening with training; eval vs ow_proto declined
+72%→52–57% across iters. Loss signature: median game runs the full 499 steps
+and loses on score — overextension/misallocation, not early elimination.
+
+**Why it failed.** The sharpened sizing targets are exactly what the passive
+in-sim opponent's world rewards: at depth 30–60 with nobody contesting,
+`prod_weight × prod_advantage` makes greedy distant expansion look strictly
+good, and the long horizon gives the sim maximal room to diverge from real
+play. Distilling those predictions *more faithfully* (the whole point of the
+fix) therefore transfers the sim's bias *more faithfully*. The depth-12 "blur"
+the fix removed was functioning as implicit regularization: it only let the
+search act on short-horizon consequences, which the sim gets right.
+
+**The closed pattern (6 experiments, do NOT reopen the family):** neural value
+leaves, every-step rollout opponent, two-player one-ply search, value-leaf
+blend, mixed collection pool, arrival horizon — every change that makes the
+search lean harder on the passive sim's long-range evaluations regressed the
+champion. The one validated search win (Gumbel/Sequential-Halving, +9.4%)
+changed *selection/anchoring to the policy prior*, not the world model. A
+faithful in-sim opponent (Build 2 `net_opponent`) remains the only principled
+escape, but is ~1000× slower and ungated. Salvage variants (cap 20–24) were
+considered and skipped: another Colab run for a third-order knob pre-deadline.
+
+**What survives.** The gated code (default-off, bit-identity covered by
+`scripts/test_gumbel_search.py`), the probe script, the n=90 h2h CSV
+(`outputs/arena/gate_v3_h2h.csv`), and the `evaluate_state` cancellation
+insight (1:1 attrition trades are invisible to ship-advantage evals — the same
+property that closed Cluster 6).
+
+## Cluster 9 — Defensive symmetry of the reinforce-risk floor (v5.4 Axis A cand a) *(closed 2026-06-13, code kept default-off)*
+
+**What:** `defense_size_beta` in `agents/v5/main.py` + `safe_drain(reserve=)` in
+`orbit_lite_v5/planner_core.py`. The shipped v5.3 win (reinforce-risk) inflates
+the *offensive* capture floor by `beta·ρ(eta)·enemy_mass` so the planner declines
+captures the enemy will reinforce mid-flight. This was the mirror-image hypothesis:
+`safe_drain` only protects a source against fleets *already in flight* (the
+do-nothing projection), so it should over-commit ships away from planets the enemy
+can *launch* at — fix by holding back `defense_size_beta · cheap_enemy_pressure(source)`
+ships per source (the same enemy-mass proxy the offensive floor + regroup already use).
+
+**Built clean:** byte-identity 0/555 steps vs the archived v5.3 bundle on fixed obs
+streams (`/tmp/byteid_final.py`; the agent is deterministic on fixed obs, but live
+games are NOT — env/opponent fp wobble diverges identical code by step 0–2, so the
+check must replay a *recorded* obs stream through old and new, the method the
+reinforce port used — NOT a live A/A game). Knob ON changed 145/555 steps.
+
+**Gate FAILED decisively, dose-responsively** (`v5:defense_size_beta=X` vs `v5`
+mirror, n=120 each, side-alternated paired seeds, `outputs/arena/gate_defense_b*.csv`):
+beta **0.5 → 28%**, **1.5 → 10%**, **3.0 → 3%** — monotone in dose, all far below
+the 50% mirror parity (A/A floor ±~4.5% @ n=120).
+
+**Why it failed (the asymmetry is real, not a bug).** Declining a *doomed attack*
+(offense) frees a known-wasted commitment for better use — a strict improvement.
+Holding ships back *defensively* is speculative hoarding: producer's `safe_drain`
+is already exact w.r.t. the do-nothing projection (it protects against every
+in-flight threat), and `cheap_enemy_pressure` is a crude over-estimate (it credits
+ALL reachable enemy garrison as if it could all converge on THIS one planet), so the
+reserve over-holds and induces passivity — and our measured weak mode is 2P, where
+under-deploying is precisely what loses. This is the **same pattern that closed
+Clusters 6 and 8**: a coarse learned/heuristic signal second-guessing an exact
+flow-diff planner regresses it. Net read on the *axis*: defensive opponent-reactivity
+via reserve-on-drain is a dead direction; the offensive reinforce-risk win does not
+transfer to defense.
+
+**What survives.** The gated code (default `0.0` = OFF, byte-identical), the n=120×3
+dose-response CSVs, and the byte-identity harness (`/tmp/byteid_final.py`, the fixed-
+obs-stream method — reusable for any future v5 knob). Next Axis-A candidate (b) =
+short-horizon 1-ply opponent-launch injection (inject the opponent's *actual* best
+flow-diff sends into the projection before scoring ours — less coarse than a mass
+proxy, but graveyard-risky: keep the injection horizon SHORT, never a rollout).
+
+---
+
+## Cluster 10 — Learned global-value tie-breaker (Axis C / v5.5 ML candidate) *(closed 2026-06-13, code kept default-off)*
+
+**What:** `agents/v5/orbit_lite_v5/value_reranker.py` + the `value_rerank_eps` knob in
+`main.py` + the near-tie re-rank branch in `planner_core._greedy_select`. The
+project's designated ML/RL-learning lever made competition-relevant: a learned
+**global value** model `state -> P(win for the acting player)` used ONLY to re-rank
+flow-diff candidates the exact scorer is *indifferent* between — among candidates
+whose competitive score is within `value_rerank_eps` of the about-to-be-selected
+best (and that independently clear `roi_threshold`), pick the one the value model
+rates highest instead of the lowest slot index. Tie-break only, never a primary
+scorer, never fires a wave flow-diff wouldn't. Explicitly NOT policy-BC (that
+plateaus at 3% vs producer — Cluster 5 / producer256 memory).
+
+**Model + data (all built, reusable):** 16-feature global encoder (step; my/enemy
+ships & prod incl. max-enemy; my/enemy/neutral planet counts; in-flight ships;
+largest-planet ownership; comet net) run identically at harvest and inference.
+`scripts/harvest_values.py` played 360 2P games among {v5, producer, producer_v2}
+on the real Kaggle env (162K labelled states, both seats, label = did this seat win
+the episode); `scripts/train_value_model.py` trained a 16→32→16→1 MLP exported in
+the shot-validator npz layout. **Val AUC 0.783, well-calibrated and monotone across
+all ten predicted-deciles** (decile 0 pred 0.001/actual 0.005 … decile 9 pred
+1.000/actual 0.997) — the global state IS cleanly separable by win. The trained
+artifact is preserved at `outputs/value/value_model_weights.npz`; the dataset at
+`outputs/value/raw/`.
+
+**Built clean (byte-identity on fixed recorded obs streams, the Cluster-9 method):**
+OFF with no weights = 0/451 differ; weights present but `eps=0` = 0/451 (so a bundled
+model alone changes nothing); knob ON (`eps=3.0`) changed only 8/451 steps — i.e. the
+re-rank touches ~1.8% of decisions, exactly the rare-genuine-tie behaviour intended.
+With the real trained model, `eps=0` control = 0/601, and after the weights were moved
+out the shipped v5 is 0/894 vs the pre-Axis-C reference.
+
+**Gate INERT** (`v5:value_rerank_eps=X` vs `v5` = v5.4 control, n=120 each,
+side-alternated paired seeds, `outputs/arena/gate_value_eps{2,4,8}.0.csv`):
+eps **2.0 → 46.2%**, **4.0 → 47.9%**, **8.0 → 48.3%** — all inside the A/A noise
+floor (50% ± ~4.5% @ n=120), pooled ~47.5% over 360 games (≈1σ below 50). Crucially
+NOT dose-responsive toward harm: the *wider* the indifference band (more model
+influence), the *closer* to 50 — the signature of noise, not a real effect. No eps
+gives the ≥60%/clear-margin a ship requires.
+
+**Why it failed (predicted, not surprising).** A globally-grounded value model
+(AUC 0.78) is still **too noisy to rank near-equal siblings** — the exact finding of
+the Phase-2 ExIt diagnostic (`memory/phase22b-datamax-result.md`, value corr ~0.39
+globally but useless for sibling ranking) and the `value_leaf_blend` regression
+(Phase-3, 6/6 seeds). When the flow-diff is genuinely indifferent between two
+captures, *which* you pick is dominated by downstream contingency the global
+aggregates can't see; the model's pick is a coin-flip vs lowest-index. This is the
+**same pattern that closed Clusters 6 (shot-validator), 8 (arrival-horizon) and 9
+(defensive-symmetry)**: a coarse learned signal second-guessing the exact flow-diff
+planner does not help, even when confined to its own indifference band.
+
+**The one untried variant** (and why it's low-odds): a stronger model trained on real
+**above-our-tier ladder replays** (Kaggle EpisodeService `GetEpisodeReplay` on 1300+
+team episodes; aidensong's public 16-feature GBC hit AUC 0.976 with capture-aware
+features). The plumbing (encoder, harvest, train, gated integration) is ready and
+data-source-agnostic — swap the harvest for replay states. But the *integration*
+ceiling is unchanged: eps=8.0 (most model influence) trended toward neutral, not
+positive, so a better ranker is unlikely to convert the near-tie set into wins. Logged
+as the only open thread, not a recommended next bet.
+
+**What survives.** The gated code (default `value_rerank_eps=0.0` = OFF, byte-identical
+to v5.4 — shipped v5 unchanged), the full harvest→train→bundle pipeline (reusable for
+any future global-value experiment, incl. real-replay data), the trained artifact +
+162K-state dataset, the n=120×3 gate CSVs, and the byte-identity harness. Net read on
+the *axis*: learned-value-for-near-tie-reranking on top of the exact producer flow-diff
+is a dead lever locally — confirming PPO/ExIt/policy-BC/value-blend/value-rerank are all
+exhausted for the rule-based base. The remaining credible levers are search-free planner
+deltas validated by the ladder (the v5.x line) and Axis A cand (b) (1-ply opp-launch
+injection).
+
+---
+
+## Cluster 11 — Level-1 opponent-aware planning / 1-ply opponent-launch injection (v5.4 Track 1) *(closed 2026-06-13, code kept default-off)*
+
+**What:** `opp_inject_waves` in `agents/v5/main.py` + `_opponent_reactive_status()`.
+The first rung of the opponent-modeling / equilibrium ladder (the new research
+direction — see `LEADERBOARD_CLIMB_PLAN.md` + SOTA: 2P Orbit Wars is a two-player
+zero-sum **simultaneous-move** game; producer's flow-diff is a one-shot best-response
+to a **do-nothing** opponent = level-0, the maximally *exploitable* class). Mirror meta
+⇒ we ARE the opponent's planner, so for each live enemy seat we re-parse the obs from
+their view (`parse_obs(obs_tensors, player_id=o)` — all but ownership masks is absolute),
+run the EXACT producer planner as their level-0 best response to the do-nothing baseline,
+inject their top-N attack launches into the projection's arrival buckets
+(`record_fleet_arrivals`), re-resolve the engine-exact reactive timeline
+(`garrison_status`), and score OUR candidates against THAT instead of the passive world.
+The intended generalization of the v5.3 reinforce-risk win (which modeled one reactive
+term — mid-flight reinforcement) to the opponent's full 1-ply offensive response.
+
+**Built clean (the principled, graveyard-respecting form):** 1-ply, no rollout; uses the
+EXACT planner as the opponent model (not Cluster-9's coarse mass proxy) propagated through
+the EXACT engine projection; the 6 mutable projection tensors are snapshotted/restored so
+the rolling cache is untouched. Byte-identity (subprocess-isolated, since `planner_core.py`
++ `value_reranker.py` differ from the v5.3 bundle): OFF = **0/515** steps vs the archived
+v5.3 ref; ON (waves=3) changes **15/515** (~2.9%). Live smoke DONE/DONE, ~60 ms/step
+(~2× planner work, well inside 1 s). Opponent sub-plan = attacks only (regroup models
+enemy *defense* → induces our passivity = the Cluster-9 failure mode; the threat that
+should reshape our plan is enemy *offense*).
+
+**Gate INERT** (`v5:opp_inject_waves=X` vs `v5` mirror, n=120 each, side-alternated paired
+seeds, `outputs/arena/gate_opp_inject_w{1,3,6}.csv`): **waves 1 → 46.7%, 3 → 57.5%,
+6 → 56.2%**. **A/A floor for this harness = 55.4%** (byte-identical reinforce b2.2 ref,
+`gate_reinforce_b2.2.csv`; the paired-seed setup has a ~+5% first-position skew). So 3/6
+plateau +1–2pp over the floor (CIs all contain 55.4%); waves=1 sits *below* it (a biased
+partial opponent model is worse than none). Margin metrics show a weak favorable
+asymmetry (wins ~10 steps faster than losses; games ~183 steps vs A/A ~230 → genuinely
+divergent play, not noise-floor) — but win-rate does not clear the bar a ladder slot
+requires (the one ladder-validated win, reinforce-risk, read a clean 75% mirror first).
+
+**Why it failed — a NEW lesson, distinct from the two existing patterns.** Not "coarse
+heuristic second-guessing an exact planner" (Clusters 6/8/9/10 — opp_inject doesn't
+regress; the model is the exact planner) and not "passive long-horizon sim" (Cluster 8 —
+this is 1-ply). The mirror `opp_inject vs v5` IS a direct **level-1-vs-level-0
+exploitability test** (we best-respond to v5's actual strategy; the opponent IS v5), and
+the best-response beats the base by only ~+2pp. **The flow-diff's `Δnet_me − ΣΔnet_opp`
+competitive scorer already internalizes most of the opponent's value, so an explicit
+1-ply opponent model is largely redundant against it.** The dose plateau (waves 6 ≈ 3)
+confirms redundancy, not insufficient injection. A secondary contributor: the injected
+model is the opponent's BR-to-do-nothing, while the real v5 opponent BRs to our actual
+in-flight fleets — but more-faithful injection edges toward level-2/fixed-point (the
+rollout territory Cluster 8 warns against) for an effect already shown to be small.
+
+**Implication for the rest of the ladder (the direction's main takeaway).** The
+redundancy finding *lowers the EV of Track 2* (per-turn regret-matching / equilibrium
+mix): if 1-ply best-response is redundant, an equilibrium mix over the same candidates is
+unlikely to convert in this meta and shares the mirror-blindness. Track 3 (a direct
+exploitability instrument / best-response attacker) is the only principled escalation that
+could measure what the mirror can't — but the weak level-1-vs-level-0 read already hints
+at low exploitability headroom. Net: the producer flow-diff base looks at/near a local
+optimum for hand-buildable solution-concept deltas; the one proven lever (reinforce-risk)
+changed the **world model**, and the highest-EV competition move remains meta-monitoring
+for the next public *structural* idea + defending v5.3, not mining a locally-optimal base.
+
+**What survives.** The gated code (default `opp_inject_waves=0` = OFF, byte-identical —
+shipped v5 unchanged), the n=120×3 gate CSVs, the subprocess-isolated byte-id harness
+(`/tmp/t1_byteid.py`), and `_opponent_reactive_status()` itself (a reusable, exact 1-ply
+opponent-injection primitive — the substrate for Track 2/3 or any future opponent-aware
+experiment).
+
+---
+
 *Confirmed dead ends are also tracked tersely in `CLAUDE.md` and `memory/`. This file is the
 long-form "why" companion to those one-liners.*

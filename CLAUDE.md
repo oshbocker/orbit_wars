@@ -422,8 +422,13 @@ public pool in 2P, last in 4P — re-anchor before investing further).
 model-free PPO (structural stall); neural-value search leaves (OOD collapse);
 two-player one-ply search (passivity bias); every-step weak-rollout opponent
 (undervalues aggression); z-scored value-leaf blend (regressed 6/6 seeds, monotonic
-in w). The one validated search win: **Gumbel/Sequential-Halving selection**
-(`exit.gumbel_search`, +9.4% over control on paired seeds).
+in w); mixed collection pool + 3x data (diluted distillation); arrival-resolving
+search horizon (`exit.arrival_horizon` — mechanism verified, but distilling the
+passive sim's long-range predictions = overextension; h2h 17/17/3% vs champion).
+**Closed pattern (6 failures): anything that leans harder on the passive sim's
+long-range evaluations loses.** The one validated search win:
+**Gumbel/Sequential-Halving selection** (`exit.gumbel_search`, +9.4% over control
+on paired seeds) — it changed selection/anchoring, not the world model.
 
 **Key files:** `v2/exit_train.py` (collect→search→distill; opponent =
 `exit.opponent`, resolved via `agents.load_named_agent`; `play_single_game` is

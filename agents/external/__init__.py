@@ -6,6 +6,11 @@ leaderboard scores (our team was at 736.7 when these were pulled):
 
     producer/               1287.1  slawekbiel via romantamrazov/orbit-wars-i-m-better
                                     (torch flow-diff planner: main.py + orbit_lite pkg)
+    producer_v2/            ?       slawekbiel/the-producer-v2 (published 2026-06-12;
+                                    main.py only — adds the ETA-aware reinforcement-risk
+                                    capture floor, drops the i-m-better ffa bonuses;
+                                    shares producer/'s orbit_lite, verified identical
+                                    file set + unchanged imports)
     tamrazov_1224.py        1224    romantamrazov/orbit-star-wars-lb-max-1224
     distance_1100.py        1100    ykhnkf/distance-prioritized-agent-lb-max-score-1100
     shot_validator_hybrid.py ~1000? konbu17/orbit-wars-rule-base-ml-shot-validator-hybrid
@@ -40,7 +45,7 @@ _FILE_AGENTS = {
     "reinforce_958": _HERE / "reinforce_958.py",
 }
 
-EXTERNAL_AGENTS = ["producer", *_FILE_AGENTS]
+EXTERNAL_AGENTS = ["producer", "producer_v2", *_FILE_AGENTS]
 
 _counter = itertools.count()
 
@@ -59,12 +64,15 @@ def _wrap(fn):
 def load_agent(name: str):
     """Return a fresh agent(obs, config) callable for a vendored agent."""
     n = next(_counter)
-    if name == "producer":
+    if name in ("producer", "producer_v2"):
+        # producer_v2 ships only a new main.py and shares producer/'s orbit_lite
+        # package (same file set, same imports) — keep one orbit_lite on sys.path
+        # so a producer-vs-producer_v2 game doesn't race on the module name.
         pkg_dir = str(_HERE / "producer")
         if pkg_dir not in sys.path:
             sys.path.insert(0, pkg_dir)
-        modname = f"_ext_producer_{n}"
-        spec = importlib.util.spec_from_file_location(modname, _HERE / "producer" / "main.py")
+        modname = f"_ext_{name}_{n}"
+        spec = importlib.util.spec_from_file_location(modname, _HERE / name / "main.py")
         assert spec is not None and spec.loader is not None
         mod = importlib.util.module_from_spec(spec)
         sys.modules[modname] = mod  # required: dataclass introspection needs sys.modules

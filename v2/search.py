@@ -368,6 +368,7 @@ def _gumbel_search_planet(
     rollout_players: list[int] | None,
     launch_fn,
     every: int,
+    value_model=None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Gumbel AlphaZero (root-only) improved policy for one source planet.
 
@@ -417,13 +418,35 @@ def _gumbel_search_planet(
     qcache: dict[int, float] = {}
     visits = np.zeros(C, dtype=np.float64)
 
+    # Capstone (2026-06-14): learned value at the Gumbel leaves. The value-leaf
+    # experiments that regressed (neural swap, z-blend) all ran on the PASSIVE sim
+    # → OOD/over-trusted leaves. The world-model audit + ReBeL/PoG say value-at-
+    # leaves is only sound when the leaf reflects real opposition — i.e. layered on
+    # net_opponent. Here, when value_leaf_blend>0 AND a value_model is supplied,
+    # each leaf's q = (1-w)·minmax(heuristic) + w·minmax(neural), normalized with
+    # Gumbel's OWN _minmax (consistent with the completedQ math, vs the legacy
+    # path's z-score). w=0 ⇒ ncache untouched, _qnorm == _minmax ⇒ byte-identical.
+    blend_w = float(getattr(exit_cfg, "value_leaf_blend", 0.0))
+    use_blend = blend_w > 0.0 and value_model is not None
+    ncache: dict[int, float] = {}
+
     def sim_q(c: int) -> float:
         if c not in qcache:
             leaf = _simulate_descriptor(
                 descs[c], sim_state, src_id, depth, rollout_players, launch_fn, every
             )
             qcache[c] = float(evaluate_state(leaf, player))
+            if use_blend:
+                ls = _reconstruct_leaf_state(state, leaf, player)
+                ncache[c] = float(_batch_neural_values(value_model, env_cfg, [ls])[0])
         return qcache[c]
+
+    def _qnorm(cs: list[int]) -> dict[int, float]:
+        hn = _minmax({c: qcache[c] for c in cs})
+        if not use_blend:
+            return hn
+        nn = _minmax({c: ncache[c] for c in cs})
+        return {c: (1.0 - blend_w) * hn[c] + blend_w * nn[c] for c in cs}
 
     m = max(1, min(int(exit_cfg.gumbel_top_m), C))
     budget = max(int(exit_cfg.gumbel_sims), m)
@@ -439,7 +462,7 @@ def _gumbel_search_planet(
             for c in cur:
                 sim_q(c)
                 visits[c] += per
-            qn = _minmax({c: qcache[c] for c in cur})
+            qn = _qnorm(cur)
             maxv = max(float(visits.max()), 1.0)
             cur = sorted(
                 cur,
@@ -453,7 +476,7 @@ def _gumbel_search_planet(
 
     # completedQ: simulated -> q_norm; un-simulated -> prior-weighted v_mix.
     sim_ids = list(qcache.keys())
-    qn_all = _minmax({c: qcache[c] for c in sim_ids})
+    qn_all = _qnorm(sim_ids)
     pri = _np_softmax(logits)
     wsum = float(sum(pri[c] for c in sim_ids))
     vmix = float(sum(pri[c] * qn_all[c] for c in sim_ids) / wsum) if wsum > 1e-12 else 0.5
@@ -537,6 +560,7 @@ def search_improve_planet(
             rollout_players,
             launch_fn,
             every,
+            value_model,
         )
 
     target_scores = np.full(P + 1, NEG, dtype=np.float32)  # [hold, targets...]
