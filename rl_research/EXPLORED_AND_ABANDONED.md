@@ -490,5 +490,75 @@ experiment).
 
 ---
 
+## Cluster 12 — Half-drain reserve cap (`reserve_frac`, v5.4 from the top-tier replay diagnostic) *(closed 2026-06-14, code kept default-off)*
+
+**What:** `reserve_frac` in `agents/v5/main.py` + a post-scoring trim block in
+`plan_lite_waves`. Sourced from the strongest *direct* evidence we ever had: the
+top-tier replay diagnostic (`TOP_TIER_REPLAY_CORPUS.md`, `[[top-tier-replay-diagnostic]]`)
+showed the **#1 ladder agent (Isaiah @ Tufa Labs, 1762) sends ~half a garrison at a time
+(median send-fraction 0.52) and beats producer-family full-drain clones**, while
+producer/v5 ship the full `safe_drain` (~1.0). Hypothesis: replicate the half-drain as a
+gated delta. Implemented as the plan's **post-selection cap** (the form chosen
+specifically to be DISTINCT from the two already-closed half-drain altitudes): the exact
+flow-diff scorer still ranks **full-drain** candidates (so WHICH waves fire is
+producer-identical), then each chosen full-drain wave ships at most `(1 - reserve_frac)`
+of its source garrison, re-gating the slower trimmed fleet for reachability + capture-floor
+clearance; a send is left full ("decisive") iff the trimmed fleet can't reach in time or no
+longer clears the target floor at its later arrival.
+
+**Built clean:** ruff/pyright clean; byte-identity (subprocess-isolated recorded-obs method,
+`/tmp/byteid_reserve.py`, since `planner_core.py` differs from the v5.3 bundle): OFF =
+**0/191** steps vs the archived v5.3 ref; ON (0.35) changes **74/191** (~39%).
+
+**Gate FAILED decisively, flat across dose** (`v5:reserve_frac=X` vs `v5` mirror, n=120
+each, side-alternated paired seeds, `outputs/arena/gate_reserve_frac{0.2,0.35,0.5}.csv`):
+**0.2 → 29.2%** (95% CI [21,37]), **0.35 → 33.3%** ([25,42]), **0.5 → 31.7%** ([23,40]).
+All three sit ~20pp below the ~55% A/A floor; **every CI is entirely under 50%**. Note the
+shape: NOT monotone-down like Cluster 9 (defense reserve: 28/10/3%) — it is **flat-low
+~30% at every dose**, which is *more* damning for the idea: no amount of reserve helps, the
+"hold ships back at all" structural delta is the problem, dose-independent. Margin metric
+confirms the passivity mechanism — the reserving agent's *losses* end faster (158–170
+steps) than its *wins*; it gets out-tempoed and eliminated.
+
+**Why it failed — the THIRD distinct closure of "send less than full drain on producer."**
+Producer's flow-diff sizes every send at `safe_drain` for a reason: bigger fleets fly
+faster (speed grows with `log(ships)`), so a full-drain wave both captures sooner and frees
+the source's growth for the next wave; a *post-hoc* cap ships a fleet the scorer sized for
+full drain, arriving later (re-gating catches the ones that now miss, but the survivors are
+still slower) and stranding the reserve at home, where in a 2P mirror the opponent
+out-expands the under-committed agent. The deeper lesson: **Isaiah's half-drain wins
+because his *entire planner* is built around it (sizing, snipe timing, follow-up waves) — it
+is not a producer with a cap.** Bolting a half-drain onto producer's full-drain scorer is
+once again *a coarse modification second-guessing an exact planner* (Clusters 6/8/9/10).
+
+**This closes the half-drain axis at all three altitudes** — the other two are already in
+the graveyard: **Cluster 7** (multi-size candidates *in the scorer* — flow-diff provably
+prefers full drain, 0/81 cheap picks) and **Cluster 9** (defensive reserve subtracted from
+the drain via a mass proxy — 28/10/3%). Cluster 12 is the post-selection cap, the last
+remaining altitude. All three fail. "Send less than `safe_drain`" is a dead direction on
+the producer base, regardless of where the trim is applied.
+
+**Consequence for v5.4 Steps 2–3 (fingerprint-gated conditioning) — also closed.** The
+plan sequenced an offline opponent-type stratification (Step 2) to decide whether a
+*conditional* application (apply the half-drain only vs detected passive/clone opponents,
+Step 3) earns a build. That hybrid cannot be net-positive here: (i) the mirror IS the
+full-drain-clone test (⅔ of the top tier) and the delta loses it at ~30%, so the correct
+conditional action vs the majority type is "don't reserve" = **be vanilla v5**; (ii) the
+upside would require the delta to *beat* the other ~⅓ (half-drainers/swarms) — but we have
+no such opponent vendored to test, and the arithmetic is unforgiving: even a generous
+0.67·0.30 + 0.33·0.70 ≈ 0.43 blended ladder rate is a net loss; (iii) for the delta to beat
+Isaiah-types it would have to be Isaiah-competitive, which a degraded-producer cap is not.
+Fingerprinting's proven-correct altitude (conditioning layer on a *winning* delta) has no
+winning delta to condition on. Step 1's decisive kill ends the v5.4 reserve_frac line.
+
+**What survives.** The gated code (default `reserve_frac=0.0` = OFF, byte-identical — shipped
+v5 unchanged), the n=120×3 gate CSVs, and the reusable subprocess byte-id harness
+(`/tmp/byteid_reserve.py`). **Fallback per plan = defend v5.3 + meta-monitor the daily
+`scripts/replay_pulse.py` pulse** for the next public *structural* idea (the proven
+discovery channel — how reinforce-risk was found). The diagnostic's other open thread
+(real-outcome value head on 1500+ replays) is the Cluster-10 variant, Colab-scale.
+
+---
+
 *Confirmed dead ends are also tracked tersely in `CLAUDE.md` and `memory/`. This file is the
 long-form "why" companion to those one-liners.*

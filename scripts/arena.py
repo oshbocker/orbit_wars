@@ -45,6 +45,12 @@ _CACHE: dict = {}
 
 
 def spec_label(spec: str) -> str:
+    if spec.startswith("macrobc:"):
+        ckpt = Path(spec.split(":")[1])
+        return f"macrobc_{ckpt.parent.name}_{ckpt.stem}"
+    if spec.startswith("richbc:"):
+        ckpt = Path(spec.split(":")[1])
+        return f"richbc_{ckpt.parent.name}_{ckpt.stem}"
     if spec.startswith("exit:"):
         ckpt = Path(spec.split(":")[1])
         return f"exit_{ckpt.parent.name}_{ckpt.stem.removeprefix('ckpt_')}"
@@ -116,6 +122,22 @@ def _build_agent(spec: str):
             return fn(obs)
 
         return v5_agent
+    if spec.startswith("macrobc:"):
+        # macrobc:<ckpt.pt>[:<config.yaml>] — pointer-BC selector + v5 exact execution.
+        parts = spec.split(":")
+        ckpt = parts[1]
+        cfg_path = parts[2] if len(parts) > 2 else None
+        from scripts.macro_bc_agent import build_macro_agent
+
+        return build_macro_agent(ckpt, cfg_path)
+    if spec.startswith("richbc:"):
+        # richbc:<ckpt.pt>[:<config.yaml>] — rich-representation selector + v5 exact execution.
+        parts = spec.split(":")
+        ckpt = parts[1]
+        cfg_path = parts[2] if len(parts) > 2 else None
+        from scripts.rich_bc_agent import build_rich_agent
+
+        return build_rich_agent(ckpt, cfg_path)
     if spec.startswith("exit:"):
         _, ckpt_path, cfg_path = spec.split(":")
         if spec not in _CACHE:

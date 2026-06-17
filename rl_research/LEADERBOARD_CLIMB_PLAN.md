@@ -1,9 +1,255 @@
 # Leaderboard Climb Plan — 2026-06-09
 
-**Where we are (updated 2026-06-13):** rank **325 / 4386** ("Oshbocker", team
+**Where we are (updated 2026-06-15):** rank **325 / 4386** ("Oshbocker", team
 score **1201.6** = v5.3). Active slots: **v5.3** (`v5_bundle`, sub 53615604,
 **1201.6** @21:05) + **v5.2 control** (`v5_2_bundle`, sub 53615608, **1051.1**
-@21:06). Final submission deadline **2026-06-23** — 10 days left.
+@21:06). Final submission deadline **2026-06-23** — 8 days left. **Live direction =
+the 06-15 reconciliation below (two parallel tracks, big swings), NOT "defend v5.3"** —
+that earlier default is superseded.
+
+## Update 2026-06-15 — RECONCILE: the 06-14 "big swings" steer supersedes "defend v5.3" and re-opens BC (rich-representation, single-teacher). This doc's body said "Behavior cloning: ✗ / defend v5.3"; that verdict is now SCOPED, not the plan.
+
+**Why this section exists.** The two 06-14 updates below close the *hand-buildable
+planner-delta* search (half-drain axis fully closed; producer base ~locally-optimal) and
+conclude "fall back to **defend v5.3** + meta-monitor," with the corpus diagnostic stamping
+**"Behavior cloning: ✗"**. Later that day the user issued an explicit steer that overrides
+that default (memory `[[strategic-direction-big-swings]]`):
+
+> "I'm not worried about defending a 300 or below ranking… we need to take **big swings** to
+> try to climb [to top-50]."
+
+So the live plan is **NOT** "defend v5.3." It is **two parallel tracks**, big-swing budget
+sanctioned (don't stop at the noise-floor gate):
+
+1. **ML behavior-cloning with the RICHEST POSSIBLE representation** — rebuilding/rethinking
+   OrbitNet is explicitly sanctioned.
+2. **Keep improving the producer rule-base** (the v5.x gated-delta track, now aimed at
+   *structural* deltas mined from the top-tier replay corpus — the `replay_pulse.py` channel
+   below — not the exhausted micro-knobs).
+
+**Scoping the "Behavior cloning: ✗" verdict (it is NOT a blanket rejection).** What the
+06-14 corpus diagnostic actually killed:
+- ✗ **Naive whole-pool BC** of the mixed top tier (mode-averages producer-full-drain +
+  Isaiah half-drain + swarm into mush). Still dead — do not do this.
+- ✗ **BC of producer in the POOR (V2-snapshot) representation** — plateaued at **3% vs
+  producer** (val launch-acc ~0.59). Re-diagnosed: this was **representation poverty**, not a
+  flaw in BC — the net was asked to re-derive producer's 18-turn projection (fall_turn /
+  keep_needed / min-ships / Δnet) from a 1-step 40×22 snapshot.
+- ✓ **STILL OPEN — rich-representation, single-teacher BC** (Track 1). Feed producer's own
+  projection OUTPUTS as features (reuse `agents/v5/orbit_lite_v5`: garrison_status timeline,
+  capture_floor, intercept ETA, safe_drain, score_candidates Δnet) so the net SELECTS/improves
+  over already-projected quantities instead of learning to simulate. Guaranteed
+  information-parity with producer (same code). Execute via the `_SELECTOR_FN` hook already in
+  `agents/v5/main.py` (default `None` → v5 byte-identical).
+
+**De-risk gate (unchanged discipline):** rich-feature BC-of-**producer** must first reach
+~**mirror PARITY** (vs the 3% poor-rep baseline) to PROVE the representation carries enough
+information; **only then** scale to BC + value-head on real **1500+ ladder replays** (the
+top-tier corpus) to actually climb. "Clone the top-of-leaderboard agents" is the *eventual*
+aim of Track 1 — gated behind the producer-parity proof — not the current step.
+
+**Current build state (as of 06-15) — Track 1 is BUILT, de-risk MID-FLIGHT, gate NOT yet
+recorded:**
+- Scripts (untracked): `macro_relabel.py` (exact fleet-tracked target relabeling),
+  `macro_bc_train.py` + `macro_bc_agent.py` (pointer-head BC of producer's target selection,
+  analytic sizing at exec), `producer_features.py` (producer projection → per-planet +
+  per-edge features), `rich_bc_train.py` + `rich_bc_agent.py` (OrbitNet + producer's Δnet
+  score as a residual `pair_features` channel; zero-init pair head ⇒ STARTS as producer
+  argmax, learns the delta), `coverage_probe.py` (06-15: does a stronger/different agent's
+  attacks fall INSIDE producer's candidate grid? — precondition for cloning anything above
+  producer; if low, broaden candidate generation before harvesting).
+- Artifacts: datasets `outputs/macro_bc/{dataset_producer40,rich_v5_40}.npz`; checkpoints
+  `outputs/checkpoints/{macro_bc_producer,rich_bc_v5}/ckpt40.pt`.
+- **Parity gate RUN (06-15):** `richbc:rich_bc_v5/ckpt40.pt` vs `v5`, n=120 paired/
+  side-alternated (`outputs/arena/gate_richbc_v5.csv`) → **21%**. The rich projection grid
+  lifts BC-of-its-teacher **~7× over the 3% poor-rep floor** ⇒ representation poverty WAS a
+  real part of the wall — but **21% ≠ mirror parity (~50%), so the de-risk did NOT pass.**
+  The selector still cannot reproduce its own teacher. **Do NOT scale to top-tier replays yet.**
+- **Untrained-control RESULT (06-15) — the parity gate is CONFOUNDED by a broken harness.**
+  Ran the fresh-init/producer-prior `RichSelector` (`alpha=1`, pair head + hold head
+  zero-init, confirmed |w|=0; `/tmp/rich_untrained.pt`) vs `v5`, same paired seeds
+  (`outputs/arena/gate_richbc_untrained_v5.csv`) → **5%**. Ladder is now **3% (poor BC) <
+  5% (producer-prior wrapper) < 21% (trained rich BC) << ~50% (true parity)**. This
+  **inverts** the prior hypothesis: BC training is NOT the regression — it *helped* (5%→21%);
+  the real problem is that **the `richbc` execution wrapper does not reproduce v5 even at the
+  producer-argmax prior** (a faithful clone-of-teacher would sit ~50%, not 5%). **Confirmed
+  mechanism** (`agents/v5/main.py:600-608`): when `_SELECTOR_FN` is active the hook **disables
+  ROI entirely** (`roi_thresh = -inf`, "fire all picks") and lets the selector's own fire gate
+  decide — `fire = (max target logit > hold=0)` on a **z-scored** Δnet. So the producer-prior
+  fires for any source whose best candidate is merely **above-average (z>0)**, regardless of
+  whether the absolute Δnet clears v5's `roi_threshold` (1.5) ⇒ systematic **over-firing /
+  over-aggression** ⇒ 5%. **Consequence: the 3%→21% lift CANNOT be attributed to
+  representation** — it is measured through a harness that loses 95% before any learning.
+- **Harness FIXED + control re-run (06-15) — now v5-faithful at the prior.** Four coherent
+  edits: (1) `agents/v5/main.py` hook passes the **exact per-candidate Δnet** to the selector
+  and adds an opt-in `_SELECTOR_KEEP_ROI` flag that **keeps v5's real `roi_threshold` gate**
+  (default off ⇒ macro agent + byte-identical-when-off untouched); (2)
+  `RichSelector.forward` now returns a per-edge **delta** over the real score (zero at init via
+  the zero-init pair head), not a z-scored residual; (3) `rich_bc_agent` returns
+  `cand_score + delta` on the **real scale**, no fire mask, sets `_SELECTOR_KEEP_ROI=True`;
+  (4) `macro_bc_agent` selector signature updated (arg ignored; legacy path unchanged).
+  **Verification:** rich-prior vs v5 on a recorded obs stream = **0/276 steps differ** (exact
+  v5 reproduction); fixed-harness untrained control vs `v5`, n=120 paired
+  (`outputs/arena/gate_richbc_untrained_fixed_v5.csv`) = **46%** — squarely in the ~45–55% A/A
+  parity band (vs the broken harness's 5%). **The harness is now a valid representation test.**
+- **RETRAINED under the fixed contract + re-gated (06-15) — the learned delta REGRESSES v5
+  despite 98.7% imitation. Strong negative for the rich-BC-selection track.** Rebuilt the
+  dataset to store the raw per-candidate Δnet and made training consistent with inference:
+  `combine_logits` = `delta + real_Δnet` on target columns, `delta + ROI(1.5)` on the hold
+  column, so at init (delta=0) the CE reproduces v5's exact fire+select. Trained on a
+  **disjoint** seed range (30000–39, vs gate seeds 20000–119 — no train/test leak), 18.1K
+  examples, best-val checkpoint (`outputs/checkpoints/rich_bc_v5_fixed/ckpt40.pt`): init/prior
+  val acc **0.976** → best **0.987** (launch-acc ~0.93–0.95, ≈ the prior). **Gate
+  (`outputs/arena/gate_richbc_fixed_trained_v5.csv`, n=120 paired) = 18%** — i.e. the trained
+  delta dropped the agent from the **46% byte-identical prior to 18%**, a **−28pp regression**,
+  even though it predicts v5's own moves with **98.7%** accuracy.
+- **What it means.** (i) The harness is sound (prior=46%); (ii) but a learned **selection
+  delta over the exact flow-diff regresses it** the moment it's non-zero — the ~1.3% of
+  mis-predicted moves are not random, they land at the contested decisions that decide mirror
+  games, and/or covariate shift (BC trained only on on-policy v5 states; at gate time the
+  slightly-off agent visits OOD states where the delta is unreliable → compounding drift). This
+  is the project's **recurring wall** — "coarse/learned signal second-guessing an exact planner
+  regresses it" (Clusters 6/8/9) — and **worse than Cluster 10's value-rerank**: near-tie
+  re-rank was INERT (neutral), a full-selection delta is ACTIVELY HARMFUL. BC-of-v5 cannot beat
+  v5 (you can't BC past your teacher), and now we know it doesn't even hold parity — it
+  regresses.
+- **Consequence for the top-tier-replay harvest: EV sharply lowered, do NOT harvest via this
+  architecture.** The regression came from the **delta mechanism**, not label quality (the
+  teacher here had information-parity + was imitated at 98.7%), so swapping in top-tier labels
+  would face the same compounding/OOD regression. Credible remaining ML variants are both
+  graveyard-adjacent.
+- **DAgger escape hatch TESTED (06-16) → the track is CLOSED.** Ran on-policy correction
+  (`scripts/rich_dagger.py`: roll out the learner, relabel its own states with a clean v5
+  rolled over the same obs sequence, aggregate, retrain, 2 iters × 24 games). Gate
+  (`outputs/arena/gate_richbc_dagger_v5.csv`, n=120): single-pass BC **18% → DAgger iter1 26%
+  → iter2 22%** (iter1≈iter2 head-to-head). **Covariate shift was a MINOR contributor (~+6pp);
+  the delta mechanism is the DOMINANT, fundamental cause** — on-policy correction plateaus
+  ~20pp below the 46% prior and does NOT converge toward parity. A learned selection delta
+  over the exact flow-diff regresses it regardless of state distribution. **Net: rich-rep
+  BC-selection is CLOSED** (prior=v5 parity; BC=18%; DAgger=~22–26%); top-tier harvest via this
+  architecture confirmed not worth it. **Pivot to Track 2** (rule-base structural deltas via
+  `replay_pulse.py`). Code + rig kept (gated default-off, byte-identical). **Full write-up +
+  reusable assets: `rl_research/RICH_BC_SELECTION_FINDINGS.md`** (graveyard-ready; formal
+  EXPLORED_AND_ABANDONED cluster pending user call).
+
+**Track 2 + parallel pulse:** the planner-delta channel stays open via
+`scripts/replay_pulse.py` run daily (the proven discovery channel — how reinforce-risk was
+found; access/schema in `TOP_TIER_REPLAY_CORPUS.md`). New structural ideas caught there feed
+Track 2 as gated, mirror-measurable knobs.
+
+**Slot discipline unchanged:** never act on n<100; every ship pairs with the incumbent
+resubmit; v5.3 (1201.6) stays warm and on-ladder while the tracks cook — "don't defend" means
+don't *spend the effort* defending, not evict the working sub for nothing.
+
+## Update 2026-06-14 (later) — v5.4 Step 1 (`reserve_frac` half-drain) GATED + FAILED → graveyard Cluster 12; half-drain axis fully closed; fall back to defend v5.3 + meta-monitor
+
+**Built + verified.** `reserve_frac` knob on `agents/v5/` (default 0.0 = OFF), implemented
+as the plan's **post-selection cap**: the exact flow-diff scorer ranks full-drain
+candidates, then each chosen wave ships ≤ `(1-reserve_frac)` of its source garrison,
+re-gating the slower trimmed fleet for reach + floor; "decisive" sends (can't reach / no
+longer capture) stay full. ruff/pyright clean. Byte-identity (subprocess recorded-obs,
+`/tmp/byteid_reserve.py`): **OFF 0/191 vs the v5.3 bundle; ON(0.35) 74/191.**
+
+**Gate FAILED decisively, flat across dose** (`v5:reserve_frac=X` vs `v5` mirror, n=120
+paired, `outputs/arena/gate_reserve_frac{0.2,0.35,0.5}.csv`): **0.2→29.2%, 0.35→33.3%,
+0.5→31.7%** — every 95% CI entirely below 50%, ~20pp under the ~55% A/A floor. NOT
+monotone-down (Cluster 9 was 28/10/3%); **flat-low ~30% = no dose helps, the "hold ships
+back" delta itself is the problem.** Margin metric confirms passivity: the reserving
+agent's losses end *faster* (158–170 steps) than its wins → it gets out-tempoed and
+eliminated. → **graveyard Cluster 12.**
+
+**Half-drain axis now closed at all three altitudes:** Cluster 7 (multi-size in the
+scorer), Cluster 9 (defensive reserve via mass proxy), Cluster 12 (post-selection cap).
+Producer's flow-diff sizes at `safe_drain` because bigger fleets fly faster — "send less
+than the drain" loses regardless of where the trim is applied. The deeper read: **Isaiah's
+half-drain wins because his whole planner is built around it; a producer-with-a-cap is
+just a degraded producer** (the recurring "coarse mod second-guessing an exact planner").
+
+**Steps 2–3 (fingerprint-gated conditioning) also closed by Step 1.** The mirror IS the
+full-drain-clone test (⅔ of the tier) and the delta loses it → the correct conditional
+action vs the majority is "be vanilla v5"; the upside needs the delta to *beat* the other
+⅓, which a degraded-producer cap won't, and the blended ladder arithmetic
+(0.67·0.30+0.33·0.70≈0.43) is a net loss anyway. Fingerprinting had no winning delta to
+condition on. **No v5.4 ship; no slot spent** (v5.3 1201.6 keeps defending).
+
+**Fallback (active):** defend v5.3 + run `scripts/replay_pulse.py` daily — the proven
+discovery channel (how reinforce-risk was found). Remaining credible levers: (a) the next
+public *structural* idea caught by the pulse; (b) the Cluster-10 open variant (value head
+on real 1500+ replays, Colab-scale). Code kept gated default-off; harness reusable.
+
+## Update 2026-06-14 — top-tier replay corpus diagnostic → the v5.4 plan: fingerprint-gated structural delta (mine the winners, don't clone them)
+
+**What we did.** Pulled + fingerprinted real ladder replays (access + schema + tooling in
+`rl_research/TOP_TIER_REPLAY_CORPUS.md`; reusable daily pulse `scripts/replay_pulse.py`;
+memory `[[top-tier-replay-diagnostic]]`). Move-style = send-fraction
+(`num_ships / source garrison`) + waves/turn. **Critical alignment gotcha for any
+labeling: the action at `steps[t]` was decided on the observation at `steps[t-1]`**
+(verified 0 vs 156 garrison-overdraw violations).
+
+**Headline finding — the top is NOT a producer monoculture.** ~⅔ of rated top agents are
+producer-family full-drain clones (median send-fraction 1.00, ≈0% fractional, 1–2 waves;
+corpus from them ≈ what we already have), but **~⅓ are structurally different and that
+third sits at the very top: #1 Isaiah @ Tufa Labs (1762) sends ~half a garrison at a time
+(median 0.52, 73% partial); 213tubo (1536) fires ~14 fractional waves/turn.** In the
+sampled games the different-style agents won their head-to-heads vs clones (small n;
+producer-style Jake Will #2 also wins → *different ≠ strictly better*, but the single
+strongest agent is *different*). Harvest is feasible at scale via the daily datasets
+(`orbit-wars-episodes-YYYY-MM-DD`, ~4600 eps/day, individually downloadable, `info.TeamNames`
+→ LB join); the `ListEpisodes` /api/i/ endpoint 429s hard — do NOT bulk-crawl it.
+
+**Three ML routes weighed (offline-RL / BC / modify-the-rule-base) → modify the rule-base
+wins for the deadline.** Grounded in our own graveyard:
+- **Offline RL (CQL/IQL/AWAC):** ✗ for 06-23. Actions are a *set* of
+  `[from, continuous-angle, ships]` launches (combinatorial; `max_a Q` intractable), and
+  its policy-improvement step *relies on* exactly the learned value this project has shown
+  "can't rank near-equal siblings" (PPO stall, value-blend 6/6 regress, value-rerank INERT
+  @AUC 0.78). Best RL ever = ~31% vs pool, last in 4P. Highest *learn-RL* value, lowest
+  ship-by-deadline EV. Keep as a parallel post-deadline track if we want the RL depth.
+- **Behavior cloning:** ✗. **BC-from-producer already plateaued at 3% vs producer** (a clone
+  lands far below its teacher — discretization kills the exact aim/sizing). The mixed-style
+  corpus makes naive BC *worse* (mode-averages producer-full-drain + half-drain + swarm into
+  mush). Filtered single-agent BC is the only sane variant and still fights the same loss.
+- **Modify the rule-based agent:** ✓. The ONLY channel that ever gained ladder rank here
+  (reinforce-risk +150 = a gated, mirror-measurable planner delta that changed what the
+  planner *models*). Keeps the strong 1201–1242 base, single-variable, gatable BEFORE a
+  slot. The diagnostic handed us the raw material (the #1's half-drain).
+
+**Opponent fingerprinting — genuinely UNEXPLORED, and the right hybrid.** We have done
+opponent *modeling* (opp_inject Cluster 11 *assumes* the opponent is a producer-clone;
+reinforce-risk bakes in a *fixed* reactive term) but never opponent *identification* —
+observe the enemy's actual style over the first K turns → classify → adapt. opp_inject was
+inert partly *because it assumed homogeneity*; the diagnostic now proves the population is
+**heterogeneous and cleanly separable** by the very features we can watch live
+(send-fraction, waves/turn, idle%). Caveats kept honest: our evidence shows a *fixed*
+different policy wins (Isaiah half-drains always, not adaptively); naive "fingerprint → tweak
+roi/waves" is the exhausted-knobs graveyard; 2P games end fast (latency to fingerprint);
+opp_inject hinted the level-0→1 exploitation gap vs producer is ~+2pp. **So fingerprinting's
+proven-correct role is a CONDITIONING LAYER on a structural delta, not a standalone bet — and
+it could specifically RESCUE the Cluster-9 reserve failure** (reserves caused passivity *vs
+aggressive opponents* → make them conditional on a *detected passive/clone* opponent).
+
+### v5.4 plan — sequenced so one cheap analysis decides the build
+
+1. **Mirror-gate the structural delta first (immediate next move).** New gated knob
+   `reserve_frac` on `agents/v5/` (default 0.0 = OFF, byte-identical): post-selection cap that
+   holds back a fraction of a chosen `safe_drain` send unless it's decisive — DISTINCT from
+   Cluster 7 (multi-size candidates) and Cluster 9 (cheap_enemy_pressure proxy). Gate
+   `v5:reserve_frac=X` vs `v5`, n≥120 paired, dose X∈{0.2,0.35,0.5}; ship gate ≥60% / clear
+   margin; watch for the Cluster-9 monotone-DOWN passivity signature. The mirror IS
+   clone-vs-clone, so it directly tests the case where adaptation would trigger.
+2. **Cheap offline opponent-type stratification (decides whether fingerprinting earns a
+   build).** Run the fingerprint OFFLINE on the corpus, label each game's opponent type, and
+   measure whether the delta's win-margin is opponent-type-dependent: beats *everyone* → just
+   always do it (no fingerprint); beats *only full-drainers* → fingerprint-gating has real
+   headroom → build it; beats *no one* → drop. One analysis, no online machinery.
+3. **Conditional application (stretch, only if Step 2 says headroom).** Online fingerprint over
+   the first K turns → apply the structural delta only vs the detected type it beats; vanilla
+   producer otherwise. This is the hybrid "adjust play based on what we see," built as a
+   conditioning layer on a proven delta.
+
+**Parallel, near-zero-cost:** run `scripts/replay_pulse.py` daily (10 days left) — catching the
+next public *structural* idea early is, historically, how the one rating gain (reinforce-risk)
+was found. Implementation prompt: `rl_research/NEXT_MOVE_PROMPT.md`.
 
 ## Update 2026-06-13 (research) — NEW DIRECTION: climb the opponent-modeling / equilibrium ladder (solution concept, not heuristics)
 

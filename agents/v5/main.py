@@ -84,6 +84,27 @@ if os.path.exists(_VALUE_WEIGHTS):
     except Exception:
         _VALUE_MODEL = None
 
+# RESEARCH HOOK (macro-action pointer-BC, not shipped). When set to a callable by an
+# external driver, it OVERRIDES the flow-diff candidate score with a learned selector
+# (so v5's EXACT candidate generation + intercept_angle + safe_drain sizing execute the
+# net's source->target picks) and disables the ROI gate. None by default => the flow
+# scorer is authoritative => byte-identical to the shipped agent.
+# Signature: fn(obs_tensors, cand_src, cand_tgt_slot, cand_valid, score) -> score[C] or None.
+# The selector receives the EXACT per-candidate flow-diff score so a producer-prior
+# selector can return it unchanged (or score + a learned delta) and reproduce v5.
+_SELECTOR_FN = None
+# When True, KEEP v5's real ROI gate (config.roi_threshold) instead of disabling it —
+# only meaningful with a selector that returns scores on the real Δnet scale (the rich
+# residual design). Default False preserves the legacy "fire all picks" behavior.
+_SELECTOR_KEEP_ROI = False
+
+# RESEARCH HOOK (rich-representation feature extraction, not shipped). When set to a dict,
+# plan_lite_waves writes its exact per-candidate projection tensors into it (producer's own
+# Δnet score, ETA, sizes, capture floor) plus the garrison_status timelines — so the net can
+# be fed the SAME information producer reasons over, instead of re-deriving it from a
+# snapshot. None by default => no capture => byte-identical.
+_FEATURE_SINK = None
+
 
 @dataclass(frozen=True)
 class ProducerLiteConfig:
@@ -177,6 +198,20 @@ class ProducerLiteConfig:
     # (the projection is snapshotted/restored). 0 = OFF, byte-identical to v5.3;
     # N>0 injects up to N attack waves per enemy seat (the dose-response knob).
     opp_inject_waves: int = 0
+    # v5.4 (top-tier replay diagnostic): half-drain structural delta. The #1 ladder
+    # agent (Isaiah @ Tufa Labs, 1762) sends ~half a garrison at a time (median
+    # send-fraction 0.52) and beats producer-family full-drain clones; producer/v5
+    # ship the full ``safe_drain`` (~1.0). This is a POST-SELECTION cap: the exact
+    # flow-diff scorer still ranks full-drain candidates (so WHICH waves fire is
+    # producer-identical), but each chosen full-drain wave then ships at most
+    # ``(1 - reserve_frac)`` of its source's current garrison, holding the rest home
+    # — UNLESS the cap is *decisive* (the trimmed fleet would no longer reach in time
+    # or no longer clear the target's capture floor at its slower arrival, in which
+    # case the full send goes). DISTINCT from Cluster 7 (no extra candidate is scored
+    # — the scorer never sees two sizes) and Cluster 9 (a flat fraction of the
+    # source, NOT a ``cheap_enemy_pressure`` mass-proxy subtraction). 0.0 = OFF,
+    # byte-identical to v5.3. CONFIG_4P inherits via ``dataclasses.replace``.
+    reserve_frac: float = 0.0
 
 
 def _movement_config(config: ProducerLiteConfig, *, player_count: int) -> MovementConfig:
@@ -508,14 +543,97 @@ def plan_lite_waves(
             model=_VALUE_MODEL, player_count=int(player_count), player_id=pid,
         )
 
+    # v5.4 half-drain reserve cap (see ProducerLiteConfig.reserve_frac). Applied
+    # AFTER scoring (the flow-diff ranked full-drain candidates) and BEFORE the
+    # greedy ships them: trim each full-drain candidate to at most (1-reserve_frac)
+    # of its source garrison, re-gating the slower trimmed fleet for reachability
+    # and capture-floor clearance; where the trim would break the send (unreachable
+    # or no longer captures) the full-drain send stays = "decisive". Only the
+    # full-drain block (first S*T candidates) is capped — cheap-size variants, when
+    # present, are already minimal. OFF (reserve_frac<=0) => skipped => byte-identical.
+    reserve_frac = float(config.reserve_frac)
+    if reserve_frac > 0.0:
+        cap = ((1.0 - reserve_frac) * source_ships).view(S, 1)                    # [S,1]
+        sizes_r = torch.minimum(sizes, cap).floor().clamp(min=1.0)                # [S,T]
+        trim = (sizes_r < sizes) & valid                                          # [S,T]
+        active_r = reachable_mask(
+            movement, source_idx=source_idx, target_idx=target_idx,
+            fleet_sizes=sizes_r.unsqueeze(-1), eta_cap=eta_cap,
+        ).squeeze(-1) & trim
+        aim_r = intercept_angle(
+            movement,
+            source_idx.unsqueeze(1),
+            target_idx.unsqueeze(0),
+            sizes_r,
+            active=active_r,
+        )
+        angle_r = aim_r["angle"]                                                  # [S,T]
+        eta_r = aim_r["eta"]
+        viable_r = aim_r["viable"] & (eta_r <= eta_cap.view(1, T))
+        if K > 0:
+            k_arr_r = (eta_r.clamp(min=1.0, max=float(K)).ceil().long() - 1).clamp(0, K - 1)
+            floor_at_arr_r = floor.unsqueeze(0).expand(S, T, K).gather(-1, k_arr_r.unsqueeze(-1)).squeeze(-1)
+        else:
+            floor_at_arr_r = torch.ones(S, T, dtype=dtype, device=device)
+        # "decisive" = the trimmed fleet can't reach or can't clear the floor at its
+        # slower arrival -> keep the full-drain send.
+        apply_r = trim & viable_r & (sizes_r >= floor_at_arr_r)                   # [S,T]
+        sizes_f = torch.where(apply_r, sizes_r, sizes)
+        angle_f = torch.where(apply_r, angle_r, angle)
+        eta_f = torch.where(apply_r, eta_r, eta)
+        C0 = S * T
+        cand_send[:C0] = torch.where(valid, sizes_f, torch.zeros_like(sizes_f)).reshape(C0, L)
+        cand_angle[:C0] = angle_f.reshape(C0, L)
+        cand_eta[:C0] = torch.where(valid, eta_f, torch.ones_like(eta_f)).reshape(C0, L)
+
+    # RESEARCH HOOK (see _FEATURE_SINK): dump producer's exact per-candidate projection
+    # tensors for offline feature extraction. None => skipped => byte-identical.
+    if _FEATURE_SINK is not None:
+        planet_ids = obs_tensors["planets"][..., 0].long()
+        _FEATURE_SINK.update(
+            score=score.detach().clone(),                 # [C] producer Δnet (FFA-adjusted)
+            cand_src=cand_src.detach().clone(),           # [C,1] source ROW idx
+            cand_tgt_slot=cand_tgt_slot.detach().clone(), # [C]   target ROW idx
+            cand_valid=cand_valid.detach().clone(),       # [C]
+            cand_send=cand_send.detach().clone(),         # [C,1] exact ship size
+            cand_eta=cand_eta.detach().clone(),           # [C,1] exact ETA
+            planet_ids=planet_ids.detach().clone(),       # [P_rows] row -> planet id
+            status_ships=garrison_status.ships.detach().clone(),   # [P_rows, H+1]
+            status_owner=garrison_status.owner.detach().clone(),   # [P_rows, H+1]
+            player_id=int(pid),
+        )
+
+    # RESEARCH HOOK (see _SELECTOR_FN): replace the flow-diff score with a learned
+    # selector over the SAME exactly-generated candidates, and fire all picks (ROI off).
+    # None => unchanged => byte-identical.
+    roi_thresh = float(config.roi_threshold)
+    if _SELECTOR_FN is not None:
+        sel = _SELECTOR_FN(obs_tensors, cand_src, cand_tgt_slot, cand_valid, score)
+        if sel is not None:
+            score = torch.where(cand_valid, sel.to(score.dtype), torch.full_like(score, float("-inf")))
+            if not _SELECTOR_KEEP_ROI:
+                roi_thresh = float("-inf")
+
     wave_entries, leftover = _greedy_select(
         P=P, W=W, device=device, dtype=dtype, score=score,
         cand_src=cand_src, cand_send=cand_send, cand_angle=cand_angle, cand_eta=cand_eta,
         cand_active=cand_active, cand_tgt_slot=cand_tgt_slot, cand_tgt_short=cand_tgt_short,
         cand_is_def=cand_is_def, source_budget=obs.ships.to(dtype).clone(),
-        target_exists=target_exists, roi_threshold=float(config.roi_threshold),
+        target_exists=target_exists, roi_threshold=roi_thresh,
         cand_value=cand_value, value_rerank_eps=float(config.value_rerank_eps),
     )
+
+    # Capture the GREEDY-FIRED launches for self-consistent BC labels (in-grid by
+    # construction). planet-id indexed. None => skipped.
+    if _FEATURE_SINK is not None:
+        pid_map = obs_tensors["planets"][..., 0].long()
+        fs = wave_entries.source_slots.long().clamp(0, pid_map.shape[0] - 1)
+        ft = wave_entries.target_slots.long().clamp(0, pid_map.shape[0] - 1)
+        _FEATURE_SINK.update(
+            fired_src=pid_map[fs].detach().clone(),
+            fired_tgt=pid_map[ft].detach().clone(),
+            fired_valid=wave_entries.valid.detach().clone(),
+        )
 
     if not bool(config.enable_regroup):
         return wave_entries
