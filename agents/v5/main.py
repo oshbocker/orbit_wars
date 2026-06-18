@@ -251,6 +251,27 @@ class ProducerLiteConfig:
     contest_fidelity_threshold: float = 0.55
     contest_min_observations: int = 8
     contest_fidelity_alpha: float = 0.9
+    # v5.5 4P FFA board-position gate. In 2P the contest snipe is pure value (the
+    # thinned planet belongs to the sole opponent → taking it directly swings the
+    # zero-sum). In 4P it is NOT: a snipe spends leftover ships to grab a planet that
+    # becomes OUR exposed frontier in a multi-way fight, and the specific planet a
+    # clone thins depends on the other live seats' moves our level-0 model can't see,
+    # so snipe targets mis-fire and we overextend (measured: plain 4P enabling
+    # regressed rank 1.65 vs 1.45 / win 35% vs 55% / end-score 720 vs 3027 vs
+    # contest_waves=0). FFA doctrine = strike from strength: only fire snipes when our
+    # board strength (prod + 0.025·ships, the same FFA strength used by the leader
+    # bonus) ranks within the top ``contest_ffa_strike_rank`` of the live players —
+    # when behind we hold ships and let the others fight. Consulted ONLY when
+    # player_count >= 4 (2P byte-identical regardless of value). 0 = OFF (no
+    # board gate — every gated seat sniped, the regressing behavior); 1 = leader/
+    # tied-leader only; 2 = top-2; etc. Detection still runs every turn (fidelity EMA
+    # keeps updating) so the gate is ready the moment we take the lead.
+    # CLOSED 2026-06-18: rank=1 (leader-only) was the best variant but only reached
+    # pooled n=180 net -3 vs off (+7 on a 2-clone table, but -4 all-clone and -6 on a
+    # 1-clone "sparse" table — it fires when we're already cruising, exactly when an
+    # FFA leader should consolidate). Did not clear ">= plain v5.3" → kept default-OFF
+    # infra. Reopen for the "contested-leader only" refinement (gate on a SMALL lead).
+    contest_ffa_strike_rank: int = 0
     # v5.4 (top-tier replay diagnostic): half-drain structural delta. The #1 ladder
     # agent (Isaiah @ Tufa Labs, 1762) sends ~half a garrison at a time (median
     # send-fraction 0.52) and beats producer-family full-drain clones; producer/v5
@@ -737,6 +758,29 @@ def _restore_projection(movement, snap: dict) -> None:
 _DETECT_DEBUG = None
 
 
+def _strength_rank(obs, *, prod: Tensor, player_count: int, player_id: int) -> int:
+    """1-based rank of our board strength among LIVE players (1 = strongest).
+
+    Strength = total production + 0.025 · total ships over owned, alive planets —
+    the same composite the FFA leader bonus uses. Ties share the better rank (rank =
+    1 + #players strictly stronger), so ``rank == 1`` means leader or tied-leader.
+    """
+    dtype = obs.ships.dtype
+    device = obs.device
+    n = int(player_count)
+    owner = obs.owner_abs.to(torch.long)
+    valid = (owner >= 0) & (owner < n) & obs.alive
+    idx = owner.clamp(min=0, max=max(n - 1, 0))
+    prod_by = torch.zeros(n, dtype=dtype, device=device)
+    ships_by = torch.zeros(n, dtype=dtype, device=device)
+    zeros = torch.zeros_like(prod.to(dtype))
+    prod_by.scatter_add_(0, idx, torch.where(valid, prod.to(dtype), zeros))
+    ships_by.scatter_add_(0, idx, torch.where(valid, obs.ships.to(dtype), torch.zeros_like(obs.ships.to(dtype))))
+    strength = prod_by + 0.025 * ships_by
+    mine = strength[player_id]
+    return 1 + int((strength > mine).sum().item())
+
+
 class _OpponentTracker:
     """Per-seat producer-fidelity tracker that gates the contestation overlay.
 
@@ -1024,6 +1068,18 @@ def run_turn(obs_tensors: dict, *, config: ProducerLiteConfig, player_count: int
             )
         else:
             gated = {o for o in range(n) if o != pid}
+        # FFA board-position gate (4P only): strike from strength. Suppress all snipes
+        # when our board strength is outside the top contest_ffa_strike_rank live
+        # players — in a multi-way fight an undersized/mis-targeted snipe exposes the
+        # grabbed planet and hands tempo to a third seat (see config note). Detection
+        # below still runs for every seat (fidelity EMA keeps updating), so the gate
+        # re-opens the moment we lead. OFF (rank<=0) or 2P => no suppression.
+        if (
+            n >= 4 and int(config.contest_ffa_strike_rank) > 0 and gated
+            and _strength_rank(obs, prod=movement.planet_prod, player_count=n, player_id=pid)
+            > int(config.contest_ffa_strike_rank)
+        ):
+            gated = set()
         # 3. run the producer opponent model: record per-seat sources for next-turn
         # fidelity (all seats), inject only gated seats into the reactive projection.
         sources_out: dict | None = {} if detect_on else None
@@ -1086,9 +1142,22 @@ CONFIG_4P = dataclasses.replace(
     # producer 2026-06-11 — this was the most-active delta, so reverted to parity).
     ffa_near_opponent_mult=1.0,
     ffa_far_opponent_mult=1.0,
-    # Contestation overlay OFF in 4P (the 2P default flipped it ON via v5.4, but 4P
-    # was never gated — the overlay has only been validated side-alternated in 2P;
-    # per-seat 4P gating is future work). Explicit so it does NOT inherit the 2P=2.
+    # Contestation overlay STAYS OFF in 4P (the 2P v5.4 default flipped it ON, but 4P
+    # keeps it off). The 4P extension was fully built and measured (2026-06-18) and the
+    # snipe value does NOT transfer to FFA — see rl_research/CONTESTATION_OVERLAY_FINDINGS.md
+    # "4P CLOSED". The machinery is all per-seat-ready (timing was a non-issue: ~46 ms/turn,
+    # 218 ms worst, zero overage; the gate transfers cleanly — clones 0.65-0.78 ON,
+    # non-clones <=0.06). What fails is the strategy: in a 4-way a snipe spends leftover
+    # ships to grab a planet that becomes our exposed frontier, and the specific planet a
+    # clone thins depends on the other live seats' moves our level-0 model can't see, so
+    # snipes mis-target and overextend. Plain enabling regressed hard (win 35% vs 55% vs
+    # off, paired); the ``contest_ffa_strike_rank`` board-position gate (strike only from
+    # strength) narrowed it but did not clear the bar: pooled n=180 net -3 (mixed-2-clone
+    # table +7, but all-clone -4 and 1-clone "sparse" -6 — the leader-gate fires when we
+    # are ALREADY winning, exactly when we should consolidate, not attack). Fails the
+    # strict ">= plain v5.3" bar, so 4P = plain v5.3 (byte-identical to v5.4). Set
+    # contest_waves>0 + contest_ffa_strike_rank=1 to reopen the experiment (e.g. for the
+    # "contested-leader only" refinement noted in the findings doc).
     contest_waves=0,
 )
 

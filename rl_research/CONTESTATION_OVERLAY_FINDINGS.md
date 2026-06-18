@@ -105,6 +105,52 @@ Producer-family 60–77% vs structurally-different 14–27%. Two refinements the
   fingerprints (the `replay_pulse` send-fraction/waves-per-turn fingerprinter exists) →
   archetype → pre-tuned config. Full opponent-modeling vision, too heavy for 6/23.
 
-**4P note:** per-seat detection is *especially* valuable in 4P (snipe the clones at the
-table, base-play the rest, defend only vs contest-capable seats). The overlay has only been
-gated in 2P; 4P needs its own gate before shipping there.
+## 4P FFA extension — CLOSED (2026-06-18, snipe value does not transfer to FFA)
+
+The hypothesis (per-seat detection is *especially* valuable in 4P: snipe the clones at the
+table, base-play the rest) was built end-to-end and measured. **It does not pay** — the
+contest overlay's 2P value is specific to the zero-sum 2-player structure and does not
+survive in FFA. Folded: `CONFIG_4P` keeps `contest_waves=0` (4P = plain v5.3, byte-identical
+to v5.4). The machinery is all retained default-off for a future reopen.
+
+**What was NOT the problem (both cleared):**
+- *Timing.* The 4P risk was that producer's full planner runs once per opponent seat (3× in
+  4P). Measured: ~46 ms/turn mean, **218 ms worst single turn** across long + all-clone games
+  — far under the 1 s actTimeout, zero overage drain. No per-seat-skip / cadence / lower-wave
+  mitigation needed; the per-seat machinery scales fine.
+- *Detection.* The 2P precision-EMA gate (alpha=0.9 / thr=0.55 / min_obs=8) **transfers
+  cleanly** to 4P (re-calibrated on 6 games/opp, 3 seats each): ON-fraction producer 0.78,
+  producer_v2 0.65 (clones) vs tamrazov 0.01, ow_proto 0.00, distance_1100 0.06, enders 0.00.
+  clone_min 0.65 ≫ other_max 0.06 — *cleaner* than 2P (producer_v2 was 0.43 there; denser 4P
+  boards give more launch signal). No 4P gate override needed.
+
+**What IS the problem (strategy):** in a 4-way a snipe spends leftover ships to grab a planet
+that becomes **our** exposed frontier, and the *specific* planet a clone thins depends on the
+other two live seats' moves — which our level-0 (`do-nothing`) opponent model cannot see — so
+snipe targets mis-fire and we overextend. Note the detector measures *source*-set fidelity
+(which stays high, 0.78), but the snipe needs the *target* right, and that degrades in FFA.
+
+**Gate results (`scripts/arena.py` paired + paired variant harness, our seat-0 swapped across
+contest configs on identical boards + opponents):**
+- *Plain enabling* (`contest_waves=2`, no board gate): clear regression — mean rank 1.65 vs
+  1.45, win 35% vs 55%, end-score 720 vs 3027 vs `contest_waves=0` (paired n=24 + n=60).
+- *Board-position gate* (`contest_ffa_strike_rank`, "strike only from strength" — snipe only
+  when our prod+0.025·ships ranks in the top-N live players; 4P-only, 2P byte-identical):
+  narrowed it but **did not clear the bar**. Best variant = rank 1 (leader-only), pooled
+  n=180 vs off: **net −3** (better 32 / worse 35 / tie 113):
+
+  | table | off win | sr1 win | paired sr1 vs off (n) |
+  |---|--:|--:|---|
+  | mixed (producer, producer_v2, tamrazov) | 7% | 13% | +7 (better 10 / worse 3, n=70) |
+  | clones (producer, producer_v2, producer) | 29% | 27% | −4 (better 15 / worse 19, n=70) |
+  | sparse (producer, tamrazov, enders) | 68% | 52% | −6 (better 7 / worse 13, n=40) |
+
+  The leader-gate helps on contested 2-clone tables (+7) but **hurts when we're already
+  cruising** (sparse: off wins 68%, sr1 drops it to 52%) — it fires precisely when an FFA
+  leader should *consolidate*, not attack. `rank=2` (top-2) was worse than `rank=1`.
+
+**Reopen idea (future):** gate snipes on a *contested* lead (leader by a SMALL margin), not
+any lead — the +7 on the contested 2-clone table is the only signal worth chasing, and it's
+only relevant if the real 4P ladder is clone-heavy (the local screen can't tell us; per the
+project rule the ladder is the final 4P gate). Cheaper redirect: Tier 2 (producer_v2 ensemble)
+lifts a *measured* 2P gap and is self-contained in 2P.
