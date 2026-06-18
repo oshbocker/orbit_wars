@@ -18,6 +18,7 @@ if _HERE not in sys.path:
 
 import torch
 from orbit_lite_v5.adapter import single_obs_to_tensor, sparse_action_row_to_moves
+from orbit_lite_v5.contestation import plan_contestation_waves
 from orbit_lite_v5.distance_cache import build_distance_cache
 from orbit_lite_v5.geometry import fleet_speed
 from orbit_lite_v5.intercept_aim import intercept_angle
@@ -198,6 +199,26 @@ class ProducerLiteConfig:
     # (the projection is snapshotted/restored). 0 = OFF, byte-identical to v5.3;
     # N>0 injects up to N attack waves per enemy seat (the dose-response knob).
     opp_inject_waves: int = 0
+    # CONTESTATION OVERLAY (new). The flow-diff sizes captures CAPTURE-MINIMALLY
+    # (``capture_floor`` = ceil(projected defenders + overhead)), so a freshly
+    # captured planet holds only ~overhead + 1 turn of production — verified thin
+    # in the engine combat (top-second, then survivor-vs-garrison). This overlay
+    # runs the EXACT opponent planner (reusing ``_opponent_reactive_status``) to
+    # predict which neutral/own planets an opponent will capture-thin within the
+    # horizon, then generates SNIPE candidates — fleets aimed to arrive just AFTER
+    # the predicted capture, sized vs the REACTIVE (post-capture, thin) garrison,
+    # scored by the same exact flow-diff and greedy-selected from the post-base-plan
+    # LEFTOVER budget (never weakens the base expansion → no tempo tax). These are
+    # candidates the base shortlist is structurally blind to (the target is a
+    # full-garrison neutral at plan time, not a 2-ship enemy). DISTINCT from the
+    # INERT ``opp_inject_waves`` (Cluster 11), which fed the opponent prediction into
+    # our DEFENSE; this consumes it as new OFFENSE. 0 = OFF, byte-identical to v5.3.
+    contest_waves: int = 0              # max snipe waves/turn (dose-response knob)
+    contest_delay: int = 1              # arrive predicted-capture-turn + this
+    contest_roi_threshold: float = 1.5  # exact flow-diff ROI gate for snipes
+    contest_capture_overhead: float = 1.0
+    contest_opp_waves: int = 6          # opp-planner wave cap when predicting captures
+    contest_verify: int = 0             # reserved: 2nd-ply re-defense filter (v2)
     # v5.4 (top-tier replay diagnostic): half-drain structural delta. The #1 ladder
     # agent (Isaiah @ Tufa Labs, 1762) sends ~half a garrison at a time (median
     # send-fraction 0.52) and beats producer-family full-drain clones; producer/v5
@@ -689,6 +710,7 @@ def _opponent_reactive_status(
     config: ProducerLiteConfig,
     player_count: int,
     H: int,
+    opp_waves_override: int | None = None,
 ):
     """Inject each live enemy's level-0 best-response and return a reactive status.
 
@@ -705,7 +727,10 @@ def _opponent_reactive_status(
     """
     pid = int(obs.player_id)
     n = int(player_count)
-    opp_waves = int(config.opp_inject_waves)
+    opp_waves = (
+        int(opp_waves_override) if opp_waves_override is not None
+        else int(config.opp_inject_waves)
+    )
     # Opponent sub-plan: attacks only (regroup is internal logistics that mostly
     # shores up enemy defense → modeling it pushes US toward passivity, the
     # Cluster-9 failure mode; the threat that should reshape our plan is the
@@ -818,6 +843,37 @@ def run_turn(obs_tensors: dict, *, config: ProducerLiteConfig, player_count: int
         garrison_status=status, prod=movement.planet_prod,
         alive_by_step=alive_by_step, config=config, player_count=int(player_count),
     )
+
+    # Contestation overlay (see ProducerLiteConfig.contest_waves). Predict the
+    # opponents' captures via the EXACT planner, then snipe the freshly-thinned
+    # planets from the leftover budget. OFF (contest_waves==0) => skipped =>
+    # byte-identical. Runs after the base plan so the snipe source budget is what
+    # the base expansion left home (no tempo tax) and BEFORE apply_private (clean
+    # do-nothing projection for the opponent model).
+    if int(config.contest_waves) > 0 and int(player_count) >= 2:
+        original_ships = obs.ships.to(obs.ships.dtype)
+        committed = torch.zeros(P, dtype=original_ships.dtype, device=device)
+        if bool(entries.valid.any()):
+            committed.scatter_add_(
+                0, entries.source_slots.clamp(0, P - 1),
+                torch.where(entries.valid, entries.ships, torch.zeros_like(entries.ships)),
+            )
+        leftover = (original_ships - committed).clamp(min=0.0)
+        reactive = _opponent_reactive_status(
+            movement=movement, obs=obs, obs_tensors=obs_tensors, cache=cache,
+            base_status=status, prod=movement.planet_prod, alive_by_step=alive_by_step,
+            config=config, player_count=int(player_count), H=H,
+            opp_waves_override=int(config.contest_opp_waves),
+        )
+        contest_entries = plan_contestation_waves(
+            movement=movement, obs=obs, obs_tensors=obs_tensors, cache=cache,
+            base_status=status, reactive_status=reactive, prod=movement.planet_prod,
+            alive_by_step=alive_by_step, config=config, player_count=int(player_count),
+            leftover=leftover, original_ships=original_ships,
+        )
+        if bool(contest_entries.valid.any()):
+            entries = concat_launch_entries([entries, contest_entries])
+
     entries = disambiguate_duplicate_launches(entries)
     launches = infer_planned_launches_from_entries(
         obs_tensors=obs_tensors, movement=movement, entries=entries, player_id=int(obs.player_id),

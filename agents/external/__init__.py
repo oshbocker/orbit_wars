@@ -43,6 +43,15 @@ _FILE_AGENTS = {
     "enders_1000": _HERE / "enders_1000.py",
     "ow_proto": _HERE / "ow_proto.py",
     "reinforce_958": _HERE / "reinforce_958.py",
+    # Off-mirror archetype FIXTURES (NOT competitors) — deterministic non-producer
+    # styles for the opponent-injection gate. See archetype_common.py.
+    "half_drainer": _HERE / "half_drainer.py",
+    "swarmer": _HERE / "swarmer.py",
+    # Contested non-producer fixture: a *strong* half-drainer (consolidation + defense)
+    # tuned to land v5 in the 50-70% band, so the off-mirror gate isn't win-rate-saturated.
+    "contested_drainer": _HERE / "contested_drainer.py",
+    # BC clone of a real top-tier non-producer teacher (the contested instrument).
+    "bc_teacher": _HERE / "bc_teacher.py",
 }
 
 EXTERNAL_AGENTS = ["producer", "producer_v2", *_FILE_AGENTS]

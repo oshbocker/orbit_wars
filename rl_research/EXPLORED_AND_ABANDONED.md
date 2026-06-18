@@ -488,6 +488,21 @@ shipped v5 unchanged), the n=120×3 gate CSVs, the subprocess-isolated byte-id h
 opponent-injection primitive — the substrate for Track 2/3 or any future opponent-aware
 experiment).
 
+**Follow-up — off-mirror gate (2026-06-16): the redundancy GENERALIZES; learned head
+FOLDED.** The open escape hatch above was a *learned* head modeling the ~⅓ of the top
+tier that is non-producer. Step-0 de-risk built the instrument the mirror lacked:
+non-producer fixture bots (`agents/external/{half_drainer,swarmer}.py`) + an off-mirror
+gate (`scripts/off_mirror_gate.py`) running `v5:opp_inject_waves=N` vs `v5`, **both vs
+each archetype**, paired seeds, n=120, doses 1/3/6. v5 wins **100%** every cell (the same
+~99% ceiling as the public pool → win-rate blind off-mirror too), so the primary
+instrument was paired **steps-to-elimination** (not saturated, SE≈±6). Every paired Δ
+(steps and score-margin) sits inside noise, non-monotonic in dose — *smaller* than the
+~10-step asymmetry the mirror itself saw. Exact 1-ply injection of a non-producer
+opponent's own best-response buys ≈0 → a learned approximation will not convert. Verdict:
+**fold the learned opponent-prediction-head track** (caveat: v5 saturates 100% so games
+aren't contested; only a contested off-mirror peer — expensive — could revive it). Full
+write-up: `rl_research/OFF_MIRROR_INJECTION_FINDINGS.md`.
+
 ---
 
 ## Cluster 12 — Half-drain reserve cap (`reserve_frac`, v5.4 from the top-tier replay diagnostic) *(closed 2026-06-14, code kept default-off)*
