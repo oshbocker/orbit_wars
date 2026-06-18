@@ -53,3 +53,17 @@ rl_research/*.pdf
 
 # Arena logs (CSV results are tracked; logs are not)
 outputs/arena/*.log
+
+# Generated/collected data + downloaded caches — keep reports (*.md) + arena CSVs.
+# (git ignores have no inline comments — keep each pattern on its own line.)
+# downloaded Kaggle leaderboard/episode cache:
+outputs/replay_pulse/cache/
+# generated BC datasets (*.npz):
+outputs/macro_bc/
+# raw collected game data (*.npz):
+outputs/validator/raw/
+outputs/value/raw/
+# generated model weights:
+outputs/**/*weights*.npz
+# stray logs anywhere under outputs/:
+outputs/**/*.log
