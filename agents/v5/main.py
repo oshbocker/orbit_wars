@@ -1591,8 +1591,7 @@ _RUNTIME = ProducerLiteRuntime()
 # ---------------------------------------------------------------------------
 
 
-def agent(obs):
-    """Single-observation entry point for local play and Kaggle."""
+def _agent_impl(obs):
     player = obs.get("player", 0) if isinstance(obs, dict) else obs.player
     player_id = int(player)
     obs_tensors = single_obs_to_tensor(obs, player_id=player_id)
@@ -1602,3 +1601,17 @@ def agent(obs):
     if _VALIDATOR is not None:
         moves = apply_veto(moves, obs, _VALIDATOR, _VETO_THRESHOLD)
     return moves
+
+
+def agent(obs):
+    """Single-observation entry point for local play and Kaggle.
+
+    Crash-safe wrapper: any exception (malformed/Struct obs the parser can't
+    unpack, an internal invariant ``raise``, etc.) falls back to a legal no-op
+    turn (``[]``) instead of erroring the episode, which Kaggle treats as a loss
+    /disqualification. Byte-identical to the bare planner on the happy path.
+    """
+    try:
+        return _agent_impl(obs)
+    except Exception:
+        return []
