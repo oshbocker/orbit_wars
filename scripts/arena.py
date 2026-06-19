@@ -193,6 +193,28 @@ def _final_scores(env, n_players: int) -> list[float]:
     return scores
 
 
+def _prod_share_at(env, step: int, n_players: int) -> list[float]:
+    """Each player's share of total owned planet-production at ``step``.
+
+    The 06-18 replay diagnostic found production-share at step ~80 is a near-
+    deterministic 4P outcome predictor (ahead >0.35 -> ~100% win; behind -> ~24%),
+    so it screens 4P planner deltas at far lower n than terminal win-rate. Reads the
+    perfect-info board from seat 0's observation (clamped to the last step if the game
+    ended early). Returns zeros if there is no owned production.
+    """
+    idx = min(int(step), len(env.steps) - 1)
+    obs = env.steps[idx][0].observation
+    prod = [0.0] * n_players
+    for p in _field(obs, "planets", 0) or []:
+        owner = int(_field(p, "owner", 1))
+        if 0 <= owner < n_players:
+            prod[owner] += float(_field(p, "production", 6))
+    total = sum(prod)
+    if total <= 0.0:
+        return [0.0] * n_players
+    return [x / total for x in prod]
+
+
 def _play(job: tuple[str, str, int, int]) -> dict:
     """One game: (spec_a, spec_b, seed, a_side). Returns a result row."""
     spec_a, spec_b, seed, a_side = job
@@ -241,6 +263,7 @@ def _play_4p(job: tuple[tuple[str, str, str, str], int, int]) -> dict:
     last = env.steps[-1]
     rewards = [(-1.0 if s.reward is None else float(s.reward)) for s in last]
     scores = _final_scores(env, 4)
+    pshare80 = _prod_share_at(env, 80, 4)
     keys = list(zip(rewards, scores, strict=True))
     ranks = [1 + sum(1 for k in keys if k > keys[i]) for i in range(4)]  # ties share rank
     row: dict = {
@@ -254,6 +277,7 @@ def _play_4p(job: tuple[tuple[str, str, str, str], int, int]) -> dict:
         row[f"reward_{i}"] = rewards[i]
         row[f"score_{i}"] = round(scores[i], 1)
         row[f"rank_{i}"] = ranks[i]
+        row[f"prodshare80_{i}"] = round(pshare80[i], 4)
         row[f"status_{i}"] = last[i].status
     return row
 
@@ -275,7 +299,7 @@ FIELDS = [
 FIELDS_4P = (
     [f"agent_{i}" for i in range(4)]
     + ["seed", "rot"]
-    + [f"{k}_{i}" for i in range(4) for k in ("reward", "score", "rank", "status")]
+    + [f"{k}_{i}" for i in range(4) for k in ("reward", "score", "rank", "prodshare80", "status")]
     + ["steps", "seconds"]
 )
 

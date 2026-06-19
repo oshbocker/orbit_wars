@@ -154,3 +154,53 @@ any lead — the +7 on the contested 2-clone table is the only signal worth chas
 only relevant if the real 4P ladder is clone-heavy (the local screen can't tell us; per the
 project rule the ladder is the final 4P gate). Cheaper redirect: Tier 2 (producer_v2 ensemble)
 lifts a *measured* 2P gap and is self-contained in 2P.
+
+## Tier 2 — producer_v2 ensemble — CLOSED (2026-06-18, regresses vs plain producer)
+
+Built + calibrated + gated end-to-end. **Does not ship — it breaks the most important
+matchup.** `contest_ensemble` stays default `0` (v5.4 single-model unchanged); the ensemble
+machinery is retained default-off.
+
+**The idea.** The v5.4 detector gates the snipe on a *single* producer-config opponent model.
+Tier 2 runs an ensemble per enemy seat — base producer (β=0) **and** producer_v2 (β=2.2
+reinforce-risk) — opens the gate on *either* model's fidelity EMA, and injects each gated seat
+with its `best_model()`. Goal: recover the snipes the single model forgoes against
+producer_v2 clones.
+
+**Code (DONE, verified, default-off = byte-identical to v5.4).** `agents/v5/main.py` only:
+`contest_ensemble` knob; `_OpponentTracker` keyed per-`(seat, model)` with `best_model()`
+selector + `set_predictions(list)`; `_opponent_reactive_status(..., ensemble=, inject_model=,
+sources_out_ensemble=)` ensemble branch (per-seat base + producer_v2 → inject each gated seat
+with its best model → one merged reactive); `run_turn` branches on `contest_ensemble`. ruff +
+pyright clean; bundle builds; `contest_ensemble=0` byte-identity vs HEAD confirmed
+(fixed-obs replay). Harness in `outputs/tier2/` (`paired_2p.py`, `analyze_paired_2p.py`,
+`grid_2p.py`, `calib2p_*.npy`, `RESUME.md`).
+
+**Calibration (strongly positive — detection works).** Ensemble ON-fraction (alpha=0.9 /
+thr=0.55 / min_obs=8): producer 0.90→0.90, **producer_v2 0.31→0.87 (+0.56)**, tamrazov
+0.05→0.19, ow_proto 0.00, distance 0.08→0.16, enders 0.00. Clean separation (clone_min 0.87 /
+other_max 0.19). thr=0.60 documented as the fallback *for a non-producer regression*
+(tamrazov→0.08, producer_v2 stays 0.85).
+
+**Gate (`outputs/tier2/paired_2p.py`, side-alternated paired, ENS vs SINGLE on identical
+boards):**
+
+| opponent | SINGLE win | ENS win | ENS − SINGLE | n | verdict |
+|---|--:|--:|---|--:|---|
+| producer_v2 | 44.2% | 54.2% | **+10.0** win / +109 margin | 120 | ✅ target hit |
+| tamrazov_1224 | 99.2% | 100.0% | +0.8 win | 120 | ✅ no regression |
+| distance_1100 | 100.0% | 100.0% | +0.0 win | 120 | ✅ no regression |
+| **producer** | **67.5%** | **51.7%** | **−15.8 win / −833 margin** | 120 | ❌ **REGRESSION** |
+
+**Why it fails.** The ensemble adds the producer_v2 (β=2.2) model and opens the snipe gate on
+*either* model. Against **plain** producer — which does NOT reinforce the way producer_v2
+models — that extra model drives mis-targeted / over-committed snipes, bleeding the single
+model's +16 edge down to a coin-flip. Net trade: **+10 vs producer_v2 for −15.8 vs plain
+producer**, net-negative while plain-producer clones dominate the ladder. The producer-side
+detection gate is already saturated (ON-fraction 0.90, base-producer fidelity ≈0.99), so the
+thr=0.60 fallback — scoped to *non-producer* false-firing — won't recover this; producer's gate
+barely moves. The single-model v5.4 already banks the gains (+16 vs producer, +11.7 vs
+producer_v2) with **no** producer regression, and is the active ship. Same recurring pattern as
+the contestation 4P close: the snipe needs the opponent model *right*, and a richer/ensembled
+model that's wrong on the dominant opponent over-commits. **Tier 2 CLOSED; v5.4 stands.**
+The n<100 rule held again (a n=55 producer partial read +17 ENS; full n=120 reversed to −15.8).

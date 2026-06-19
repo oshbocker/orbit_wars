@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import dataclasses
@@ -109,18 +108,17 @@ _FEATURE_SINK = None
 
 @dataclass(frozen=True)
 class ProducerLiteConfig:
-    """Behaviour knobs.  """
+    """Behaviour knobs."""
 
-    
-    # the projection window, the movement build length, AND the target ETA cap 
+    # the projection window, the movement build length, AND the target ETA cap
     horizon: int = 18
     # --- shortlists ------------------------------------------------------
     max_sources_per_lane: int = 12
-    max_offensive_targets: int = 12         # enemy/neutral proximity targets
-    max_defensive_targets: int = 4          
+    max_offensive_targets: int = 12  # enemy/neutral proximity targets
+    max_defensive_targets: int = 4
     # --- scoring / greedy ------------------------------------------------
     max_waves_per_turn: int = 6
-    roi_threshold: float = 1.5              # fire if score > this
+    roi_threshold: float = 1.5  # fire if score > this
     min_ships_to_launch: float = 4.0
     # --- regroup  ------------------------------
     enable_regroup: bool = True
@@ -219,12 +217,12 @@ class ProducerLiteConfig:
     # +18 (75% vs 57%, n=125), vs producer_v2 +14 (45% vs 31%, n=103), vs tamrazov
     # 100%/100% (n>=52, no regression), vs ow_proto 100%/99% (n=130). 4P keeps this OFF
     # (CONFIG_4P) until 4P has its own gate. Set 0 for plain v5.3 (the off-switch).
-    contest_waves: int = 2              # max snipe waves/turn (dose-response knob)
-    contest_delay: int = 1              # arrive predicted-capture-turn + this
+    contest_waves: int = 2  # max snipe waves/turn (dose-response knob)
+    contest_delay: int = 1  # arrive predicted-capture-turn + this
     contest_roi_threshold: float = 1.5  # exact flow-diff ROI gate for snipes
     contest_capture_overhead: float = 1.0
-    contest_opp_waves: int = 6          # opp-planner wave cap when predicting captures
-    contest_verify: int = 0             # reserved: 2nd-ply re-defense filter (v2)
+    contest_opp_waves: int = 6  # opp-planner wave cap when predicting captures
+    contest_verify: int = 0  # reserved: 2nd-ply re-defense filter (v2)
     # TIER-1 producer detector (gates the contestation overlay; only meaningful when
     # contest_waves > 0 — byte-identical to v5.3 when the overlay is OFF). The overlay
     # only pays off vs producer-family opponents (we run producer's exact planner as the
@@ -251,6 +249,24 @@ class ProducerLiteConfig:
     contest_fidelity_threshold: float = 0.55
     contest_min_observations: int = 8
     contest_fidelity_alpha: float = 0.9
+    # TIER-2 opponent-model ensemble (v5.6). The single Tier-1 detector models every
+    # opponent as the BASE producer (reinforce_size_beta=0.0), so it OVER-predicts
+    # producer_v2's launch sources: producer_v2 adds the slawekbiel V2 ETA-aware
+    # reinforcement-risk capture floor (our ``reinforce_size_beta`` knob) and therefore
+    # DECLINES captures the base model says it will make → source-set precision drops to
+    # ~0.58 (gate ON only ~43% of producer_v2 turns vs ~99% for plain producer), forgoing
+    # snipes worth a measured ~+4.5 win-rate (the gap from producer_v2 +11.7 to producer
+    # +16.2). The ensemble keeps a SMALL set of opponent models — model 0 = base producer
+    # (β=0), model 1 = producer_v2 (β=config.reinforce_size_beta + the two reinforce_eta_*
+    # knobs kept ON) — scores each enemy seat's source-set fidelity under EACH (the tracker
+    # holds a per-(seat,model) precision EMA), gates a seat ON when EITHER model clears the
+    # bar, and snipes each gated seat from its BEST-matching model's reactive projection.
+    # plain producer keeps scoring highest under model 0; producer_v2 now reads ~1.0 under
+    # model 1 → gated ON far more often → the forgone snipes return. Adds a 2nd planner pass
+    # per seat (cheap in 2P: one extra opponent seat; well under the 1s budget — confirmed).
+    # 0 = OFF, byte-identical to v5.4 (detector is exactly the single base-producer model).
+    # 4P keeps this OFF regardless (CONFIG_4P.contest_waves=0 → overlay never runs).
+    contest_ensemble: int = 0
     # v5.5 4P FFA board-position gate. In 2P the contest snipe is pure value (the
     # thinned planet belongs to the sole opponent → taking it directly swings the
     # zero-sum). In 4P it is NOT: a snipe spends leftover ships to grab a planet that
@@ -286,6 +302,30 @@ class ProducerLiteConfig:
     # source, NOT a ``cheap_enemy_pressure`` mass-proxy subtraction). 0.0 = OFF,
     # byte-identical to v5.3. CONFIG_4P inherits via ``dataclasses.replace``.
     reserve_frac: float = 0.0
+    # H1 4P HOLDING-PAD (v5.5, 06-18 replay diagnostic). Our own ladder replays show
+    # the 4P rating leak is "capture-then-collapse": we expand to ~5.5 planets by
+    # step 60, then cannot hold them under multi-opponent pressure and get eliminated
+    # ~step 114 (4P win rate 30% vs 2P 51%; loss/win move-style IDENTICAL ⇒ it's not
+    # sizing, it's whether captures HOLD). The do-nothing ``capture_floor`` only sizes
+    # a capture to clear the projected defenders + overhead, so a fresh frontier
+    # capture lands thin and a 3rd-party counter-wave (which the level-0 projection
+    # can't see) retakes it. This knob inflates the capture floor of CONTESTED targets
+    # (reachable by >= ``hold_min_opponents`` distinct live opponents) by
+    # ``hold_margin_beta * largest-single-opponent reachable garrison`` — combat is
+    # ``top - second`` then survivor-vs-garrison, so the binding counter-wave is the
+    # single largest opponent, not the sum. Effect: contested captures route to
+    # sources rich enough to OVER-FUND them (full ``safe_drain`` >> inflated floor ⇒
+    # the capture holds the immediate counter-wave) and thin-source grabs that would
+    # churn are DECLINED — "hold-quality, not fewer captures". DISTINCT from
+    # reinforce_size_beta (models reinforcement arriving DURING flight to a planet the
+    # enemy already owns; this models a post-capture counter-wave on a contested
+    # NEUTRAL, gated on >=2 distinct opponents and sized to the largest single one),
+    # from Cluster 9 defense_size_beta (reserves on the SOURCE → passivity; this sizes
+    # the TARGET capture), and from Cluster 7/12 (those send LESS). 4P-ONLY (guarded by
+    # player_count>=4) and gated by hold_margin_beta>0 ⇒ byte-identical to v5.4 in 2P
+    # and when OFF. Gate via scripts/arena.py --players 4 + the prod-share@80 screen.
+    hold_margin_beta: float = 0.0
+    hold_min_opponents: int = 2
 
 
 def _movement_config(config: ProducerLiteConfig, *, player_count: int) -> MovementConfig:
@@ -318,16 +358,66 @@ def cheap_enemy_pressure(obs, cache, *, horizon: float, player_id: int) -> Tenso
     dtype = obs.ships.dtype
     if P == 0:
         return torch.zeros(P, dtype=dtype, device=device)
-    d0 = cache.cross_dist[0].to(dtype)                                   # [src, tgt] current centre dist
+    d0 = cache.cross_dist[0].to(dtype)  # [src, tgt] current centre dist
     ships = obs.ships.to(dtype)
-    speeds = fleet_speed(ships.clamp(min=1e-6))                          # [P]
-    reach_dist = (speeds.view(P, 1) * float(horizon)).clamp(min=1e-6)    # [src, 1]
+    speeds = fleet_speed(ships.clamp(min=1e-6))  # [P]
+    reach_dist = (speeds.view(P, 1) * float(horizon)).clamp(min=1e-6)  # [src, 1]
     enemy = obs.alive & (obs.owner_abs >= 0) & (obs.owner_abs != int(player_id))  # [P]
     eye = torch.eye(P, device=device, dtype=torch.bool)
-    valid = enemy.view(P, 1) & obs.alive.view(1, P) & ~eye              # [src, tgt]
-    decay = (1.0 - d0 / reach_dist).clamp(min=0.0)                       # nearer enemy -> heavier
+    valid = enemy.view(P, 1) & obs.alive.view(1, P) & ~eye  # [src, tgt]
+    decay = (1.0 - d0 / reach_dist).clamp(min=0.0)  # nearer enemy -> heavier
     contrib = torch.where(valid, ships.view(P, 1) * decay, torch.zeros_like(decay))
-    return contrib.sum(dim=0)                                            # [P] summed over sources
+    return contrib.sum(dim=0)  # [P] summed over sources
+
+
+def opponent_holding_pressure(
+    obs,
+    cache,
+    *,
+    horizon: float,
+    player_id: int,
+    player_count: int,
+) -> tuple[Tensor, Tensor]:
+    """Per-planet ``(largest single opponent reachable mass [P], #opponents that can
+    reach it [P] long)`` — the 4P holding-pad's counter-wave model.
+
+    Like ``cheap_enemy_pressure`` but split BY OWNER: for each live opponent seat,
+    sum the distance-decayed share of its sources' current garrison that could
+    straight-line reach each planet within ``horizon`` turns, then reduce across
+    opponents to ``(max-over-opponents mass, count of opponents with positive mass)``.
+    The MAX (not the sum) is the combat-relevant counter-wave size — a fresh capture
+    meets ``top - second`` then survivor-vs-garrison, so the binding threat is the
+    single largest opponent. Same approximations as ``cheap_enemy_pressure`` (ignores
+    target drift / in-flight production / in-flight enemy fleets). Pure arithmetic on
+    cached tensors.
+    """
+    P = int(obs.P)
+    device = obs.device
+    dtype = obs.ships.dtype
+    if P == 0:
+        z = torch.zeros(P, dtype=dtype, device=device)
+        return z, torch.zeros(P, dtype=torch.long, device=device)
+    d0 = cache.cross_dist[0].to(dtype)  # [src, tgt]
+    ships = obs.ships.to(dtype)
+    speeds = fleet_speed(ships.clamp(min=1e-6))  # [P]
+    reach_dist = (speeds.view(P, 1) * float(horizon)).clamp(min=1e-6)  # [src, 1]
+    decay = (1.0 - d0 / reach_dist).clamp(min=0.0)  # [src, tgt]
+    owner = obs.owner_abs.to(torch.long)
+    eye = torch.eye(P, device=device, dtype=torch.bool)
+    largest = torch.zeros(P, dtype=dtype, device=device)
+    count = torch.zeros(P, dtype=torch.long, device=device)
+    for o in range(int(player_count)):
+        if o == int(player_id):
+            continue
+        src_o = obs.alive & (owner == o)  # [P]
+        if not bool(src_o.any()):
+            continue
+        valid = src_o.view(P, 1) & obs.alive.view(1, P) & ~eye  # [src, tgt]
+        contrib = torch.where(valid, ships.view(P, 1) * decay, torch.zeros_like(decay))
+        mass_o = contrib.sum(dim=0)  # [P] per target from opp o
+        largest = torch.maximum(largest, mass_o)
+        count = count + (mass_o > 0.0).to(torch.long)
+    return largest, count
 
 
 def plan_lite_waves(
@@ -367,16 +457,23 @@ def plan_lite_waves(
     S_cap = max(1, min(int(config.max_sources_per_lane), P))
     source_idx, source_exists = _candidate_indices(obs.ships, source_mask, S_cap)
     target_idx, target_exists = build_target_shortlist(
-        obs, obs_tensors, garrison_status, cache,
-        config=config, K_eta=K_eta, H=H, prod=prod, source_mask=source_mask,
+        obs,
+        obs_tensors,
+        garrison_status,
+        cache,
+        config=config,
+        K_eta=K_eta,
+        H=H,
+        prod=prod,
+        source_mask=source_mask,
     )
     if not bool(target_exists.any()):
         return _empty_entries(device, dtype)
     S = int(source_idx.shape[0])
     T = int(target_idx.shape[0])
-    target_is_mine = obs.owned[target_idx.clamp(0, P - 1)]                       # [T]
+    target_is_mine = obs.owned[target_idx.clamp(0, P - 1)]  # [T]
 
-    source_ships = obs.ships[source_idx.clamp(0, P - 1)].to(dtype)                # [S]
+    source_ships = obs.ships[source_idx.clamp(0, P - 1)].to(dtype)  # [S]
     H_eff = torch.full((), float(H), dtype=dtype, device=device)
 
     # Reachable-enemy-mass proxy ([P]) — computed ONCE and reused for ALL THREE of:
@@ -386,63 +483,103 @@ def plan_lite_waves(
     beta = float(config.reinforce_size_beta)
     defense_beta = float(config.defense_size_beta)
     enemy_mass = (
-        cheap_enemy_pressure(obs, cache, horizon=float(K_eta), player_id=pid)    # [P]
-        if beta > 0.0 or defense_beta > 0.0 or bool(config.enable_regroup) else None
+        cheap_enemy_pressure(obs, cache, horizon=float(K_eta), player_id=pid)  # [P]
+        if beta > 0.0 or defense_beta > 0.0 or bool(config.enable_regroup)
+        else None
     )
 
     # v5.4 defensive symmetry: hold back ``defense_beta * enemy_mass(source)`` ships
     # on each source so the planner under-commits planets the enemy can mass on
     # (None when OFF → safe_drain byte-identical to v5.3).
     defense_reserve = (
-        defense_beta * enemy_mass[source_idx.clamp(0, P - 1)]                    # [S]
-        if defense_beta > 0.0 and enemy_mass is not None else None
+        defense_beta * enemy_mass[source_idx.clamp(0, P - 1)]  # [S]
+        if defense_beta > 0.0 and enemy_mass is not None
+        else None
     )
     drain = safe_drain(
-        garrison_status, source_idx=source_idx, source_ships=source_ships,
-        H_eff=H_eff, player_id=pid, reserve=defense_reserve,
-    )                                                                            # [S]
+        garrison_status,
+        source_idx=source_idx,
+        source_ships=source_ships,
+        H_eff=H_eff,
+        player_id=pid,
+        reserve=defense_reserve,
+    )  # [S]
 
     # Uniform reach cap = K_eta (= horizon).
-    eta_cap = torch.full((T,), float(K_eta), dtype=dtype, device=device)          # [T]
+    eta_cap = torch.full((T,), float(K_eta), dtype=dtype, device=device)  # [T]
 
     # ETA-aware reinforcement risk: inflate the capture floor by ``beta * rho(k)
     # * reachable-enemy-mass(target)``. The per-arrival-turn growth comes from
     # the rho(k) timing ramp. Gated by beta > 0 (OFF = bare floor, byte-identical).
     reinforcement = None
     if beta > 0.0 and enemy_mass is not None:
-        enemy_mass_t = enemy_mass[target_idx.clamp(0, P - 1)]                    # [T]
+        enemy_mass_t = enemy_mass[target_idx.clamp(0, P - 1)]  # [T]
         k_arange = torch.arange(1, K_eta + 1, device=device, dtype=dtype)
         rho = reinforcement_timing_factor(
-            k_arange, eta_free=float(config.reinforce_eta_free),
+            k_arange,
+            eta_free=float(config.reinforce_eta_free),
             eta_scale=float(config.reinforce_eta_scale),
-        )                                                                        # [K_eta]
-        reinforcement = beta * rho.view(1, K_eta) * enemy_mass_t.view(T, 1)      # [T, K_eta]
+        )  # [K_eta]
+        reinforcement = beta * rho.view(1, K_eta) * enemy_mass_t.view(T, 1)  # [T, K_eta]
+
+    # H1 4P holding-pad (see ProducerLiteConfig.hold_margin_beta): inflate the capture
+    # floor of CONTESTED targets (reachable by >= hold_min_opponents distinct live
+    # opponents) by ``hold_margin_beta * largest-single-opponent reachable garrison``,
+    # so a fresh capture is sized to survive the immediate counter-wave (top-vs-second
+    # ⇒ the largest single opponent is the binding threat). Routes contested captures
+    # to sources that can over-fund them and declines thin-source grabs. Flat over k
+    # (the counter-wave threat is independent of MY arrival turn). 4P-only + gated ⇒
+    # byte-identical to v5.4 in 2P and when OFF; only inflates CAPTURE cells (owned
+    # reinforcement cells stay floor 1 inside ``capture_floor``).
+    hold_beta = float(config.hold_margin_beta)
+    if int(player_count) >= 4 and hold_beta > 0.0 and K_eta > 0:
+        largest_opp, opp_count = opponent_holding_pressure(
+            obs,
+            cache,
+            horizon=float(K_eta),
+            player_id=pid,
+            player_count=int(player_count),
+        )  # [P], [P]
+        contested = opp_count >= int(config.hold_min_opponents)  # [P]
+        hold_mass = torch.where(contested, largest_opp, torch.zeros_like(largest_opp))
+        hold_margin = (hold_beta * hold_mass[target_idx.clamp(0, P - 1)]).view(T, 1)  # [T, 1]
+        reinforcement = (
+            hold_margin.expand(T, K_eta).contiguous()
+            if reinforcement is None
+            else reinforcement + hold_margin
+        )  # [T, K_eta]
 
     floor = capture_floor(
-        garrison_status, target_idx=target_idx, k_max=K_eta,
-        capture_overhead=1.0, player_id=pid,
+        garrison_status,
+        target_idx=target_idx,
+        k_max=K_eta,
+        capture_overhead=1.0,
+        player_id=pid,
         reinforcement=reinforcement,
-    )                                                                            # [T, K]
+    )  # [T, K]
     K = int(floor.shape[-1])
 
     # --- single fleet size = the max garrison launch (safe_drain) ---------------
     # Engine needs integer ship counts; floor (never exceed what's available).
-    sizes = drain.view(S, 1).expand(S, T).floor()                                # [S, T]
+    sizes = drain.view(S, 1).expand(S, T).floor()  # [S, T]
 
     # Strict-superset reachability precheck (always on): defers the body screen to
     # candidates that can physically reach the target in time.
     active = reachable_mask(
-        movement, source_idx=source_idx, target_idx=target_idx,
-        fleet_sizes=sizes.unsqueeze(-1), eta_cap=eta_cap,
-    ).squeeze(-1)                                                                # [S, T]
+        movement,
+        source_idx=source_idx,
+        target_idx=target_idx,
+        fleet_sizes=sizes.unsqueeze(-1),
+        eta_cap=eta_cap,
+    ).squeeze(-1)  # [S, T]
     aim = intercept_angle(
         movement,
-        source_idx.unsqueeze(1),                                                 # [S, 1]
-        target_idx.unsqueeze(0),                                                 # [1, T]
-        sizes,                                                                    # [S, T]
+        source_idx.unsqueeze(1),  # [S, 1]
+        target_idx.unsqueeze(0),  # [1, T]
+        sizes,  # [S, T]
         active=active,
     )
-    angle = aim["angle"]                                                         # [S, T]
+    angle = aim["angle"]  # [S, T]
     eta = aim["eta"]
     viable = aim["viable"] & (eta <= eta_cap.view(1, T))
 
@@ -451,16 +588,22 @@ def plan_lite_waves(
     # targets have floor 1 (reinforcement), so any positive send clears.
     if K > 0:
         k_arr = (eta.clamp(min=1.0, max=float(K)).ceil().long() - 1).clamp(0, K - 1)  # [S,T]
-        floor_at_arr = floor.unsqueeze(0).expand(S, T, K).gather(-1, k_arr.unsqueeze(-1)).squeeze(-1)
+        floor_at_arr = (
+            floor.unsqueeze(0).expand(S, T, K).gather(-1, k_arr.unsqueeze(-1)).squeeze(-1)
+        )
     else:
         floor_at_arr = torch.ones(S, T, dtype=dtype, device=device)
-    clears_floor = sizes >= floor_at_arr                                         # [S, T]
+    clears_floor = sizes >= floor_at_arr  # [S, T]
 
     src_neq_tgt = source_idx.view(S, 1) != target_idx.view(1, T)
     valid = (
-        viable & clears_floor & (sizes >= 1.0) & src_neq_tgt
-        & source_exists.view(S, 1) & target_exists.view(1, T)
-    )                                                                            # [S, T]
+        viable
+        & clears_floor
+        & (sizes >= 1.0)
+        & src_neq_tgt
+        & source_exists.view(S, 1)
+        & target_exists.view(1, T)
+    )  # [S, T]
 
     # --- v5: optional second, cheaper size per (source, target) -----------------
     # Just-enough-to-capture: ceil(floor_at_arr + margin), capped at the drain.
@@ -471,14 +614,20 @@ def plan_lite_waves(
     two_sizes = float(config.cheap_capture_margin) >= 0.0
     if two_sizes:
         sizes2 = (floor_at_arr + float(config.cheap_capture_margin)).ceil().clamp(min=1.0)
-        sizes2 = torch.minimum(sizes2, sizes)                                    # [S, T]
+        sizes2 = torch.minimum(sizes2, sizes)  # [S, T]
         # Only when strictly cheaper than the drain candidate, and never on owned
         # targets (their floor is 1 — a token reinforcement is junk).
         distinct = (sizes2 < sizes) & ~target_is_mine.view(1, T)
-        active2 = reachable_mask(
-            movement, source_idx=source_idx, target_idx=target_idx,
-            fleet_sizes=sizes2.unsqueeze(-1), eta_cap=eta_cap,
-        ).squeeze(-1) & distinct
+        active2 = (
+            reachable_mask(
+                movement,
+                source_idx=source_idx,
+                target_idx=target_idx,
+                fleet_sizes=sizes2.unsqueeze(-1),
+                eta_cap=eta_cap,
+            ).squeeze(-1)
+            & distinct
+        )
         aim2 = intercept_angle(
             movement,
             source_idx.unsqueeze(1),
@@ -486,18 +635,25 @@ def plan_lite_waves(
             sizes2,
             active=active2,
         )
-        angle2 = aim2["angle"]                                                   # [S, T]
+        angle2 = aim2["angle"]  # [S, T]
         eta2 = aim2["eta"]
         viable2 = aim2["viable"] & (eta2 <= eta_cap.view(1, T))
         if K > 0:
             k_arr2 = (eta2.clamp(min=1.0, max=float(K)).ceil().long() - 1).clamp(0, K - 1)
-            floor_at_arr2 = floor.unsqueeze(0).expand(S, T, K).gather(-1, k_arr2.unsqueeze(-1)).squeeze(-1)
+            floor_at_arr2 = (
+                floor.unsqueeze(0).expand(S, T, K).gather(-1, k_arr2.unsqueeze(-1)).squeeze(-1)
+            )
         else:
             floor_at_arr2 = torch.ones(S, T, dtype=dtype, device=device)
         valid2 = (
-            viable2 & (sizes2 >= floor_at_arr2) & (sizes2 >= 1.0) & distinct
-            & src_neq_tgt & source_exists.view(S, 1) & target_exists.view(1, T)
-        )                                                                        # [S, T]
+            viable2
+            & (sizes2 >= floor_at_arr2)
+            & (sizes2 >= 1.0)
+            & distinct
+            & src_neq_tgt
+            & source_exists.view(S, 1)
+            & target_exists.view(1, T)
+        )  # [S, T]
 
     # --- pack one candidate per (source, target); contributor axis L = 1 --------
     L = 1
@@ -510,7 +666,7 @@ def plan_lite_waves(
     cand_eta = torch.where(valid, eta, torch.ones_like(eta)).reshape(C, L)
     cand_active = valid.reshape(C, L)
     cand_valid = valid.reshape(C)
-    cand_is_def = target_is_mine[cand_tgt_short]                                  # [C]
+    cand_is_def = target_is_mine[cand_tgt_short]  # [C]
     if two_sizes:
         # Append the cheap-size variants: candidate axis C -> 2C. Everything
         # downstream (scoring, FFA bonuses, greedy) is shape-generic over C.
@@ -538,24 +694,35 @@ def plan_lite_waves(
         player_id=pid,
     )
     score = score_candidates(
-        garrison_status, prod=prod, alive_by_step=alive_by_step,
-        player_count=int(player_count), launches=launches, player_id=pid,
-    )                                                                            # [C]
+        garrison_status,
+        prod=prod,
+        alive_by_step=alive_by_step,
+        player_count=int(player_count),
+        launches=launches,
+        player_id=pid,
+    )  # [C]
     if int(player_count) >= 4 and (
-        float(config.ffa_leader_attack_bonus) > 0.0
-        or float(config.ffa_target_prod_bonus) > 0.0
+        float(config.ffa_leader_attack_bonus) > 0.0 or float(config.ffa_target_prod_bonus) > 0.0
     ):
         owner = obs.owner_abs.to(torch.long)
         owner_valid = (owner >= 0) & (owner < int(player_count)) & obs.alive
         owner_idx = owner.clamp(min=0, max=max(int(player_count) - 1, 0))
         prod_by_owner = torch.zeros(int(player_count), dtype=dtype, device=device)
         ships_by_owner = torch.zeros(int(player_count), dtype=dtype, device=device)
-        prod_by_owner.scatter_add_(0, owner_idx, torch.where(owner_valid, prod.to(dtype), torch.zeros_like(prod.to(dtype))))
-        ships_by_owner.scatter_add_(0, owner_idx, torch.where(owner_valid, obs.ships.to(dtype), torch.zeros_like(obs.ships.to(dtype))))
+        prod_by_owner.scatter_add_(
+            0, owner_idx, torch.where(owner_valid, prod.to(dtype), torch.zeros_like(prod.to(dtype)))
+        )
+        ships_by_owner.scatter_add_(
+            0,
+            owner_idx,
+            torch.where(owner_valid, obs.ships.to(dtype), torch.zeros_like(obs.ships.to(dtype))),
+        )
         strength = prod_by_owner + 0.025 * ships_by_owner
         my_strength = strength[pid].detach()
 
-        target_owner = owner[target_idx.clamp(0, P - 1)].clamp(min=0, max=max(int(player_count) - 1, 0))
+        target_owner = owner[target_idx.clamp(0, P - 1)].clamp(
+            min=0, max=max(int(player_count) - 1, 0)
+        )
         target_owned_enemy = (
             target_exists
             & obs.is_enemy[target_idx.clamp(0, P - 1)]
@@ -571,15 +738,14 @@ def plan_lite_waves(
         )
         score = score + target_bonus_short[cand_tgt_short]
     if int(player_count) >= 4 and (
-        float(config.ffa_near_opponent_mult) != 1.0
-        or float(config.ffa_far_opponent_mult) != 1.0
+        float(config.ffa_near_opponent_mult) != 1.0 or float(config.ffa_far_opponent_mult) != 1.0
     ):
         # v5: nearest-opponent priority. Rank opponents by mean planet-to-planet
         # distance from our owned planets; boost scores on the nearest opponent's
         # planets, damp the others. Neutral and owned targets are untouched.
         owner = obs.owner_abs.to(torch.long)
         mine_mask = obs.owned & obs.alive
-        d0 = cache.cross_dist[0].to(dtype)                                   # [src, tgt]
+        d0 = cache.cross_dist[0].to(dtype)  # [src, tgt]
         opp_dist = torch.full((int(player_count),), float("inf"), dtype=dtype, device=device)
         for o in range(int(player_count)):
             if o == pid:
@@ -597,7 +763,9 @@ def plan_lite_waves(
                 torch.full((T,), float(config.ffa_near_opponent_mult), dtype=dtype, device=device),
                 torch.where(
                     t_enemy,
-                    torch.full((T,), float(config.ffa_far_opponent_mult), dtype=dtype, device=device),
+                    torch.full(
+                        (T,), float(config.ffa_far_opponent_mult), dtype=dtype, device=device
+                    ),
                     torch.ones(T, dtype=dtype, device=device),
                 ),
             )
@@ -611,10 +779,16 @@ def plan_lite_waves(
     cand_value = None
     if float(config.value_rerank_eps) > 0.0 and _VALUE_MODEL is not None:
         cand_value = candidate_value_scores(
-            obs=obs, prod=prod, obs_tensors=obs_tensors,
-            target_idx=target_idx, cand_tgt_short=cand_tgt_short,
-            cand_send=cand_send, cand_active=cand_active,
-            model=_VALUE_MODEL, player_count=int(player_count), player_id=pid,
+            obs=obs,
+            prod=prod,
+            obs_tensors=obs_tensors,
+            target_idx=target_idx,
+            cand_tgt_short=cand_tgt_short,
+            cand_send=cand_send,
+            cand_active=cand_active,
+            model=_VALUE_MODEL,
+            player_count=int(player_count),
+            player_id=pid,
         )
 
     # v5.4 half-drain reserve cap (see ProducerLiteConfig.reserve_frac). Applied
@@ -627,13 +801,19 @@ def plan_lite_waves(
     # present, are already minimal. OFF (reserve_frac<=0) => skipped => byte-identical.
     reserve_frac = float(config.reserve_frac)
     if reserve_frac > 0.0:
-        cap = ((1.0 - reserve_frac) * source_ships).view(S, 1)                    # [S,1]
-        sizes_r = torch.minimum(sizes, cap).floor().clamp(min=1.0)                # [S,T]
-        trim = (sizes_r < sizes) & valid                                          # [S,T]
-        active_r = reachable_mask(
-            movement, source_idx=source_idx, target_idx=target_idx,
-            fleet_sizes=sizes_r.unsqueeze(-1), eta_cap=eta_cap,
-        ).squeeze(-1) & trim
+        cap = ((1.0 - reserve_frac) * source_ships).view(S, 1)  # [S,1]
+        sizes_r = torch.minimum(sizes, cap).floor().clamp(min=1.0)  # [S,T]
+        trim = (sizes_r < sizes) & valid  # [S,T]
+        active_r = (
+            reachable_mask(
+                movement,
+                source_idx=source_idx,
+                target_idx=target_idx,
+                fleet_sizes=sizes_r.unsqueeze(-1),
+                eta_cap=eta_cap,
+            ).squeeze(-1)
+            & trim
+        )
         aim_r = intercept_angle(
             movement,
             source_idx.unsqueeze(1),
@@ -641,17 +821,19 @@ def plan_lite_waves(
             sizes_r,
             active=active_r,
         )
-        angle_r = aim_r["angle"]                                                  # [S,T]
+        angle_r = aim_r["angle"]  # [S,T]
         eta_r = aim_r["eta"]
         viable_r = aim_r["viable"] & (eta_r <= eta_cap.view(1, T))
         if K > 0:
             k_arr_r = (eta_r.clamp(min=1.0, max=float(K)).ceil().long() - 1).clamp(0, K - 1)
-            floor_at_arr_r = floor.unsqueeze(0).expand(S, T, K).gather(-1, k_arr_r.unsqueeze(-1)).squeeze(-1)
+            floor_at_arr_r = (
+                floor.unsqueeze(0).expand(S, T, K).gather(-1, k_arr_r.unsqueeze(-1)).squeeze(-1)
+            )
         else:
             floor_at_arr_r = torch.ones(S, T, dtype=dtype, device=device)
         # "decisive" = the trimmed fleet can't reach or can't clear the floor at its
         # slower arrival -> keep the full-drain send.
-        apply_r = trim & viable_r & (sizes_r >= floor_at_arr_r)                   # [S,T]
+        apply_r = trim & viable_r & (sizes_r >= floor_at_arr_r)  # [S,T]
         sizes_f = torch.where(apply_r, sizes_r, sizes)
         angle_f = torch.where(apply_r, angle_r, angle)
         eta_f = torch.where(apply_r, eta_r, eta)
@@ -665,15 +847,15 @@ def plan_lite_waves(
     if _FEATURE_SINK is not None:
         planet_ids = obs_tensors["planets"][..., 0].long()
         _FEATURE_SINK.update(
-            score=score.detach().clone(),                 # [C] producer Δnet (FFA-adjusted)
-            cand_src=cand_src.detach().clone(),           # [C,1] source ROW idx
-            cand_tgt_slot=cand_tgt_slot.detach().clone(), # [C]   target ROW idx
-            cand_valid=cand_valid.detach().clone(),       # [C]
-            cand_send=cand_send.detach().clone(),         # [C,1] exact ship size
-            cand_eta=cand_eta.detach().clone(),           # [C,1] exact ETA
-            planet_ids=planet_ids.detach().clone(),       # [P_rows] row -> planet id
-            status_ships=garrison_status.ships.detach().clone(),   # [P_rows, H+1]
-            status_owner=garrison_status.owner.detach().clone(),   # [P_rows, H+1]
+            score=score.detach().clone(),  # [C] producer Δnet (FFA-adjusted)
+            cand_src=cand_src.detach().clone(),  # [C,1] source ROW idx
+            cand_tgt_slot=cand_tgt_slot.detach().clone(),  # [C]   target ROW idx
+            cand_valid=cand_valid.detach().clone(),  # [C]
+            cand_send=cand_send.detach().clone(),  # [C,1] exact ship size
+            cand_eta=cand_eta.detach().clone(),  # [C,1] exact ETA
+            planet_ids=planet_ids.detach().clone(),  # [P_rows] row -> planet id
+            status_ships=garrison_status.ships.detach().clone(),  # [P_rows, H+1]
+            status_owner=garrison_status.owner.detach().clone(),  # [P_rows, H+1]
             player_id=int(pid),
         )
 
@@ -684,17 +866,31 @@ def plan_lite_waves(
     if _SELECTOR_FN is not None:
         sel = _SELECTOR_FN(obs_tensors, cand_src, cand_tgt_slot, cand_valid, score)
         if sel is not None:
-            score = torch.where(cand_valid, sel.to(score.dtype), torch.full_like(score, float("-inf")))
+            score = torch.where(
+                cand_valid, sel.to(score.dtype), torch.full_like(score, float("-inf"))
+            )
             if not _SELECTOR_KEEP_ROI:
                 roi_thresh = float("-inf")
 
     wave_entries, leftover = _greedy_select(
-        P=P, W=W, device=device, dtype=dtype, score=score,
-        cand_src=cand_src, cand_send=cand_send, cand_angle=cand_angle, cand_eta=cand_eta,
-        cand_active=cand_active, cand_tgt_slot=cand_tgt_slot, cand_tgt_short=cand_tgt_short,
-        cand_is_def=cand_is_def, source_budget=obs.ships.to(dtype).clone(),
-        target_exists=target_exists, roi_threshold=roi_thresh,
-        cand_value=cand_value, value_rerank_eps=float(config.value_rerank_eps),
+        P=P,
+        W=W,
+        device=device,
+        dtype=dtype,
+        score=score,
+        cand_src=cand_src,
+        cand_send=cand_send,
+        cand_angle=cand_angle,
+        cand_eta=cand_eta,
+        cand_active=cand_active,
+        cand_tgt_slot=cand_tgt_slot,
+        cand_tgt_short=cand_tgt_short,
+        cand_is_def=cand_is_def,
+        source_budget=obs.ships.to(dtype).clone(),
+        target_exists=target_exists,
+        roi_threshold=roi_thresh,
+        cand_value=cand_value,
+        value_rerank_eps=float(config.value_rerank_eps),
     )
 
     # Capture the GREEDY-FIRED launches for self-consistent BC labels (in-grid by
@@ -715,9 +911,15 @@ def plan_lite_waves(
     # serves both the reinforcement floor and this regroup gradient).
     assert enemy_mass is not None
     regroup_entries = _plan_regroup(
-        movement=movement, obs=obs, obs_tensors=obs_tensors, garrison_status=garrison_status,
-        leftover=leftover, original_ships=obs.ships.to(dtype), pressure=enemy_mass,
-        config=config, H=H,
+        movement=movement,
+        obs=obs,
+        obs_tensors=obs_tensors,
+        garrison_status=garrison_status,
+        leftover=leftover,
+        original_ships=obs.ships.to(dtype),
+        pressure=enemy_mass,
+        config=config,
+        H=H,
     )
     return concat_launch_entries([wave_entries, regroup_entries])
 
@@ -775,44 +977,63 @@ def _strength_rank(obs, *, prod: Tensor, player_count: int, player_id: int) -> i
     ships_by = torch.zeros(n, dtype=dtype, device=device)
     zeros = torch.zeros_like(prod.to(dtype))
     prod_by.scatter_add_(0, idx, torch.where(valid, prod.to(dtype), zeros))
-    ships_by.scatter_add_(0, idx, torch.where(valid, obs.ships.to(dtype), torch.zeros_like(obs.ships.to(dtype))))
+    ships_by.scatter_add_(
+        0, idx, torch.where(valid, obs.ships.to(dtype), torch.zeros_like(obs.ships.to(dtype)))
+    )
     strength = prod_by + 0.025 * ships_by
     mine = strength[player_id]
     return 1 + int((strength > mine).sum().item())
 
 
 class _OpponentTracker:
-    """Per-seat producer-fidelity tracker that gates the contestation overlay.
+    """Per-(seat, model) producer-fidelity tracker that gates the contestation overlay.
 
-    Each turn we predict, with the *producer* opponent model, the set of planets
-    each enemy seat will launch FROM (``set_predictions``). Next turn we read the
-    seat's freshly-spawned fleets (fleet ids absent last turn, carrying
-    ``from_planet_id``) and score the prediction by source-set PRECISION — of the
-    planets the model predicted, how many the opponent actually launched from
-    (``observe``). The per-seat precision EMA drives ``gated_seats`` — the overlay
-    snipes a seat only once its fidelity clears the threshold with enough measured
-    turns. Source-set (not source+size) match so producer_v2 — which differs only in
-    sizing — still reads as producer-family (we want to snipe it too); precision (not
-    recall/Jaccard) because the capture-minimal model under-predicts, which would let
-    recall false-positive a passive non-producer that fires from an obvious planet.
+    Each turn we predict, with each producer opponent model, the set of planets each
+    enemy seat will launch FROM (``set_predictions``). Next turn we read the seat's
+    freshly-spawned fleets (fleet ids absent last turn, carrying ``from_planet_id``)
+    and score every model's prediction by source-set PRECISION — of the planets a
+    model predicted, how many the opponent actually launched from (``observe``). A
+    per-(seat, model) precision EMA drives ``gated_seats`` — the overlay snipes a seat
+    once ANY model's fidelity clears the threshold with enough measured turns — and
+    ``best_model`` names which model to snipe that seat with. Source-set (not
+    source+size) match so producer_v2 — which differs only in sizing — still reads as
+    producer-family (we want to snipe it too); precision (not recall/Jaccard) because
+    the capture-minimal model under-predicts, which would let recall false-positive a
+    passive non-producer that fires from an obvious planet.
+
+    ``n_models == 1`` (the Tier-1 default) is the single base-producer model and is
+    byte-identical to the pre-ensemble tracker; ``n_models == 2`` adds the producer_v2
+    model (Tier 2, ``contest_ensemble``). Keys are ``(seat, model_index)``.
     """
 
-    def __init__(self, *, n_players: int, player_id: int) -> None:
+    def __init__(self, *, n_players: int, player_id: int, n_models: int = 1) -> None:
         self.n = int(n_players)
         self.pid = int(player_id)
+        self.n_models = int(n_models)
         self.seats = [o for o in range(self.n) if o != self.pid]
-        self.fid: dict[int, float] = {o: 0.0 for o in self.seats}
-        self.turns_observed: dict[int, int] = {o: 0 for o in self.seats}
+        self.models = list(range(self.n_models))
+        self.fid: dict[tuple[int, int], float] = {
+            (o, m): 0.0 for o in self.seats for m in self.models
+        }
+        self.turns_observed: dict[tuple[int, int], int] = {
+            (o, m): 0 for o in self.seats for m in self.models
+        }
         self.prev_fleet_ids: dict[int, set[int]] = {o: set() for o in self.seats}
         # None until the first prediction is made; a (possibly empty) frozenset after.
-        self.pred_sources: dict[int, frozenset[int] | None] = {o: None for o in self.seats}
+        self.pred_sources: dict[tuple[int, int], frozenset[int] | None] = {
+            (o, m): None for o in self.seats for m in self.models
+        }
 
     def observe(self, obs_tensors: dict, *, alpha: float) -> None:
         """Verify last turn's predictions against this turn's freshly-spawned fleets."""
-        fleets = obs_tensors["fleets"]                       # [F, 7]
-        ids = fleets[..., 0].long().tolist()                # fleet id (alive: >= 0)
-        owners = fleets[..., 1].long().tolist()             # absolute owner
-        froms = fleets[..., 5].long().tolist()              # from_planet_id
+        fleets = obs_tensors["fleets"]  # [F, 7]
+        ids = fleets[..., 0].long().tolist()  # fleet id (alive: >= 0)
+        owners = fleets[..., 1].long().tolist()  # absolute owner
+        froms = fleets[..., 5].long().tolist()  # from_planet_id
+        # Turn key for offline calibration only (no behavioral effect).
+        dbg_step = (
+            int(obs_tensors["step"].reshape(-1)[0].item()) if _DETECT_DEBUG is not None else -1
+        )
         for o in self.seats:
             cur_ids: set[int] = set()
             obs_src: set[int] = set()
@@ -821,40 +1042,107 @@ class _OpponentTracker:
                 if fid_ < 0 or ow != o:
                     continue
                 cur_ids.add(fid_)
-                if fid_ not in prev:                          # spawned since last turn
+                if fid_ not in prev:  # spawned since last turn
                     obs_src.add(fr)
-            pred = self.pred_sources[o]
-            # Score by PRECISION of the producer model's prediction: of the planets
-            # the model said the opponent (if it were producer) would launch FROM, how
-            # many did it actually launch from this turn? This separates clones from
-            # different agents cleanly (calibration n=3 games/opp: producer 0.99,
-            # producer_v2 0.69 vs tamrazov 0.51, ow_proto 0.52) where recall/Jaccard
-            # don't — our model UNDER-predicts (it fires a capture-minimal subset), so
-            # recall false-positives a passive agent that happens to launch from an
-            # obvious planet, while precision asks the discriminating question "does the
-            # opponent do what producer would do here?". A turn carries signal only when
-            # the model predicted a launch (n_pred > 0); when it also predicted nothing
-            # the turn is skipped (no producer-specific move to check).
-            if pred:
-                inter = len(pred & obs_src)
-                precision = inter / len(pred)
-                self.fid[o] = alpha * self.fid[o] + (1.0 - alpha) * precision
-                self.turns_observed[o] += 1
-                if _DETECT_DEBUG is not None:
-                    _DETECT_DEBUG.append((o, len(pred), len(obs_src), inter))
+            # Score by PRECISION of each model's prediction: of the planets a model said
+            # the opponent (if it ran that producer variant) would launch FROM, how many
+            # did it actually launch from this turn? This separates clones from different
+            # agents cleanly (calibration n=3 games/opp: producer 0.99, producer_v2 0.69
+            # vs tamrazov 0.51, ow_proto 0.52) where recall/Jaccard don't — our model
+            # UNDER-predicts (it fires a capture-minimal subset), so recall false-positives
+            # a passive agent that happens to launch from an obvious planet, while precision
+            # asks the discriminating question "does the opponent do what this producer
+            # variant would do here?". A turn carries signal for a model only when that
+            # model predicted a launch (n_pred > 0); a turn it predicted nothing is skipped.
+            for m in self.models:
+                pred = self.pred_sources[(o, m)]
+                if pred:
+                    inter = len(pred & obs_src)
+                    precision = inter / len(pred)
+                    self.fid[(o, m)] = alpha * self.fid[(o, m)] + (1.0 - alpha) * precision
+                    self.turns_observed[(o, m)] += 1
+                    if _DETECT_DEBUG is not None:
+                        _DETECT_DEBUG.append((dbg_step, o, m, len(pred), len(obs_src), inter))
             self.prev_fleet_ids[o] = cur_ids
 
-    def set_predictions(self, sources_out: dict) -> None:
-        """Store this turn's predicted launch sources for next-turn verification."""
-        for o in self.seats:
-            self.pred_sources[o] = sources_out.get(o, (frozenset(), ()))[0]
+    def set_predictions(self, sources_by_model: list[dict]) -> None:
+        """Store this turn's per-model predicted launch sources for next-turn verification.
+
+        ``sources_by_model[m]`` maps seat -> ``(frozenset_sources, pairs)``.
+        """
+        for m in self.models:
+            sm = sources_by_model[m]
+            for o in self.seats:
+                self.pred_sources[(o, m)] = sm.get(o, (frozenset(), ()))[0]
 
     def gated_seats(self, *, threshold: float, min_obs: int) -> set[int]:
-        """Seats whose producer-fidelity clears the gate — biased OFF until proven."""
+        """Seats where ANY model's fidelity clears the gate — biased OFF until proven."""
         return {
-            o for o in self.seats
-            if self.turns_observed[o] >= int(min_obs) and self.fid[o] >= float(threshold)
+            o
+            for o in self.seats
+            if any(
+                self.turns_observed[(o, m)] >= int(min_obs) and self.fid[(o, m)] >= float(threshold)
+                for m in self.models
+            )
         }
+
+    def best_model(self, o: int, *, min_obs: int) -> int:
+        """Index of the highest-fidelity model for seat ``o`` (ties → lowest index).
+
+        Restricted to models with enough measured turns; falls back to model 0 when
+        none qualify (the gate would not have opened the seat, but keep it total).
+        """
+        eligible = [m for m in self.models if self.turns_observed[(o, m)] >= int(min_obs)]
+        if not eligible:
+            return 0
+        return max(eligible, key=lambda m: (self.fid[(o, m)], -m))
+
+
+def _producer_baseline_config(
+    config: ProducerLiteConfig, *, opp_waves: int, reinforce_beta: float
+) -> ProducerLiteConfig:
+    """Producer flow-diff opponent model (regroup off, capped waves).
+
+    Strips every v5-specific knob the planner reads (defensive reserve, cheap-capture
+    second size, half-drain reserve, value re-rank, FFA mults/bonuses) so a real
+    producer scores highest in detection and snipes are sized vs producer's own
+    capture-minimal projection. ``reinforce_beta`` selects the ENSEMBLE model variant:
+    0.0 = base producer (Tier-1 / model 0); ``config.reinforce_size_beta`` = producer_v2
+    (Tier-2 / model 1), which keeps the ``reinforce_eta_free``/``reinforce_eta_scale``
+    ramp ``dataclasses.replace`` preserves.
+    """
+    return dataclasses.replace(
+        config,
+        enable_regroup=False,
+        max_waves_per_turn=opp_waves,
+        reinforce_size_beta=reinforce_beta,
+        defense_size_beta=0.0,
+        cheap_capture_margin=-1.0,
+        reserve_frac=0.0,
+        value_rerank_eps=0.0,
+        ffa_leader_attack_bonus=0.0,
+        ffa_target_prod_bonus=0.0,
+        ffa_near_opponent_mult=1.0,
+        ffa_far_opponent_mult=1.0,
+    )
+
+
+def _entries_sources(entries_o, planet_ids: Tensor, P: int):
+    """``(frozenset_source_pids, pairs)`` for a seat's predicted launches.
+
+    ``pairs`` is the ``(planet_id, ships)`` list; the tracker uses only the source-set
+    (the frozenset) — size is kept for diagnostics.
+    """
+    v_o = entries_o.valid
+    if not bool(v_o.any()):
+        return (frozenset(), ())
+    ss = entries_o.source_slots[v_o].clamp(0, P - 1)
+    src_pids = planet_ids[ss].long().tolist()
+    src_ships = entries_o.ships[v_o].tolist()
+    pairs = tuple(
+        (int(p), float(s)) for p, s in zip(src_pids, src_ships, strict=True) if int(p) >= 0
+    )
+    return (frozenset(p for p, _ in pairs), pairs)
 
 
 def _opponent_reactive_status(
@@ -873,6 +1161,9 @@ def _opponent_reactive_status(
     producer_baseline: bool = False,
     inject_seats: set[int] | None = None,
     sources_out: dict | None = None,
+    ensemble: bool = False,
+    inject_model: dict | None = None,
+    sources_out_ensemble: list[dict] | None = None,
 ):
     """Inject each live enemy's level-0 best-response and return a reactive status.
 
@@ -886,77 +1177,95 @@ def _opponent_reactive_status(
     those fleets present. The projection is snapshotted and restored so this has
     no effect on the persistent cache. Returns ``base_status`` unchanged when no
     enemy launches (so the result is exactly the do-nothing status in that case).
+
+    Opponent models (Tier 1 single / Tier 2 ensemble):
+    - ``ensemble=False`` (default): ONE model. ``producer_baseline`` selects the
+      stripped public-producer model (Tier-1 contest detector); otherwise the
+      faithful "opponent is also v5.x" model (the inert ``opp_inject_waves`` path).
+      ``inject_seats`` filters which seats are injected; ``sources_out`` (if given)
+      records each seat's predicted sources for the detector.
+    - ``ensemble=True`` (Tier 2): TWO stripped producer models — base (β=0) and
+      producer_v2 (β=``config.reinforce_size_beta``). Each seat runs BOTH (a 2nd
+      planner pass), recording per-model sources into ``sources_out_ensemble[m]``;
+      seats in ``inject_model`` are injected using their assigned best model's
+      launches, all merged into the ONE returned reactive projection.
     """
     pid = int(obs.player_id)
     n = int(player_count)
     opp_waves = (
-        int(opp_waves_override) if opp_waves_override is not None
-        else int(config.opp_inject_waves)
+        int(opp_waves_override) if opp_waves_override is not None else int(config.opp_inject_waves)
     )
     # Opponent sub-plan: attacks only (regroup is internal logistics that mostly
     # shores up enemy defense → modeling it pushes US toward passivity, the
     # Cluster-9 failure mode; the threat that should reshape our plan is the
-    # enemy's offense).
-    if producer_baseline:
-        # TIER-1: model the opponent as the PUBLIC producer flow-diff (the ladder
-        # pool is producer-clones), not as v5.x. Strip every v5-specific knob the
-        # planner reads (reinforce-risk β, defensive reserve, cheap-capture second
-        # size, half-drain reserve, value re-rank, FFA mults/bonuses) so a real
-        # producer scores highest in detection and snipes are sized vs producer's
-        # own capture-minimal projection.
-        opp_config = dataclasses.replace(
-            config, enable_regroup=False, max_waves_per_turn=opp_waves,
-            reinforce_size_beta=0.0, defense_size_beta=0.0, cheap_capture_margin=-1.0,
-            reserve_frac=0.0, value_rerank_eps=0.0,
-            ffa_leader_attack_bonus=0.0, ffa_target_prod_bonus=0.0,
-            ffa_near_opponent_mult=1.0, ffa_far_opponent_mult=1.0,
-        )
+    # enemy's offense). Build the model list + the per-model source-record targets.
+    if ensemble:
+        # TIER-2: base producer (β=0) + producer_v2 (β=config.reinforce_size_beta).
+        opp_configs = [
+            _producer_baseline_config(config, opp_waves=opp_waves, reinforce_beta=0.0),
+            _producer_baseline_config(
+                config, opp_waves=opp_waves, reinforce_beta=float(config.reinforce_size_beta)
+            ),
+        ]
+        sources_targets = sources_out_ensemble
+    elif producer_baseline:
+        # TIER-1: model the opponent as the PUBLIC producer flow-diff (ladder pool is
+        # producer-clones), not v5.x.
+        opp_configs = [_producer_baseline_config(config, opp_waves=opp_waves, reinforce_beta=0.0)]
+        sources_targets = [sources_out] if sources_out is not None else None
     else:
-        # Faithful "opponent is also v5.x" model (the inert opp_inject_waves path).
-        opp_config = dataclasses.replace(
-            config, enable_regroup=False, max_waves_per_turn=opp_waves
-        )
+        opp_configs = [
+            dataclasses.replace(config, enable_regroup=False, max_waves_per_turn=opp_waves)
+        ]
+        sources_targets = [sources_out] if sources_out is not None else None
 
-    planet_ids = obs_tensors["planets"][..., 0]                  # [P] row -> planet id
+    planet_ids = obs_tensors["planets"][..., 0]  # [P] row -> planet id
     P = int(obs.P)
     tgt_chunks, own_chunks, ship_chunks, eta_chunks, valid_chunks = [], [], [], [], []
     for o in range(n):
         if o == pid:
             continue
         obs_o = parse_obs(obs_tensors, player_id=o)
-        launchable = (
-            obs_o.owned & obs_o.alive & (obs_o.ships >= float(opp_config.min_ships_to_launch))
-        )
-        if not bool(launchable.any()):
-            if sources_out is not None:
-                sources_out[o] = (frozenset(), ())
-            continue
-        entries_o = plan_lite_waves(
-            movement=movement, obs=obs_o, obs_tensors=obs_tensors, cache=cache,
-            garrison_status=base_status, prod=prod, alive_by_step=alive_by_step,
-            config=opp_config, player_count=n,
-        )
-        # Record this seat's predicted launch SOURCES (planet ids) for the detector,
-        # for every live seat — independent of whether we inject it below.
-        if sources_out is not None:
-            v_o = entries_o.valid
-            if bool(v_o.any()):
-                ss = entries_o.source_slots[v_o].clamp(0, P - 1)
-                src_pids = planet_ids[ss].long().tolist()
-                src_ships = entries_o.ships[v_o].tolist()
-                pairs = tuple(
-                    (int(p), float(s))
-                    for p, s in zip(src_pids, src_ships, strict=True)
-                    if int(p) >= 0
-                )
-                sources_out[o] = (frozenset(p for p, _ in pairs), pairs)
-            else:
-                sources_out[o] = (frozenset(), ())
-        # Inject this seat's best-response only when it passes the gate (or no filter).
-        if inject_seats is not None and o not in inject_seats:
+        # Which model (if any) injects this seat? Ensemble: the seat's assigned best
+        # model. Single-model: model 0 iff the seat passes the inject filter.
+        if ensemble:
+            chosen_m = inject_model.get(o) if inject_model is not None else None
+        else:
+            chosen_m = 0 if (inject_seats is None or o in inject_seats) else None
+        inject_entries = None
+        for m, opp_config in enumerate(opp_configs):
+            launchable = (
+                obs_o.owned & obs_o.alive & (obs_o.ships >= float(opp_config.min_ships_to_launch))
+            )
+            if not bool(launchable.any()):
+                if sources_targets is not None:
+                    sources_targets[m][o] = (frozenset(), ())
+                continue
+            entries_o = plan_lite_waves(
+                movement=movement,
+                obs=obs_o,
+                obs_tensors=obs_tensors,
+                cache=cache,
+                garrison_status=base_status,
+                prod=prod,
+                alive_by_step=alive_by_step,
+                config=opp_config,
+                player_count=n,
+            )
+            # Record this model's predicted launch SOURCES for the detector (every live
+            # seat, independent of whether we inject it below).
+            if sources_targets is not None:
+                sources_targets[m][o] = _entries_sources(entries_o, planet_ids, P)
+            if chosen_m == m:
+                inject_entries = entries_o
+        # Inject this seat's best-response only when a model is chosen and it launched.
+        if inject_entries is None:
             continue
         launches_o = infer_planned_launches_from_entries(
-            obs_tensors=obs_tensors, movement=movement, entries=entries_o, player_id=o,
+            obs_tensors=obs_tensors,
+            movement=movement,
+            entries=inject_entries,
+            player_id=o,
         )
         if not bool(launches_o.valid.any()):
             continue
@@ -1033,15 +1342,28 @@ def run_turn(obs_tensors: dict, *, config: ProducerLiteConfig, player_count: int
     # OFF (opp_inject_waves == 0) => skipped => status unchanged => byte-identical.
     if int(config.opp_inject_waves) > 0 and int(player_count) >= 2:
         status = _opponent_reactive_status(
-            movement=movement, obs=obs, obs_tensors=obs_tensors, cache=cache,
-            base_status=status, prod=movement.planet_prod, alive_by_step=alive_by_step,
-            config=config, player_count=int(player_count), H=H,
+            movement=movement,
+            obs=obs,
+            obs_tensors=obs_tensors,
+            cache=cache,
+            base_status=status,
+            prod=movement.planet_prod,
+            alive_by_step=alive_by_step,
+            config=config,
+            player_count=int(player_count),
+            H=H,
         )
 
     entries = plan_lite_waves(
-        movement=movement, obs=obs, obs_tensors=obs_tensors, cache=cache,
-        garrison_status=status, prod=movement.planet_prod,
-        alive_by_step=alive_by_step, config=config, player_count=int(player_count),
+        movement=movement,
+        obs=obs,
+        obs_tensors=obs_tensors,
+        cache=cache,
+        garrison_status=status,
+        prod=movement.planet_prod,
+        alive_by_step=alive_by_step,
+        config=config,
+        player_count=int(player_count),
     )
 
     # Contestation overlay (see ProducerLiteConfig.contest_waves). Predict the
@@ -1053,15 +1375,24 @@ def run_turn(obs_tensors: dict, *, config: ProducerLiteConfig, player_count: int
     if int(config.contest_waves) > 0 and int(player_count) >= 2:
         n = int(player_count)
         pid = int(obs.player_id)
-        # TIER-1 detector state lives on memory, reset per game.
-        if step == 0 or getattr(memory, "opp_tracker", None) is None:
-            memory.opp_tracker = _OpponentTracker(n_players=n, player_id=pid)
-        tracker = memory.opp_tracker
         detect_on = int(config.contest_detect) != 0
+        # TIER-2: ensemble (base producer + producer_v2) only when detection is on —
+        # it gates on per-model fidelity. OFF (contest_ensemble==0) => single base model.
+        ensemble_on = detect_on and int(config.contest_ensemble) != 0
+        n_models = 2 if ensemble_on else 1
+        # Detector state lives on memory, reset per game (and on a model-count change).
+        if (
+            step == 0
+            or getattr(memory, "opp_tracker", None) is None
+            or memory.opp_tracker.n_models != n_models
+        ):
+            memory.opp_tracker = _OpponentTracker(n_players=n, player_id=pid, n_models=n_models)
+        tracker = memory.opp_tracker
         if detect_on:
             # 1. verify last turn's predictions vs this turn's freshly-spawned fleets.
             tracker.observe(obs_tensors, alpha=float(config.contest_fidelity_alpha))
-            # 2. gate: snipe only seats whose producer-fidelity has cleared the bar.
+            # 2. gate: snipe only seats whose producer-fidelity has cleared the bar
+            #    (ensemble: under EITHER model).
             gated = tracker.gated_seats(
                 threshold=float(config.contest_fidelity_threshold),
                 min_obs=int(config.contest_min_observations),
@@ -1075,23 +1406,57 @@ def run_turn(obs_tensors: dict, *, config: ProducerLiteConfig, player_count: int
         # below still runs for every seat (fidelity EMA keeps updating), so the gate
         # re-opens the moment we lead. OFF (rank<=0) or 2P => no suppression.
         if (
-            n >= 4 and int(config.contest_ffa_strike_rank) > 0 and gated
+            n >= 4
+            and int(config.contest_ffa_strike_rank) > 0
+            and gated
             and _strength_rank(obs, prod=movement.planet_prod, player_count=n, player_id=pid)
             > int(config.contest_ffa_strike_rank)
         ):
             gated = set()
-        # 3. run the producer opponent model: record per-seat sources for next-turn
-        # fidelity (all seats), inject only gated seats into the reactive projection.
-        sources_out: dict | None = {} if detect_on else None
-        reactive = _opponent_reactive_status(
-            movement=movement, obs=obs, obs_tensors=obs_tensors, cache=cache,
-            base_status=status, prod=movement.planet_prod, alive_by_step=alive_by_step,
-            config=config, player_count=n, H=H,
-            opp_waves_override=int(config.contest_opp_waves),
-            producer_baseline=True, inject_seats=gated, sources_out=sources_out,
-        )
-        if detect_on and sources_out is not None:
-            tracker.set_predictions(sources_out)
+        # 3. run the producer opponent model(s): record per-seat (per-model) sources for
+        # next-turn fidelity (all seats), inject only gated seats into the reactive
+        # projection. Ensemble: inject each gated seat with ITS best-matching model.
+        if ensemble_on:
+            min_obs = int(config.contest_min_observations)
+            inject_model = {o: tracker.best_model(o, min_obs=min_obs) for o in gated}
+            sources_out_ensemble: list[dict] = [{} for _ in range(n_models)]
+            reactive = _opponent_reactive_status(
+                movement=movement,
+                obs=obs,
+                obs_tensors=obs_tensors,
+                cache=cache,
+                base_status=status,
+                prod=movement.planet_prod,
+                alive_by_step=alive_by_step,
+                config=config,
+                player_count=n,
+                H=H,
+                opp_waves_override=int(config.contest_opp_waves),
+                ensemble=True,
+                inject_model=inject_model,
+                sources_out_ensemble=sources_out_ensemble,
+            )
+            tracker.set_predictions(sources_out_ensemble)
+        else:
+            sources_out: dict | None = {} if detect_on else None
+            reactive = _opponent_reactive_status(
+                movement=movement,
+                obs=obs,
+                obs_tensors=obs_tensors,
+                cache=cache,
+                base_status=status,
+                prod=movement.planet_prod,
+                alive_by_step=alive_by_step,
+                config=config,
+                player_count=n,
+                H=H,
+                opp_waves_override=int(config.contest_opp_waves),
+                producer_baseline=True,
+                inject_seats=gated,
+                sources_out=sources_out,
+            )
+            if detect_on and sources_out is not None:
+                tracker.set_predictions([sources_out])
         # 4. snipe only when at least one seat is gated ON (else reactive == base →
         # no predicted thin captures → no snipes; skip the work entirely).
         if gated:
@@ -1099,32 +1464,46 @@ def run_turn(obs_tensors: dict, *, config: ProducerLiteConfig, player_count: int
             committed = torch.zeros(P, dtype=original_ships.dtype, device=device)
             if bool(entries.valid.any()):
                 committed.scatter_add_(
-                    0, entries.source_slots.clamp(0, P - 1),
+                    0,
+                    entries.source_slots.clamp(0, P - 1),
                     torch.where(entries.valid, entries.ships, torch.zeros_like(entries.ships)),
                 )
             leftover = (original_ships - committed).clamp(min=0.0)
             contest_entries = plan_contestation_waves(
-                movement=movement, obs=obs, obs_tensors=obs_tensors, cache=cache,
-                base_status=status, reactive_status=reactive, prod=movement.planet_prod,
-                alive_by_step=alive_by_step, config=config, player_count=int(player_count),
-                leftover=leftover, original_ships=original_ships,
+                movement=movement,
+                obs=obs,
+                obs_tensors=obs_tensors,
+                cache=cache,
+                base_status=status,
+                reactive_status=reactive,
+                prod=movement.planet_prod,
+                alive_by_step=alive_by_step,
+                config=config,
+                player_count=int(player_count),
+                leftover=leftover,
+                original_ships=original_ships,
             )
             if bool(contest_entries.valid.any()):
                 entries = concat_launch_entries([entries, contest_entries])
 
     entries = disambiguate_duplicate_launches(entries)
     launches = infer_planned_launches_from_entries(
-        obs_tensors=obs_tensors, movement=movement, entries=entries, player_id=int(obs.player_id),
+        obs_tensors=obs_tensors,
+        movement=movement,
+        entries=entries,
+        player_id=int(obs.player_id),
     )
     apply_private_planned_launches(
-        movement=movement, launches=launches, owner_id=int(obs.player_id),
+        movement=movement,
+        launches=launches,
+        owner_id=int(obs.player_id),
         obs_tensors=obs_tensors,
     )
     planet_ids = obs_tensors["planets"][..., 0].long()
     return entries_to_sparse_payload(entries, planet_ids=planet_ids)
 
 
-# 4P FFA preset — only the knobs that differ from the 2P default. 
+# 4P FFA preset — only the knobs that differ from the 2P default.
 CONFIG_4P = dataclasses.replace(
     ProducerLiteConfig(),
     horizon=13,
@@ -1195,8 +1574,10 @@ class ProducerLiteRuntime:
             mem.cached_player_count = largest_initial_player_count(obs_tensors)
         config = _config_for(mem.cached_player_count)
         row = run_turn(
-            obs_tensors, config=config,
-            player_count=int(mem.cached_player_count), memory=mem,
+            obs_tensors,
+            config=config,
+            player_count=int(mem.cached_player_count),
+            memory=mem,
         )
         mem.last_sparse_action_row = row
         return row
@@ -1208,6 +1589,7 @@ _RUNTIME = ProducerLiteRuntime()
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def agent(obs):
     """Single-observation entry point for local play and Kaggle."""
