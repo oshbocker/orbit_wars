@@ -173,6 +173,23 @@ class ProducerLiteConfig:
     terminal_roi_threshold: float = 1.0
     terminal_max_waves_per_turn: int = 8
     terminal_enable_regroup: bool = False
+    # BUCKETED CONFIG (v5.5, phase-conditioned knobs — 2026-06-19). The terminal
+    # swap above already proves a knob's optimum can differ by game PHASE; this is
+    # the symmetric OPENING swap (first ``opening_phase_turns`` steps). Bucketing
+    # then = opening / midgame (the base defaults) / terminal (above). Gated
+    # default-OFF + byte-identical when off: B1 (2P) fires only when
+    # ``opening_phase_turns > 0`` AND swaps ``roi_threshold`` to
+    # ``opening_roi_threshold`` (default 1.5 == base ⇒ NO-OP even if turns>0); B2
+    # (4P) additionally swaps ``ffa_target_prod_bonus`` to
+    # ``opening_ffa_target_prod_bonus`` only when ``player_count >= 4`` and the
+    # value is >= 0 (sentinel -1.0 ⇒ keep base). 2P and 4P NEVER share a schedule:
+    # CONFIG_4P keeps opening_phase_turns=0 by default so 2P doses don't touch 4P,
+    # and the ffa swap is 4P-only. Dose via arena ``v5:opening_phase_turns=40+
+    # opening_roi_threshold=1.0`` (no code edit per dose). Hypothesis: opening
+    # wants LOWER roi (grab uncontested land early; production compounds).
+    opening_phase_turns: int = 0
+    opening_roi_threshold: float = 1.5  # == base roi_threshold ⇒ no-op when equal
+    opening_ffa_target_prod_bonus: float = -1.0  # <0 sentinel ⇒ keep base (4P only)
     # v5.5 (Axis C): learned global-value tie-breaker. When > 0, among flow-diff
     # candidates within ``value_rerank_eps`` of the about-to-be-selected best (and
     # only those that already clear roi_threshold), pick the one the value model
@@ -1315,6 +1332,18 @@ def run_turn(obs_tensors: dict, *, config: ProducerLiteConfig, player_count: int
     h_rem = max(1, min(int(config.horizon), END_STEP - step))
     if h_rem < int(config.horizon):
         config = dataclasses.replace(config, horizon=h_rem)
+
+    # BUCKETED CONFIG: opening-phase swap (see ProducerLiteConfig.opening_*).
+    # Applied BEFORE the terminal block so terminal wins ties at the very end of
+    # short games (opening/terminal windows shouldn't overlap in practice). OFF
+    # (opening_phase_turns==0) => skipped => byte-identical. B1 swaps roi only
+    # (default opening_roi_threshold==base ⇒ no-op); B2 additionally swaps the FFA
+    # prod bonus, 4P-only, sentinel -1.0 ⇒ keep base.
+    if int(config.opening_phase_turns) > 0 and step < int(config.opening_phase_turns):
+        repl = {"roi_threshold": float(config.opening_roi_threshold)}
+        if int(player_count) >= 4 and float(config.opening_ffa_target_prod_bonus) >= 0.0:
+            repl["ffa_target_prod_bonus"] = float(config.opening_ffa_target_prod_bonus)
+        config = dataclasses.replace(config, **repl)
 
     # v5.2: terminal phase (see ProducerLiteConfig) — swap to the aggressive
     # endgame knobs for the final terminal_phase_turns turns.
