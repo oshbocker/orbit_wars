@@ -83,6 +83,109 @@ def resolve_targets(obs: dict, action: list, player_id: int, mv=None) -> list[in
     return [int(pid[int(est["target_slot"][i])]) if bool(est["has_hit"][i]) else -1 for i in range(L)]
 
 
+# ─── target-feature helpers (for the disagreement profiler) ───────────────────
+def inbound_owners(obs: dict, mv) -> dict:
+    """planet_id -> set of owners with an IN-FLIGHT fleet resolving to it.
+
+    Uses the SAME swept-collision resolver as launches, so contested-ness is
+    measured with producer's own physics (resolver bias cancels)."""
+    fleets = obs.get("fleets", []) or []
+    res = defaultdict(set)
+    if not fleets:
+        return res
+    L = len(fleets)
+    rows = torch.full((L, 7), -1.0, dtype=mv.dtype)
+    for i, fl in enumerate(fleets):
+        rows[i, 1] = float(fl[1])   # owner
+        rows[i, 2] = float(fl[2])   # x
+        rows[i, 3] = float(fl[3])   # y
+        rows[i, 4] = float(fl[4])   # angle
+        rows[i, 6] = float(fl[6])   # ships
+    est = _estimate_new_fleet_arrivals(movement=mv, obs_fleets=rows, fleet_slot=torch.arange(L))
+    pid = mv.planet_ids.tolist()
+    for i in range(L):
+        if bool(est["has_hit"][i]):
+            res[int(pid[int(est["target_slot"][i])])].add(int(fleets[i][1]))
+    return res
+
+
+def orbiting_set(obs: dict) -> set:
+    """ids of orbiting (rotating, inner) planets — mirrors orbit_lite/obs.py:
+    alive & (orb_r + radius < 50) & (orb_r > 0.5), reconstructed from initial pos."""
+    init = obs.get("initial_planets") or obs.get("planets") or []
+    s = set()
+    for row in init:
+        orb_r = math.hypot(float(row[2]) - 50.0, float(row[3]) - 50.0)
+        if orb_r > 0.5 and (orb_r + float(row[4])) < 50.0:
+            s.add(int(row[0]))
+    return s
+
+
+def src_target_map(obs: dict, action: list, player_id: int, mv=None) -> dict:
+    """src_planet_id -> dominant target id (the target of that source's
+    largest-ship launch). Resolved with the shared per-turn mv cache so the
+    map is comparable across actual / counterfactual."""
+    if not action:
+        return {}
+    planets = {int(p[0]): p for p in obs["planets"]}
+    tgts = resolve_targets(obs, action, player_id, mv=mv)
+    best = {}  # src -> (ships, tgt)
+    for m, tgt in zip(action, tgts):
+        src, sh = int(m[0]), int(m[2])
+        if src not in planets or sh <= 0:
+            continue
+        if src not in best or sh > best[src][0]:
+            best[src] = (sh, tgt)
+    return {s: t for s, (_sh, t) in best.items()}
+
+
+def target_feature_vec(obs: dict, src_id: int, tgt_id: int, player_id: int,
+                       inbound: dict, orbiting: set) -> dict | None:
+    """Numeric feature vector of `tgt_id` relative to `src_id` (None if either
+    planet is gone, or the launch missed all planets, tgt_id == -1)."""
+    planets = {int(p[0]): p for p in obs["planets"]}
+    sp, tp = planets.get(src_id), planets.get(tgt_id)
+    if sp is None or tp is None:
+        return None
+    owner = int(tp[1])
+    return {
+        "dist": math.hypot(float(sp[2]) - float(tp[2]), float(sp[3]) - float(tp[3])),
+        "prod": float(tp[6]),
+        "garrison": float(tp[5]),
+        "contested": 1.0 if len(inbound.get(tgt_id, set())) >= 2 else 0.0,
+        "orbiting": 1.0 if tgt_id in orbiting else 0.0,
+        "is_enemy": 1.0 if (owner >= 0 and owner != player_id) else 0.0,
+        "is_neutral": 1.0 if owner == -1 else 0.0,
+        "is_own": 1.0 if owner == player_id else 0.0,
+    }
+
+
+TGT_AXES = ["dist", "prod", "garrison", "contested", "orbiting",
+            "is_enemy", "is_neutral", "is_own"]
+
+
+def target_disagreements(obs: dict, actual: list, cf_prod: list, player_id: int,
+                         mv, inbound: dict, orbiting: set) -> tuple[int, list]:
+    """On shared source planets where actual (clone) and cf_producer launch to
+    DIFFERENT targets, return (n_shared_sources, [(clone_feats, prod_feats), ...]).
+
+    Producer-vs-producer (identical actions) → 0 disagreements (self-check)."""
+    a_map = src_target_map(obs, actual, player_id, mv=mv)
+    p_map = src_target_map(obs, cf_prod, player_id, mv=mv)
+    shared = set(a_map) & set(p_map)
+    pairs = []
+    for src in shared:
+        at, pt = a_map[src], p_map[src]
+        if at == pt:
+            continue
+        fa = target_feature_vec(obs, src, at, player_id, inbound, orbiting)
+        fp = target_feature_vec(obs, src, pt, player_id, inbound, orbiting)
+        if fa is None or fp is None:
+            continue
+        pairs.append((fa, fp))
+    return len(shared), pairs
+
+
 # ─── per-turn behavioural summary (resolution-free axes + target categories) ───
 @dataclass
 class TurnStats:
@@ -213,7 +316,15 @@ def analyze_seat(steps: list, seat: int, n_players: int) -> list[dict]:
         a = summarize(obs, actual, seat, mv=mv)
         p = summarize(obs, cf_prod[t], seat, mv=mv)
         v = summarize(obs, cf_v5[t], seat, mv=mv)
-        recs.append({"cls": cls, "a": a, "p": p, "v": v})
+        # target-disagreement profile: shared sources, different targets (vs producer)
+        n_shared, tgt_disagree = 0, []
+        if mv is not None and (actual and cf_prod[t]):
+            inbound = inbound_owners(obs, mv)
+            orbiting = orbiting_set(obs)
+            n_shared, tgt_disagree = target_disagreements(
+                obs, actual, cf_prod[t], seat, mv, inbound, orbiting)
+        recs.append({"cls": cls, "a": a, "p": p, "v": v,
+                     "n_shared": n_shared, "tgt_disagree": tgt_disagree})
     return recs
 
 
@@ -283,6 +394,8 @@ def main():
     seat_match = []      # per-seat fingerprints + posture-clone flag
     deltas = defaultdict(list)  # (vs, axis, clskey) -> [(delta, baseline)] behavioural axes
     sel = defaultdict(list)     # (vs, metric, clskey) -> [value] selection-divergence
+    tgt_deltas = defaultdict(list)  # (axis, clskey) -> [(clone-prod delta, prod baseline)]
+    tgt_counts = defaultdict(lambda: [0, 0])  # clskey -> [n_shared_sources, n_disagreements]
     clone_turns = 0
 
     def bucket_keys(cls):
@@ -367,13 +480,23 @@ def main():
                     for mname, mval in metrics.items():
                         for k in keys:
                             sel[(vs, mname, k)].append(mval)
+                # (3) target-disagreement profile: clone target − producer target,
+                # on shared sources where they aim DIFFERENTLY (confound-free).
+                for k in keys:
+                    tgt_counts[k][0] += r["n_shared"]
+                    tgt_counts[k][1] += len(r["tgt_disagree"])
+                for fa, fp in r["tgt_disagree"]:
+                    for ax in TGT_AXES:
+                        entry = (fa[ax] - fp[ax], fp[ax])
+                        for k in keys:
+                            tgt_deltas[(ax, k)].append(entry)
         if (gi + 1) % 20 == 0:
             print(f"  {gi+1}/{len(files)} games, {len(seat_match)} target seats, {clone_turns} clone turns")
 
-    render(args, seat_match, deltas, sel, clone_turns)
+    render(args, seat_match, deltas, sel, tgt_deltas, tgt_counts, clone_turns)
 
 
-def render(args, seat_match, deltas, sel, clone_turns):
+def render(args, seat_match, deltas, sel, tgt_deltas, tgt_counts, clone_turns):
     clones = [s for s in seat_match if s["is_clone"]]
     n_clone_seats = len(clones)
     print(f"\n=== {len(seat_match)} target seats, {n_clone_seats} classified POSTURE-CLONE "
@@ -421,6 +544,34 @@ def render(args, seat_match, deltas, sel, clone_turns):
         sd = st.pstdev(arr) if n > 1 else 0.0
         sel_rows.append({"vs": vs, "metric": metric, "cls": clskey, "n": n, "mean": m, "sd": sd})
     sel_rows.sort(key=lambda r: (r["vs"], r["metric"], r["cls"]))
+
+    # target-disagreement profile: clone target − producer target on shared
+    # sources where they aim differently. Same gating style as `rows`.
+    tgt_rows = []
+    for (ax, clskey), arr in tgt_deltas.items():
+        n = len(arr)
+        if n < 40:  # disagreements are rarer than turns; relax the floor a touch
+            continue
+        ds = [e[0] for e in arr]
+        base = [e[1] for e in arr]
+        m = sum(ds) / n
+        if m == 0:
+            continue
+        sd = st.pstdev(ds) if n > 1 else 0.0
+        base_mean = sum(base) / n
+        tstat = m / (sd / math.sqrt(n) + 1e-12)
+        eff = abs(m) / (sd + 1e-9)
+        sign = 1 if m > 0 else -1
+        consistency = sum(1 for x in ds if (x > 0) == (sign > 0) and x != 0) / n
+        nonzero = sum(1 for x in ds if x != 0) / n
+        pct = (m / base_mean * 100.0) if abs(base_mean) > 1e-9 else float("nan")
+        tgt_rows.append({
+            "axis": ax, "cls": clskey, "n": n, "mean_d": m, "base": base_mean,
+            "pct": pct, "tstat": tstat, "eff": eff, "consistency": consistency,
+            "nonzero": nonzero,
+        })
+    tgt_rows = [r for r in tgt_rows if abs(r["tstat"]) >= 3.0]
+    tgt_rows.sort(key=lambda r: abs(r["tstat"]) * (0.2 + r["eff"]), reverse=True)
 
     lines = []
     lines.append("# Clone-Residual Divergence Mine — Findings\n")
@@ -475,17 +626,54 @@ def render(args, seat_match, deltas, sel, clone_turns):
                      f"{r['mean_d']:+.3f} | {r['base']:.2f} | {pct} | {r['tstat']:+.1f} | "
                      f"{r['eff']:.2f} | {r['consistency']:.2f} | {r['nonzero']:.2f} |")
 
+    # target-disagreement profile (Plan 1 — the confound-free residual)
+    n_shared_all = tgt_counts.get("all=all", [0, 0])[0]
+    n_disagree_all = tgt_counts.get("all=all", [0, 0])[1]
+    disagree_rate = (n_disagree_all / n_shared_all) if n_shared_all else float("nan")
+    lines.append("\n## Target-disagreement profile (clone target − producer target)\n")
+    lines.append("_Plan 1, the confound-free residual: on the **shared source planets** where "
+                 "the clone and bare `producer` BOTH launch but resolve to **different targets**, "
+                 "what is systematically different about the target the clone picks vs the one "
+                 "producer's flow-diff argmax picks?_\n")
+    lines.append(f"- Shared-source decisions: **{n_shared_all}**; of which the clone aimed "
+                 f"elsewhere than producer: **{n_disagree_all}** "
+                 f"(**{disagree_rate*100:.0f}%** disagreement rate — matches `tgt_match|src`).\n")
+    lines.append("Each row = a target-feature axis conditioned on a state class. `Δ` = "
+                 "mean(clone_target_feature − producer_target_feature) over disagreements "
+                 "(positive = clone's chosen target scores HIGHER on the axis). `base` = "
+                 "producer-target mean (scale); `pct` = Δ as % of base; `t` = t-stat (|t|>=3 "
+                 "kept); `eff` = |Δ|/sd; `cons` = sign-agreement; `nz` = fraction of "
+                 "disagreements where the axis differs. Axes: `dist` (source→target euclidean), "
+                 "`prod`, `garrison`, `contested` (>=2 owners inbound), `orbiting`, and "
+                 "owner-class indicators `is_enemy`/`is_neutral`/`is_own`. Ranked by |t|·eff.\n")
+    lines.append("| # | axis | state class | n | Δ | base | pct | t | eff | cons | nz |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
+    for i, r in enumerate(tgt_rows[:60], 1):
+        pct = f"{r['pct']:+.0f}%" if r["pct"] == r["pct"] else "—"
+        lines.append(f"| {i} | {r['axis']} | {r['cls']} | {r['n']} | "
+                     f"{r['mean_d']:+.3f} | {r['base']:.2f} | {pct} | {r['tstat']:+.1f} | "
+                     f"{r['eff']:.2f} | {r['consistency']:.2f} | {r['nonzero']:.2f} |")
+
     out = REPO / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines) + "\n")
     # also dump raw rows for the other thread
     (out.with_suffix(".json")).write_text(json.dumps(
-        {"seat_match": seat_match, "rankings": rows, "selection": sel_rows}, indent=2))
+        {"seat_match": seat_match, "rankings": rows, "selection": sel_rows,
+         "target_disagreement": tgt_rows,
+         "target_disagreement_counts": {k: v for k, v in tgt_counts.items()}}, indent=2))
     print(f"\nwrote {out}")
     print("\nTop 20 divergences (|t|>=3):")
     for i, r in enumerate(rows[:20], 1):
         pct = f"{r['pct']:+.0f}%" if r["pct"] == r["pct"] else "—"
         print(f"  {i:>2}. vs {r['vs']:<4} {r['axis']:<14} {r['cls']:<30} "
+              f"n={r['n']:<5} Δ={r['mean_d']:+.3f} ({pct:>6}) t={r['tstat']:+.1f} eff={r['eff']:.2f}")
+
+    print(f"\nTarget-disagreement profile ({n_disagree_all}/{n_shared_all} shared sources "
+          f"= {disagree_rate*100:.0f}% disagree). Top 20 (|t|>=3):")
+    for i, r in enumerate(tgt_rows[:20], 1):
+        pct = f"{r['pct']:+.0f}%" if r["pct"] == r["pct"] else "—"
+        print(f"  {i:>2}. {r['axis']:<11} {r['cls']:<30} "
               f"n={r['n']:<5} Δ={r['mean_d']:+.3f} ({pct:>6}) t={r['tstat']:+.1f} eff={r['eff']:.2f}")
 
 

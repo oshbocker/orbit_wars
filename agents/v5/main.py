@@ -198,6 +198,39 @@ class ProducerLiteConfig:
     # 0.0 = OFF, byte-identical to v5.4. Requires value_model_weights.npz bundled
     # in the package (auto-loaded); absent weights => OFF regardless of eps.
     value_rerank_eps: float = 0.0
+    # CLONE-RESIDUAL "closer + own-reinforce" selection bonus (discovery 2026-06-19,
+    # see memory/clone-target-disagreement-profile.md). The divergence mine showed
+    # that on shared source planets where top-tier producer-clones aim DIFFERENTLY
+    # from bare producer's flow-diff argmax, the clone systematically picks a CLOSER
+    # target (dist -31%, t=-37; 2P-endgame -52%) and more often its OWN planet
+    # (reinforce: is_own +54%, +82% when ahead), attacking enemies less. The residual
+    # is targets producer scores strictly LOWER (not near-ties), so a tie-break can't
+    # express it — instead this adds ``prox_select_weight·(−ETA + own_bonus·is_def)``
+    # to the greedy's SELECTION ranking, so among candidates that individually clear
+    # roi_threshold (raw flow) the closest / own one wins. It never fires a sub-roi
+    # wave (isolates target-choice from patience). 0.0 = OFF, byte-identical to v5.4.
+    prox_select_weight: float = 0.0      # bonus scale (flow-score units per eta-turn)
+    prox_select_own_bonus: float = 0.0   # eta-equiv turns favoring own/reinforce targets
+    # SELECTIVITY: one-sided long-ETA launch penalty (2026-06-20, pulse + clone-residual
+    # convergence — see memory/daily-pulse-2026-06-20.md). The public meta is moving to
+    # "suppress weak long-payoff launches" (pilkwang) / "smooth ROI deficit scaling"
+    # (apex-hybrid), and our own mine found the top tier HOARDS + strikes CLOSER. Unlike
+    # prox_select (which mean-CENTERS proximity and thus ADDED launch volume — wrong way,
+    # regressed mirror), this subtracts ``eta_penalty_weight·max(0, ETA − eta_penalty_free)``
+    # from the flow score: ONE-SIDED, so long-ETA / far candidates drop BELOW roi_threshold
+    # and are simply not fired (→ fewer, closer, more decisive waves = hoarding), while
+    # short-ETA launches are untouched. Distinct from reserve_frac/half-drain (those cut
+    # ship FRACTIONS uniformly; this drops specific weak FAR waves). 0.0 = OFF, byte-identical.
+    eta_penalty_weight: float = 0.0      # flow-score units subtracted per eta-turn beyond free
+    eta_penalty_free: float = 3.0        # ETA turns with no penalty (short launches untouched)
+    # SELECTIVITY: higher-production target bias (2026-06-20 mine — clean shared-source
+    # residual: top tier picks HIGHER-production targets, +12–19% t+14, see
+    # memory/clone-target-disagreement-profile.md). Adds target_prod_bias·(prod − mean_prod)
+    # to each candidate's flow score so the greedy leans toward higher-production targets.
+    # MEAN-CENTERED over the turn's valid candidates (above-avg prod ⇒ +, below ⇒ −) so it
+    # re-ranks WHICH target a source serves rather than uniformly inflating scores (the
+    # volume-add that sank prox_select). 0.0 = OFF, byte-identical to v5.4.
+    target_prod_bias: float = 0.0        # flow-score units per unit production above turn-mean
     # v5.4 Track 1 (level-1 opponent-aware planning). The flow-diff projects all
     # opponents as do-nothing (a one-shot best-response to a passive world = the
     # maximally *exploitable* solution-concept class for a 2-player zero-sum
@@ -806,6 +839,47 @@ def plan_lite_waves(
             model=_VALUE_MODEL,
             player_count=int(player_count),
             player_id=pid,
+        )
+
+    # Clone-residual "closer + own-reinforce" selection bonus (default-off; see
+    # ProducerLiteConfig). Added to the flow score so the greedy's target choice
+    # leans toward closer / own-reinforce targets — the transplantable residual the
+    # divergence mine found in top-tier clones. The proximity term is MEAN-CENTERED
+    # over the turn's valid candidates (closer-than-average ⇒ +, farther ⇒ −, net
+    # ≈ 0) so it REDISTRIBUTES toward nearer targets instead of uniformly lowering
+    # every score (which would just suppress launches = patience, a different/deferred
+    # lever). The own-reinforce term is an additive bonus on own/defensive targets.
+    # 0.0 = OFF, byte-identical to v5.4.
+    if float(config.prox_select_weight) > 0.0:
+        eta_c = cand_eta.reshape(-1)
+        valid_c = cand_valid.to(score.dtype)
+        mean_eta = (eta_c * valid_c).sum() / valid_c.sum().clamp(min=1.0)
+        prox_bonus = float(config.prox_select_weight) * (
+            (mean_eta - eta_c)
+            + float(config.prox_select_own_bonus) * cand_is_def.to(score.dtype)
+        )
+        score = torch.where(cand_valid, score + prox_bonus, score)
+
+    # SELECTIVITY: one-sided long-ETA penalty (default-off; see ProducerLiteConfig).
+    # Subtract weight·max(0, ETA − free) from the flow score so long-payoff/far
+    # candidates fall below roi_threshold and are not fired → fewer, closer, more
+    # decisive waves (hoarding). One-sided (short launches untouched) and NEVER adds
+    # volume, unlike prox_select above. 0.0 = OFF, byte-identical.
+    if float(config.eta_penalty_weight) > 0.0:
+        eta_pen = float(config.eta_penalty_weight) * (
+            cand_eta.reshape(-1) - float(config.eta_penalty_free)
+        ).clamp(min=0.0)
+        score = torch.where(cand_valid, score - eta_pen, score)
+
+    # SELECTIVITY: higher-production target bias (default-off; see ProducerLiteConfig).
+    # Mean-centered prod bonus so the greedy re-ranks toward higher-production targets
+    # without inflating launch volume. 0.0 = OFF, byte-identical.
+    if float(config.target_prod_bias) > 0.0:
+        tgt_prod = prod[target_idx.clamp(0, P - 1)].to(score.dtype)[cand_tgt_short]  # [C]
+        valid_c = cand_valid.to(score.dtype)
+        mean_prod = (tgt_prod * valid_c).sum() / valid_c.sum().clamp(min=1.0)
+        score = torch.where(
+            cand_valid, score + float(config.target_prod_bias) * (tgt_prod - mean_prod), score
         )
 
     # v5.4 half-drain reserve cap (see ProducerLiteConfig.reserve_frac). Applied

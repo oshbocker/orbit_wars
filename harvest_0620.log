@@ -1,0 +1,26 @@
+Warning: Looks like you're using an outdated `kaggle` version (installed: 2.1.0), please consider upgrading to the latest version (2.2.2)
+Warning: Looks like you're using an outdated `kaggle` version (installed: 2.1.0), please consider upgrading to the latest version (2.2.2)
+top-12 teams: ['Strategy Optimized Agent', 'Isaiah @ Tufa Labs', 'Jake Will', 'Xiangyu Liu', 'Hober Malloc', 'flg', 'Boey', 'Felix M Neumann', 'moriiiiiiiiim', 'Vadasz & Ascalon', 'M & J & M.ver2', 'Azat Akhtyamov', 'Audun Ljone Henriksen']
+Traceback (most recent call last):
+  File "/home/aeschbacher/git/orbit_wars/scripts/harvest_top_replays.py", line 76, in <module>
+    main()
+  File "/home/aeschbacher/git/orbit_wars/scripts/harvest_top_replays.py", line 39, in main
+    files = list_day_files_paged(api, args.date, max_files=max(args.n, 200)) or list_day_files(api, args.date)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/aeschbacher/git/orbit_wars/scripts/harvest_teacher.py", line 60, in list_day_files_paged
+    resp = api.dataset_list_files(ref, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/aeschbacher/git/orbit_wars/.venv/lib/python3.12/site-packages/kaggle/api/kaggle_api_extended.py", line 2336, in dataset_list_files
+    response = kaggle.datasets.dataset_api_client.list_dataset_files(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/aeschbacher/git/orbit_wars/.venv/lib/python3.12/site-packages/kagglesdk/datasets/services/dataset_api_service.py", line 45, in list_dataset_files
+    return self._client.call("datasets.DatasetApiService", "ListDatasetFiles", request, ApiListDatasetFilesResponse)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/aeschbacher/git/orbit_wars/.venv/lib/python3.12/site-packages/kagglesdk/kaggle_http_client.py", line 98, in call
+    response = self._prepare_response(response_type, http_response)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/aeschbacher/git/orbit_wars/.venv/lib/python3.12/site-packages/kagglesdk/kaggle_http_client.py", line 124, in _prepare_response
+    http_response.raise_for_status()
+  File "/home/aeschbacher/git/orbit_wars/.venv/lib/python3.12/site-packages/requests/models.py", line 1028, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 403 Client Error: Forbidden for url: https://api.kaggle.com/v1/datasets.DatasetApiService/ListDatasetFiles

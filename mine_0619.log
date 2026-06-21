@@ -1,0 +1,53 @@
+70 replays; targets = top-15
+  20/70 games, 30 target seats, 7195 clone turns
+  40/70 games, 60 target seats, 16581 clone turns
+  60/70 games, 94 target seats, 25788 clone turns
+
+=== 113 target seats, 106 classified POSTURE-CLONE (med frac>=0.9, wps<=1.4), 29577 clone turns ===
+
+wrote /home/aeschbacher/git/orbit_wars/rl_research/CLONE_RESIDUAL_FINDINGS_0619.md
+
+Top 20 divergences (|t|>=3):
+   1. vs prod active         fmt=2P|standing=ahead          n=9945  Δ=-0.366 (  -46%) t=-60.7 eff=0.61
+   2. vs prod active         fmt=2P|phase=end               n=3278  Δ=-0.411 (  -42%) t=-45.6 eff=0.80
+   3. vs v5   active         fmt=2P|standing=ahead          n=9945  Δ=-0.349 (  -45%) t=-56.6 eff=0.57
+   4. vs prod active         standing=ahead                 n=13213 Δ=-0.317 (  -41%) t=-60.0 eff=0.52
+   5. vs v5   active         standing=ahead                 n=13213 Δ=-0.300 (  -40%) t=-55.7 eff=0.48
+   6. vs prod ships          fmt=2P|standing=behind         n=8283  Δ=-145.638 (  -73%) t=-50.5 eff=0.55
+   7. vs prod ships          standing=behind                n=16364 Δ=-89.192 (  -68%) t=-55.3 eff=0.43
+   8. vs prod waves          fmt=2P|standing=ahead          n=9945  Δ=-2.131 (  -65%) t=-49.3 eff=0.49
+   9. vs prod sources        fmt=2P|standing=ahead          n=9945  Δ=-2.125 (  -65%) t=-49.3 eff=0.49
+  10. vs prod active         contested=uncontested          n=21266 Δ=-0.222 (  -28%) t=-57.3 eff=0.39
+  11. vs prod active         phase=end                      n=4815  Δ=-0.341 (  -41%) t=-41.9 eff=0.60
+  12. vs prod active         fmt=2P                         n=18228 Δ=-0.224 (  -27%) t=-54.3 eff=0.40
+  13. vs prod active         fmt=2P|contested=uncontested   n=18228 Δ=-0.224 (  -27%) t=-54.3 eff=0.40
+  14. vs prod sources        standing=ahead                 n=13213 Δ=-1.800 (  -60%) t=-50.3 eff=0.44
+  15. vs prod waves          standing=ahead                 n=13213 Δ=-1.803 (  -60%) t=-50.2 eff=0.44
+  16. vs prod active         fmt=2P|phase=mid               n=11050 Δ=-0.238 (  -27%) t=-45.3 eff=0.43
+  17. vs prod waves          phase=end                      n=4815  Δ=-2.220 (  -59%) t=-38.1 eff=0.55
+  18. vs prod sources        phase=end                      n=4815  Δ=-2.217 (  -59%) t=-38.1 eff=0.55
+  19. vs prod ships          standing=ahead                 n=13213 Δ=-732.783 (  -92%) t=-45.1 eff=0.39
+  20. vs prod ships          contested=uncontested          n=21266 Δ=-508.398 (  -89%) t=-49.2 eff=0.34
+
+Target-disagreement profile (6084/11896 shared sources = 51% disagree). Top 20 (|t|>=3):
+   1. prod        fmt=2P|standing=behind         n=2738  Δ=+0.469 (  +19%) t=+14.0 eff=0.27
+   2. prod        fmt=2P                         n=4530  Δ=+0.397 (  +15%) t=+14.8 eff=0.22
+   3. prod        fmt=2P|contested=uncontested   n=4530  Δ=+0.397 (  +15%) t=+14.8 eff=0.22
+   4. prod        fmt=2P|phase=mid               n=3089  Δ=+0.425 (  +16%) t=+13.1 eff=0.24
+   5. dist        standing=ahead                 n=2377  Δ=-6.259 (  -19%) t=-11.8 eff=0.24
+   6. dist        contested=uncontested          n=5048  Δ=-4.699 (  -16%) t=-13.3 eff=0.19
+   7. dist        fmt=2P                         n=4530  Δ=-4.913 (  -16%) t=-13.0 eff=0.19
+   8. dist        fmt=2P|contested=uncontested   n=4530  Δ=-4.913 (  -16%) t=-13.0 eff=0.19
+   9. prod        all=all                        n=6084  Δ=+0.323 (  +12%) t=+13.5 eff=0.17
+  10. dist        fmt=2P|standing=ahead          n=1792  Δ=-6.725 (  -20%) t=-10.8 eff=0.26
+  11. prod        phase=mid                      n=4275  Δ=+0.355 (  +13%) t=+12.5 eff=0.19
+  12. dist        all=all                        n=6084  Δ=-4.265 (  -14%) t=-13.1 eff=0.17
+  13. prod        contested=uncontested          n=5048  Δ=+0.325 (  +12%) t=+12.6 eff=0.18
+  14. prod        standing=behind                n=3707  Δ=+0.344 (  +13%) t=+11.4 eff=0.19
+  15. orbiting    fmt=2P|standing=behind         n=2738  Δ=-0.145 (  -23%) t=-10.7 eff=0.20
+  16. garrison    phase=mid                      n=4275  Δ=+19.313 (  +62%) t=+11.3 eff=0.17
+  17. dist        fmt=2P|phase=mid               n=3089  Δ=-4.803 (  -16%) t=-10.4 eff=0.19
+  18. dist        phase=open                     n=731   Δ=-6.810 (  -23%) t=-8.0 eff=0.29
+  19. is_own      fmt=2P|standing=ahead          n=1792  Δ=+0.142 (  +36%) t=+9.2 eff=0.22
+  20. dist        fmt=2P|phase=open              n=508   Δ=-7.395 (  -24%) t=-7.3 eff=0.32
+MINE_EXIT=0
