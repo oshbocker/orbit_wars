@@ -45,6 +45,7 @@ ignore = [
 # Submission agent intentionally mutates sys.path before importing (Kaggle
 # packaging — see the ModuleNotFoundError fix in MEMORY.md).
 "v2/agent_v3.py" = ["E402"]
+"agents/bc_submission/main.py" = ["E402"]
 
 [tool.pyright]
 include = ["src", "v2", "agents", "evaluation", "scripts"]
