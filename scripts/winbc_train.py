@@ -477,7 +477,9 @@ def run_sharded(cfg, args, device):
                          f"{rkk:.4f}", f"{mrr:.4f}", f"{lacc:.4f}", f"{sel:.4f}"])
         # 'best' ckpt stays lean (what bc_teacher.py loads); '.last.pt' also carries the
         # optimizer/epoch/best so --resume can continue mid-training after a disconnect.
-        ck = {"model": model.state_dict(), "config": args.config, "gate_head": args.gate_head}
+        ck = {"model": model.state_dict(), "config": args.config, "gate_head": args.gate_head,
+              "arch": {"embed_dim": cfg.model.embed_dim, "n_layers": cfg.model.n_layers,
+                       "ff_dim": cfg.model.ff_dim, "n_heads": cfg.model.n_heads}}
         if sel == sel and sel > best:  # noqa: PLR0124
             best = sel
             torch.save(ck, out)
@@ -631,7 +633,9 @@ def main() -> None:
         if sel == sel and sel > best:  # noqa: PLR0124 (NaN guard)
             best = sel
             torch.save({"model": model.state_dict(), "config": args.config,
-                        "gate_head": args.gate_head}, out)
+                        "gate_head": args.gate_head,
+                        "arch": {"embed_dim": cfg.model.embed_dim, "n_layers": cfg.model.n_layers,
+                                 "ff_dim": cfg.model.ff_dim, "n_heads": cfg.model.n_heads}}, out)
     print(f"saved best (sel={best:.3f}) -> {out}")
 
 

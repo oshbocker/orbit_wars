@@ -77,8 +77,36 @@ def _load():
     _GATE = bool(ck.get("gate_head", False))
     if _GATE:
         cfg.model.launch_gate_head = True
+
+    # The training-time scale overrides (--embed-dim/--n-layers/--ff-dim/--n-heads) are NOT
+    # captured by the checkpoint's `config` string, which just names a yaml at its DEFAULT dims.
+    # Trusting it silently rebuilds a wrong-sized OrbitNet whose weights all mismatch -> with a
+    # lenient load the deployed net is RANDOMLY INITIALISED (it never launches). Reconstruct the
+    # true architecture: prefer explicit saved `arch`, else infer from the weight shapes.
+    sd = ck["model"]
+    arch = ck.get("arch", {})
+    cfg.model.embed_dim = int(arch.get("embed_dim", sd["planet_embed.0.weight"].shape[0]))
+    cfg.model.n_layers = int(arch.get("n_layers", 1 + max(
+        int(k.split(".")[1]) for k in sd if k.startswith("transformer_blocks."))))
+    cfg.model.ff_dim = int(arch.get("ff_dim", sd["transformer_blocks.0.ff.0.weight"].shape[0]))
+    # n_heads doesn't change any weight shape, so it can't be inferred — take the saved value,
+    # else env override, else the yaml default only if it divides embed_dim, else a safe divisor.
+    nh = arch.get("n_heads") or os.environ.get("OW_BC_NHEADS")
+    if nh is not None:
+        cfg.model.n_heads = int(nh)
+    elif cfg.model.embed_dim % cfg.model.n_heads != 0:
+        cfg.model.n_heads = next(h for h in (8, 4, 2, 1) if cfg.model.embed_dim % h == 0)
+
     model = OrbitNet(cfg.model)
-    model.load_state_dict(ck["model"], strict=False)  # tolerate optional-head mismatches
+    # strict on the core net (FAIL LOUD on any future arch drift); the optional gate/frac heads
+    # are gated by flags so a missing one is the only tolerated discrepancy.
+    res = model.load_state_dict(sd, strict=False)
+    unexpected = list(res.unexpected_keys)
+    missing = [k for k in res.missing_keys if "gate_head" not in k and "frac" not in k]
+    if unexpected or missing:
+        raise RuntimeError(
+            f"bc_teacher checkpoint load mismatch (arch reconstruction failed): "
+            f"missing={missing[:6]} unexpected={unexpected[:6]}")
     model.eval()
     _MODEL, _CFG, _TORCH = model, cfg, torch
     return True
