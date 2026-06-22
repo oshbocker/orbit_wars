@@ -35,19 +35,33 @@ _CKPT = os.environ.get("OW_BC_TEACHER_CKPT", str(_REPO / "outputs" / "checkpoint
 # decision, so a positive margin recovers the teacher's activity. Tune via OW_BC_FIRE_MARGIN.
 _FIRE_MARGIN = float(os.environ.get("OW_BC_FIRE_MARGIN", "0.0"))
 
+# Separate-gate decode threshold: when the checkpoint has a launch/no-launch gate head
+# (winbc --gate_head), a source fires iff sigmoid(gate_logit) > _GATE_THR. This replaces the
+# _FIRE_MARGIN band-aid (which only existed because hold-as-a-class made the launch decision
+# weak); with a real gate, the act decision is a first-class output. Tune via OW_BC_GATE_THR.
+_GATE_THR = float(os.environ.get("OW_BC_GATE_THR", "0.5"))
+
 # Sizing: enemy/neutral captures are capture-minimal (the half-drain signature); a pick of
 # an OWNED target is a reinforce/consolidation send (forward most of the garrison).
 _CAPTURE_MARGIN = 2.0
 _REINFORCE_KEEP = 1.0
 _MIN_FLEET = 3
 
+# Executor-sizing ablation (confound control for the winbc regime-check): the capture-minimal
+# default is a half-drain prior — a documented partial-send tempo tax (contested-instrument
+# memory). OW_BC_DRAIN=full forwards near the full garrison on AFFORDABLE captures instead, so
+# we can tell whether the clone's losses come from the NET's selections or from the executor's
+# under-sizing. "min" reproduces the prior half-drain behaviour exactly.
+_DRAIN = os.environ.get("OW_BC_DRAIN", "min").lower()
+
 _MODEL = None
 _CFG = None
 _TORCH = None
+_GATE = False  # checkpoint has a separate launch/no-launch gate head
 
 
 def _load():
-    global _MODEL, _CFG, _TORCH
+    global _MODEL, _CFG, _TORCH, _GATE
     if _MODEL is not None:
         return True
     if not os.path.exists(_CKPT):
@@ -60,8 +74,11 @@ def _load():
 
     ck = torch.load(_CKPT, map_location="cpu")
     cfg = load_v2_config(ck.get("config", "configs/v2_exit.yaml"))
+    _GATE = bool(ck.get("gate_head", False))
+    if _GATE:
+        cfg.model.launch_gate_head = True
     model = OrbitNet(cfg.model)
-    model.load_state_dict(ck["model"])
+    model.load_state_dict(ck["model"], strict=False)  # tolerate optional-head mismatches
     model.eval()
     _MODEL, _CFG, _TORCH = model, cfg, torch
     return True
@@ -95,11 +112,16 @@ def _net_pred(obs):
     with torch.inference_mode():
         out = _MODEL(pf, gf, pm, om)            # NO reachability mask (matches training)
     logits = out.logits[0]                       # [P, P+1]; col 0 = hold, col k>0 => target row k-1
-    hold = logits[:, :1]                          # [P,1]
     tgt = logits[:, 1:]                           # [P,P]
     best_t = tgt.argmax(-1)                        # [P] best target row
-    best_v = tgt.gather(1, best_t[:, None]).squeeze(1)
-    fire = (best_v - hold.squeeze(1)) >= -_FIRE_MARGIN
+    if _GATE and out.gate_logits is not None:
+        # Decoupled gate: fire iff P(launch) > threshold, then take the pointer argmax.
+        fire = torch.sigmoid(out.gate_logits[0]) > _GATE_THR
+    else:
+        # hold-as-a-class fallback: fire when best target beats hold within _FIRE_MARGIN.
+        hold = logits[:, :1]
+        best_v = tgt.gather(1, best_t[:, None]).squeeze(1)
+        fire = (best_v - hold.squeeze(1)) >= -_FIRE_MARGIN
     pred = torch.where(fire, best_t + 1, torch.zeros_like(best_t))   # 0 = hold else target+1
     return pred.tolist()
 
@@ -156,6 +178,11 @@ def agent(obs, config=None) -> list:
         if need > src["ships"]:
             continue  # can't take it from here this turn
         ships_w = max(_MIN_FLEET, need)
+        if _DRAIN == "full":
+            # Forward near the full garrison once the capture is affordable (full-drain
+            # tempo) rather than the capture-minimal half-drain. Affordability is already
+            # guaranteed by need <= src["ships"] above.
+            ships_w = max(ships_w, int(src["ships"] - _REINFORCE_KEEP))
         if ships_w > src["ships"]:
             continue
         moves.append([sid, float(angle), int(ships_w)])

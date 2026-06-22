@@ -60,6 +60,9 @@ outputs/arena/*.log
 outputs/replay_pulse/cache/
 # generated BC datasets (*.npz):
 outputs/macro_bc/
+outputs/winbc/
+# win-weighted BC shards (built on Colab; can be 100s of MB):
+outputs/shards/
 # raw collected game data (*.npz):
 outputs/validator/raw/
 outputs/value/raw/

@@ -23,6 +23,9 @@ class OrbitNetOutput:
     shot_logits: torch.Tensor | None = (
         None  # [B, P, P] logit P(own target N turns after arrival) (v4 Tier 1.2/0.4)
     )
+    gate_logits: torch.Tensor | None = (
+        None  # [B, P] per-source launch/no-launch logit (winbc separate gate head)
+    )
 
 
 class OrbitNet(nn.Module):
@@ -119,6 +122,13 @@ class OrbitNet(nn.Module):
                 nn.Linear(d, 1),
             )
 
+        # winbc regime fix: separate per-source launch/no-launch GATE in front of the
+        # pointer (vkhydras). When present, decode is gate(act?) -> pointer(which target),
+        # rather than hold competing as a class in the target softmax.
+        self.gate_head = None
+        if getattr(cfg, "launch_gate_head", False):
+            self.gate_head = nn.Linear(d, 1)
+
         self._init_output_heads()
 
     def _init_output_heads(self) -> None:
@@ -139,6 +149,9 @@ class OrbitNet(nn.Module):
         if self.shot_success_head is not None:
             nn.init.zeros_(self.shot_success_head[-1].weight)
             nn.init.zeros_(self.shot_success_head[-1].bias)
+        if self.gate_head is not None:
+            nn.init.zeros_(self.gate_head.weight)
+            nn.init.zeros_(self.gate_head.bias)
 
     def forward(
         self,
@@ -233,12 +246,19 @@ class OrbitNet(nn.Module):
             # reuse pair_input [B,P,P,2d+pf] built above for the pair/frac heads
             shot_logits = self.shot_success_head(pair_input).squeeze(-1)  # [B, P, P]
 
+        gate_logits = None
+        if self.gate_head is not None:
+            gate_logits = self.gate_head(x).squeeze(-1)  # [B, P]
+            # Non-owned sources can't launch -> -inf so decode/metrics ignore them.
+            gate_logits = gate_logits.masked_fill(source_invalid, NEG_INF)
+
         return OrbitNetOutput(
             logits=logits,
             value=value,
             frac_logits=frac_logits,
             aux_value=aux_value,
             shot_logits=shot_logits,
+            gate_logits=gate_logits,
         )
 
     def value_only(

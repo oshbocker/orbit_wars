@@ -231,6 +231,25 @@ class ProducerLiteConfig:
     # re-ranks WHICH target a source serves rather than uniformly inflating scores (the
     # volume-add that sank prox_select). 0.0 = OFF, byte-identical to v5.4.
     target_prod_bias: float = 0.0        # flow-score units per unit production above turn-mean
+    # 4P AGGRESSIVE EXPANSION: high-production NEUTRAL-target bonus (2026-06-20,
+    # role-split 4P anchor — see memory/4p-neutral-expand-anchor.md). The rating-delta
+    # reframe ([[rating-delta-reframe-2026-06-19]]) showed 4P is our RELATIVE strength
+    # and rewards VARIANCE-SEEKING expansion: 4P losses are cheap (Δ−2.8) and wins rich
+    # (Δ+11.8), and the 4P leak is structural UNDER-expansion (winners hold 16.5 planets
+    # vs losers 5.5; winners win the step-40 ship-MASS race by securing higher-production
+    # ground early). The existing ``ffa_target_prod_bonus`` only boosts ENEMY-owned
+    # targets (the ``target_owned_enemy`` gate) — it biases FIGHTING, not EXPANDING. This
+    # knob adds ``ffa_neutral_expand_bonus * prod[target]`` to the flow score of NEUTRAL
+    # targets only, so the greedy preferentially grabs high-production uncontested ground
+    # in the opening = broader/earlier expansion = the variance-seeking direction the
+    # rating asymmetry prescribes. ADDITIVE (not mean-centered): it lifts neutral captures
+    # above ``roi_threshold`` so MORE expansion waves fire (volume-add is the point in 4P,
+    # the opposite of the 2P selectivity levers). DISTINCT from: ffa_target_prod_bonus
+    # (enemy-only), target_prod_bias (mean-centered re-rank, both formats), and the CLOSED
+    # hold-family (hold_margin_beta/H1/H2 — those REDUCE captures = conservatism, backwards
+    # for a cheap-loss format). 4P-ONLY (only consulted when player_count >= 4) and gated
+    # by ``> 0.0`` ⇒ byte-identical to v5.4 in 2P and when OFF. 0.0 = OFF.
+    ffa_neutral_expand_bonus: float = 0.0  # flow-score units per unit production on neutral targets
     # v5.4 Track 1 (level-1 opponent-aware planning). The flow-diff projects all
     # opponents as do-nothing (a one-shot best-response to a passive world = the
     # maximally *exploitable* solution-concept class for a 2-player zero-sum
@@ -752,7 +771,9 @@ def plan_lite_waves(
         player_id=pid,
     )  # [C]
     if int(player_count) >= 4 and (
-        float(config.ffa_leader_attack_bonus) > 0.0 or float(config.ffa_target_prod_bonus) > 0.0
+        float(config.ffa_leader_attack_bonus) > 0.0
+        or float(config.ffa_target_prod_bonus) > 0.0
+        or float(config.ffa_neutral_expand_bonus) > 0.0
     ):
         owner = obs.owner_abs.to(torch.long)
         owner_valid = (owner >= 0) & (owner < int(player_count)) & obs.alive
@@ -787,6 +808,19 @@ def plan_lite_waves(
             torch.zeros_like(owner_strength),
         )
         score = score + target_bonus_short[cand_tgt_short]
+        # 4P aggressive expansion: additive bonus on high-production NEUTRAL targets
+        # (see ProducerLiteConfig.ffa_neutral_expand_bonus). Lifts uncontested
+        # high-prod captures above roi_threshold so MORE early expansion fires.
+        # > 0.0 only ⇒ byte-identical to v5.4 when OFF.
+        if float(config.ffa_neutral_expand_bonus) > 0.0:
+            target_neutral = target_exists & (owner[target_idx.clamp(0, P - 1)] < 0)
+            neutral_bonus_short = torch.where(
+                target_neutral,
+                float(config.ffa_neutral_expand_bonus)
+                * prod[target_idx.clamp(0, P - 1)].to(dtype),
+                torch.zeros_like(owner_strength),
+            )
+            score = score + neutral_bonus_short[cand_tgt_short]
     if int(player_count) >= 4 and (
         float(config.ffa_near_opponent_mult) != 1.0 or float(config.ffa_far_opponent_mult) != 1.0
     ):

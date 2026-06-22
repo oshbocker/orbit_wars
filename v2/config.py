@@ -85,6 +85,12 @@ class V2ModelConfig:
     # P(we still own the target N turns after arrival). Trained as an auxiliary
     # loss and reused as a rejection filter at decode time (the "shot validator").
     shot_success_head: bool = False
+    # winbc regime fix (Kaggle #30 / vkhydras): a SEPARATE per-source binary launch/
+    # no-launch gate in front of the target pointer, instead of "hold" being a class
+    # inside the target softmax. Decouples "should this planet act?" from "where to send",
+    # so the act-decision can be rebalanced independently — the prescribed fix for the
+    # state-dependent no-op collapse. Default off (existing pipeline byte-identical).
+    launch_gate_head: bool = False
 
 
 @dataclass(slots=True)
