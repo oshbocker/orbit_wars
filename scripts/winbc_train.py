@@ -282,17 +282,39 @@ def run_sharded(cfg, args, device):
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    last = out.with_suffix(".last.pt")
+
+    # Resume from .last.pt (model + optimizer + epoch + best) so a Colab disconnect mid-train
+    # picks up where it left off. Safe to always pass --resume: absent ckpt -> fresh from ep 0.
+    start_ep, best, resumed = 0, -1.0, False
+    if args.resume and last.exists():
+        ck = torch.load(last, map_location=device)
+        model.load_state_dict(ck["model"])
+        if "optimizer" in ck:
+            opt.load_state_dict(ck["optimizer"])
+        start_ep = int(ck.get("epoch", -1)) + 1
+        best = float(ck.get("best", -1.0))
+        resumed = True
+        print(f"RESUMED from {last}: epoch {start_ep}, best={best:.3f}")
+
     cf = cw = None
     if args.curves:
         Path(args.curves).parent.mkdir(parents=True, exist_ok=True)
+        # Append (no header) when resuming an existing curves file; else fresh with header.
+        append = resumed and Path(args.curves).exists()
         # Handle must outlive the epoch loop (written once per epoch), so it can't be a
         # `with` block here; closed explicitly after training.
-        cf = open(args.curves, "w", newline="")  # noqa: SIM115
+        cf = open(args.curves, "a" if append else "w", newline="")  # noqa: SIM115
         cw = csv.writer(cf)
-        cw.writerow(["epoch", "loss", "gate_prec", "gate_rec", "gate_f1",
-                     "recall@5", "mrr", "launch_acc", "sel"])
-    best = -1.0
-    for ep in range(args.epochs):
+        if not append:
+            cw.writerow(["epoch", "loss", "gate_prec", "gate_rec", "gate_f1",
+                         "recall@5", "mrr", "launch_acc", "sel"])
+    if start_ep >= args.epochs:
+        print(f"already at/past epoch {args.epochs}; nothing to do")
+        if cf:
+            cf.close()
+        return
+    for ep in range(start_ep, args.epochs):
         model.train()
         tot = nb = 0.0
         for si in rng.permutation(len(train_files)):
@@ -327,12 +349,13 @@ def run_sharded(cfg, args, device):
         if cw:
             cw.writerow([ep, f"{avg:.4f}", f"{prec:.4f}", f"{rec:.4f}", f"{f1:.4f}",
                          f"{rkk:.4f}", f"{mrr:.4f}", f"{lacc:.4f}", f"{sel:.4f}"])
-        # Always save 'last' (survive Colab resets) + 'best' on the selection metric.
+        # 'best' ckpt stays lean (what bc_teacher.py loads); '.last.pt' also carries the
+        # optimizer/epoch/best so --resume can continue mid-training after a disconnect.
         ck = {"model": model.state_dict(), "config": args.config, "gate_head": args.gate_head}
-        torch.save(ck, out.with_suffix(".last.pt"))
         if sel == sel and sel > best:  # noqa: PLR0124
             best = sel
             torch.save(ck, out)
+        torch.save({**ck, "optimizer": opt.state_dict(), "epoch": ep, "best": best}, last)
     if cf:
         cf.close()
     print(f"saved best (sel={best:.3f}) -> {out}")
@@ -384,6 +407,9 @@ def main() -> None:
     ap.add_argument("--shards", default="", help="shard dir from build_shards.py; "
                     "enables streaming training (no full-corpus RAM load)")
     ap.add_argument("--curves", default="", help="per-epoch metrics CSV (learning curves)")
+    ap.add_argument("--resume", action="store_true",
+                    help="resume from <out>.last.pt if present (model+optimizer+epoch); "
+                         "safe to always pass — no ckpt means a fresh run from epoch 0")
     ap.add_argument("--val-frac", type=float, default=0.05, help="fraction of shards held out")
     ap.add_argument("--val-cap", type=int, default=200000, help="max val examples")
     # Model-scale overrides (match capacity to data; default = config values).

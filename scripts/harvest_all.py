@@ -23,6 +23,7 @@ Resumable: ``download_episode`` skips files already on disk, so re-running tops 
 from __future__ import annotations
 
 import argparse
+import socket
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
@@ -97,9 +98,18 @@ def main() -> None:
     ap.add_argument("--oldest-first", action="store_true",
                     help="iterate oldest->newest instead of the default newest->oldest")
     ap.add_argument("--workers", type=int, default=16, help="parallel downloads per day")
+    ap.add_argument("--timeout", type=float, default=60.0,
+                    help="per-socket timeout (s) so a stalled download can't wedge a day; "
+                         "the request raises, is caught as a skip, and the worker frees up")
     ap.add_argument("--cache-root", default=str(rp.CACHE),
-                    help="where to cache replays (point at a Drive path on Colab)")
+                    help="where to cache replays — use a LOCAL /content path on Colab "
+                         "(the Drive mount is ~20x slower for many small-file writes)")
     args = ap.parse_args()
+
+    # Best-effort guard against indefinite network stalls: a default socket timeout makes a
+    # hung download raise (caught in download_episode -> counted as a skip) instead of blocking
+    # the day's as_completed loop forever. urllib3 may override read timeouts in rare cases.
+    socket.setdefaulttimeout(args.timeout)
 
     # Redirect replay_pulse's cache to the (Drive-backed) root so download_episode +
     # the sharded builder share one location.
