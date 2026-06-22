@@ -257,6 +257,126 @@ def concat_shards(paths, device, cap):
     return {k: torch.cat(v)[:cap] for k, v in acc.items()}
 
 
+def load_shard_cpu(path):
+    """Decode one build_shards .npz to CPU tensors at NATIVE on-disk dtype (no upcast, no
+    device move). The per-batch GPU move upcasts (fp16->fp32, int16->int64); keeping the
+    RAM/stream copy at reduced precision halves both the cache footprint and H2D bandwidth.
+    Pure I/O + numpy (no torch GPU/rng), so a worker thread can run it concurrently with
+    the GPU train step (np.load's zlib decompress releases the GIL)."""
+    with np.load(path) as d:
+        return {
+            "planet_features": torch.from_numpy(d["pf"]),   # fp16
+            "global_features": torch.from_numpy(d["gf"]),   # fp16
+            "planet_mask": torch.from_numpy(d["pm"]),       # bool
+            "own_mask": torch.from_numpy(d["om"]),          # bool
+            "target_indices": torch.from_numpy(d["ti"]),    # int16
+            "supervise_mask": torch.from_numpy(d["sup"]),   # bool
+            "weights": torch.from_numpy(d["w"]),            # fp16
+        }
+
+
+def _batch_to_device(T, idx, device):
+    """Index a native-dtype CPU shard and move just the batch to GPU, upcasting there.
+    Widening fp16->fp32 / int16->int64 is exact, so this is bit-identical to the old
+    CPU-side ``load_shard`` upcast — only the work moved (per-batch, half the bytes)."""
+    return {
+        "planet_features": T["planet_features"][idx].to(device, non_blocking=True).float(),
+        "global_features": T["global_features"][idx].to(device, non_blocking=True).float(),
+        "planet_mask": T["planet_mask"][idx].to(device, non_blocking=True),
+        "own_mask": T["own_mask"][idx].to(device, non_blocking=True),
+        "target_indices": T["target_indices"][idx].to(device, non_blocking=True).long(),
+        "supervise_mask": T["supervise_mask"][idx].to(device, non_blocking=True),
+        "weights": T["weights"][idx].to(device, non_blocking=True).float(),
+    }
+
+
+def _avail_ram_bytes() -> int:
+    """Best-effort available RAM (Linux /proc/meminfo, then sysconf). 0 if unknown -> the
+    auto fit-check fails closed to streaming."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    try:
+        return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (ValueError, OSError):
+        return 0
+
+
+class _RamCache:
+    """Decode every train shard to CPU ONCE, then re-serve from RAM each epoch. Eliminates
+    the per-epoch re-decompress (the I/O bottleneck) when the corpus fits in RAM."""
+
+    def __init__(self, train_files, first=None):
+        self.shards = [
+            first if (i == 0 and first is not None) else load_shard_cpu(p)
+            for i, p in enumerate(train_files)
+        ]
+
+    def epoch(self, order):
+        for si in order:
+            yield self.shards[si]
+
+
+class _PrefetchStream:
+    """Stream shards from disk, decoding the next shard(s) on a background thread while the
+    GPU trains on the current one. OOM-safe (only ``depth`` shards in flight) — the path for
+    the >RAM (~28M-state) regime. Overlaps decompress with compute; no full-corpus RAM load."""
+
+    def __init__(self, train_files, depth=2):
+        self.files = train_files
+        self.depth = max(1, depth)
+
+    def epoch(self, order):
+        import queue
+        import threading
+
+        q: queue.Queue = queue.Queue(maxsize=self.depth)
+
+        def work():
+            try:
+                for si in order:
+                    q.put(load_shard_cpu(self.files[si]))
+            finally:
+                q.put(None)  # sentinel
+
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+        while True:
+            T = q.get()
+            if T is None:
+                break
+            yield T
+        t.join()
+
+
+def _make_shard_provider(train_files, train_count, args):
+    """Pick the data path: decode-once RAM cache (fast, when it fits) vs prefetched streaming
+    (OOM-safe). ``auto`` estimates the decoded (native-dtype) cache size from the first shard
+    and compares against available RAM; ``ram``/``stream`` force the choice."""
+    mode = args.shard_cache
+    if mode == "stream" or not train_files:
+        print("shard-cache: STREAM (prefetched, OOM-safe)", flush=True)
+        return _PrefetchStream(train_files, args.prefetch)
+    first = load_shard_cpu(train_files[0])
+    bpe = sum(v.element_size() * v.nelement() for v in first.values()) / max(
+        first["own_mask"].shape[0], 1)
+    est = bpe * train_count
+    avail = _avail_ram_bytes()
+    fits = avail > 0 and est < args.ram_frac * avail
+    if mode == "ram" or (mode == "auto" and fits):
+        why = "forced" if mode == "ram" else f"fits {args.ram_frac:.0%} budget"
+        print(f"shard-cache: RAM ({why}; est {est/1e9:.1f}GB decoded, "
+              f"{avail/1e9:.1f}GB avail)", flush=True)
+        return _RamCache(train_files, first=first)
+    print(f"shard-cache: STREAM (est {est/1e9:.1f}GB decoded >= {args.ram_frac:.0%} of "
+          f"{avail/1e9:.1f}GB avail; prefetched)", flush=True)
+    return _PrefetchStream(train_files, args.prefetch)
+
+
 def run_sharded(cfg, args, device):
     """Stream a build_shards corpus shard-by-shard — the path that scales to ~28M states
     without the in-RAM object-npz OOM. Writes per-epoch learning curves to --curves."""
@@ -266,13 +386,15 @@ def run_sharded(cfg, args, device):
     sd = Path(args.shards)
     manifest = _json.loads((sd / "manifest.json").read_text())
     files = [sd / s["file"] for s in manifest["shards"]]
+    counts = [int(s.get("count", 0)) for s in manifest["shards"]]
     rng = np.random.default_rng(0)
     perm = rng.permutation(len(files))
     n_val = max(1, int(len(files) * args.val_frac))
     val_files = [files[i] for i in perm[:n_val]]
     train_files = [files[i] for i in perm[n_val:]]
+    train_count = sum(counts[i] for i in perm[n_val:])
     print(f"shards: {len(files)} ({manifest['n_examples']} ex) -> "
-          f"train={len(train_files)} val={len(val_files)} (cap {args.val_cap})")
+          f"train={len(train_files)} ({train_count} ex) val={len(val_files)} (cap {args.val_cap})")
     Tva = concat_shards(val_files, device, args.val_cap)
 
     model = OrbitNet(cfg.model).to(device)
@@ -314,16 +436,21 @@ def run_sharded(cfg, args, device):
         if cf:
             cf.close()
         return
+
+    # Decode-once RAM cache (fast path) or prefetched streaming (OOM-safe >RAM path). Either
+    # way the per-epoch shard order + within-shard shuffle still come from ``rng`` below in the
+    # SAME draw sequence as before (the provider only DECODES — no rng) -> identical training.
+    provider = _make_shard_provider(train_files, train_count, args)
     for ep in range(start_ep, args.epochs):
         model.train()
         tot = nb = 0.0
-        for si in rng.permutation(len(train_files)):
-            T = load_shard(train_files[si], device)
+        epoch_order = rng.permutation(len(train_files))
+        for T in provider.epoch(epoch_order):
             n = T["own_mask"].shape[0]
-            order = torch.from_numpy(rng.permutation(n).astype(np.int64)).to(device)
+            order = torch.from_numpy(rng.permutation(n).astype(np.int64))
             for s in range(0, n, args.batch):
                 idx = order[s:s + args.batch]
-                b = {k: v[idx] for k, v in T.items()}
+                b = _batch_to_device(T, idx, device)
                 loss = (winbc_gate_loss if args.gate_head else winbc_loss)(
                     model, b, args.launch_weight)
                 opt.zero_grad()
@@ -332,7 +459,6 @@ def run_sharded(cfg, args, device):
                 opt.step()
                 tot += float(loss.detach())
                 nb += 1
-            del T  # free shard before loading the next
         avg = tot / max(nb, 1)
         if args.gate_head:
             prec, rec, f1, rkk, mrr, nl = gate_pointer_metrics(model, Tva)
@@ -412,6 +538,16 @@ def main() -> None:
                          "safe to always pass — no ckpt means a fresh run from epoch 0")
     ap.add_argument("--val-frac", type=float, default=0.05, help="fraction of shards held out")
     ap.add_argument("--val-cap", type=int, default=200000, help="max val examples")
+    # Data-loading throughput (sharded path): decode-once RAM cache vs prefetched streaming.
+    ap.add_argument("--shard-cache", choices=["auto", "ram", "stream"], default="auto",
+                    help="auto = RAM-cache decoded shards if they fit (eliminates the "
+                         "per-epoch re-decompress), else prefetched streaming; "
+                         "ram/stream force the choice")
+    ap.add_argument("--ram-frac", type=float, default=0.5,
+                    help="max fraction of available RAM the decoded shard cache may use "
+                         "(auto fit-check)")
+    ap.add_argument("--prefetch", type=int, default=2,
+                    help="streaming prefetch depth (shards decoded ahead on a worker thread)")
     # Model-scale overrides (match capacity to data; default = config values).
     ap.add_argument("--embed-dim", type=int, default=0, help="0 = use config")
     ap.add_argument("--n-layers", type=int, default=0)
