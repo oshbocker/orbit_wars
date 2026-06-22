@@ -461,7 +461,7 @@ def run_sharded(cfg, args, device):
                 nb += 1
         avg = tot / max(nb, 1)
         if args.gate_head:
-            prec, rec, f1, rkk, mrr, nl = gate_pointer_metrics(model, Tva)
+            prec, rec, f1, rkk, mrr, nl = gate_pointer_metrics(model, Tva, bs=args.batch)
             sel = (f1 if f1 == f1 else 0.0) + (mrr if mrr == mrr else 0.0)  # noqa: PLR0124
             lacc = float("nan")
             print(f"epoch {ep:3d}  loss={avg:.4f}  gate P/R/F1={prec:.3f}/{rec:.3f}/{f1:.3f}"
@@ -621,7 +621,7 @@ def main() -> None:
             nb += 1
         if args.gate_head:
             # Select on gate-F1 + pointer-MRR, NOT top-1 launch_acc (misleading per #1011).
-            prec, rec, f1, rkk, mrr, nl = gate_pointer_metrics(model, Tva)
+            prec, rec, f1, rkk, mrr, nl = gate_pointer_metrics(model, Tva, bs=args.batch)
             sel = (f1 if f1 == f1 else 0.0) + (mrr if mrr == mrr else 0.0)  # noqa: PLR0124
             print(f"epoch {ep:3d}  loss={tot/nb:.4f}  gate P/R/F1={prec:.3f}/{rec:.3f}/{f1:.3f}"
                   f"  recall@5={rkk:.3f}  mrr={mrr:.3f}  (nl={nl})  sel={sel:.3f}", flush=True)
