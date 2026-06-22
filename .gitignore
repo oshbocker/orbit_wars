@@ -53,6 +53,8 @@ rl_research/*.pdf
 
 # Arena logs (CSV results are tracked; logs are not)
 outputs/arena/*.log
+# throwaway 4P anchor-sweep experiment CSVs (not the tracked arena infra):
+outputs/arena/4p_anchor_*.csv
 
 # Generated/collected data + downloaded caches — keep reports (*.md) + arena CSVs.
 # (git ignores have no inline comments — keep each pattern on its own line.)
