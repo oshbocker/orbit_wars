@@ -1,0 +1,39 @@
+# Smoke config: validate the BC-init + lagged self-play wiring end-to-end.
+# Arch matches the existing 2.71M winbc_gate.pt (embed256/L4/ff512/h8, gate head).
+run_name: sp_smoke
+device: auto
+checkpoint_every: 5
+opponent: reinforce_958          # FAST fixed anchor (producer is too slow for in-loop)
+
+pfsp_enabled: true
+pfsp_anchor_min_prob: 0.3
+pfsp_pool_size: 4
+pfsp_snapshot_every: 2
+pfsp_weighting: hard
+
+model:
+  embed_dim: 256
+  n_layers: 4
+  ff_dim: 512
+  n_heads: 8
+  launch_gate_head: true
+
+reward:
+  reward_mode: sparse            # +/-1 terminal only
+
+eval:
+  eval_every: 0                  # no eval in smoke
+
+imitation:
+  enabled: false                 # we warm-start via --bc_init, not in-loop BC
+
+ppo:
+  total_updates: 2
+  rollout_steps: 16
+  num_envs: 2
+  epochs: 1
+  minibatch_size: 64
+  lr: 1.0e-4
+  ent_coef: 0.01
+  num_workers: 0
+  use_batched_env: false

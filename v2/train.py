@@ -39,6 +39,14 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Path to checkpoint .pt file to resume training from",
     )
+    parser.add_argument(
+        "--bc_init",
+        type=str,
+        default=None,
+        help="Path to a winbc checkpoint to warm-start the policy weights from "
+        "(trunk + pointer/gate/frac heads load; value head trains fresh). Loaded "
+        "strict=False; the config model arch must match the checkpoint's saved arch.",
+    )
     return parser.parse_args()
 
 
@@ -819,6 +827,30 @@ def main() -> None:
     model = OrbitNet(cfg.model).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     log(f"  OrbitNet params: {n_params:,}")
+
+    # ── BC warm-start (lagged self-play init) ────────────────────────────────
+    # Load a winbc gate-head checkpoint into the policy. The PPO action sampler
+    # (v2/actions.sample_actions) decides launch via the hold column, NOT the BC
+    # gate head, so the gate weights load but are unused — the trunk + target
+    # pointer (the valuable learned features) transfer, and the hold/value heads
+    # re-calibrate under RL. Loaded strict=False; cfg.model arch must match.
+    if args.bc_init:
+        bc = torch.load(args.bc_init, map_location=device, weights_only=False)
+        arch = bc.get("arch", {})
+        for k, v in arch.items():
+            cur = getattr(cfg.model, k, None)
+            if cur is not None and int(cur) != int(v):
+                log(
+                    f"  WARNING: bc_init arch mismatch {k}: config={cur} ckpt={v} "
+                    "— mismatched weights will be dropped (check the self-play config)"
+                )
+        res = model.load_state_dict(bc["model"], strict=False)
+        loaded = len(bc["model"]) - len(res.unexpected_keys)
+        log(
+            f"  BC-init from {args.bc_init}: loaded~{loaded} tensors "
+            f"(missing={len(res.missing_keys)} unexpected={len(res.unexpected_keys)}, "
+            f"gate_head={bc.get('gate_head')})"
+        )
 
     # Logger
     logger = TrainLogger(cfg.log_dir, cfg.run_name)

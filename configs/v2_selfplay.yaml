@@ -1,0 +1,57 @@
+# BC-initialized lagged self-play PPO (the "push past vkhydras" run).
+# Init: a winbc gate-head checkpoint via --bc_init (arch MUST match below).
+# Engine: PFSP over frozen self-snapshots; a FAST fixed anchor (reinforce_958)
+# keeps a fixed-skill floor in-loop; producer/v5 are the EVAL gate only (too slow
+# to spar in the hot loop: ~1% of games = ~50% of wall-clock). Reward = sparse +/-1.
+run_name: sp_24m_sparse
+device: auto
+checkpoint_every: 25
+save_dir: outputs/checkpoints
+log_dir: outputs/logs
+
+opponent: reinforce_958          # fast in-loop anchor (~1ms/step)
+
+pfsp_enabled: true
+pfsp_anchor_min_prob: 0.2        # ~20% vs the fixed fast anchor; rest vs self-snapshots
+pfsp_pool_size: 8
+pfsp_snapshot_every: 25          # grow the lagged-self pool fast
+pfsp_weighting: hard             # train more against snapshots we lose to
+four_player_prob: 0.0
+
+# arch must match the BC checkpoint (box1 23.4M: 640/L6/ff1280/h8, gate head)
+model:
+  embed_dim: 640
+  n_layers: 6
+  ff_dim: 1280
+  n_heads: 8
+  launch_gate_head: true
+
+reward:
+  reward_mode: sparse            # +/-1 terminal only
+
+eval:
+  eval_every: 100                # periodic producer/v5 signal (rough; real gate = arena n>=100)
+  eval_games: 10
+  eval_opponents: [producer, v5]
+  eval_seed: 20000
+  eval_workers: 12
+
+imitation:
+  enabled: false                 # warm-start is via --bc_init, not in-loop BC
+
+ppo:
+  total_updates: 4000
+  rollout_steps: 128
+  num_envs: 16
+  epochs: 4
+  minibatch_size: 256
+  lr: 1.0e-4                      # small steps off a strong BC init
+  ent_coef: 0.01                 # keep exploration room (don't collapse BC entropy)
+  ent_coef_end: 0.003
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_coef: 0.2
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  num_workers: 0
+  use_batched_env: true          # standalone fast_env (throughput; affordable long rollouts)
