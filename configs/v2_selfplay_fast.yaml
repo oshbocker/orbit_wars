@@ -1,0 +1,60 @@
+# Viable self-play (throughput-feasible): PBRS dense reward + small rollouts.
+# Plain sparse +/-1 is infeasible here — the heavy pairwise model is ~88ms/env-step
+# (latency-bound batch-1 forwards), so long rollouts that complete 500-step games
+# cost ~180s/update. PBRS is POLICY-INVARIANT (Ng 1999) so it targets the SAME
+# optimal policy as +/-1, but gives a dense per-step signal that learns without
+# needing episode completion -> usable with short rollouts (~22s/update).
+run_name: sp_24m_pbrs
+device: auto
+checkpoint_every: 25
+save_dir: outputs/checkpoints
+log_dir: outputs/logs
+
+opponent: reinforce_958          # fast in-loop anchor
+
+pfsp_enabled: true
+pfsp_anchor_min_prob: 0.2
+pfsp_pool_size: 8
+pfsp_snapshot_every: 25
+pfsp_weighting: hard
+
+model:
+  embed_dim: 640
+  n_layers: 6
+  ff_dim: 1280
+  n_heads: 8
+  launch_gate_head: true
+
+reward:
+  reward_mode: pbrs              # policy-invariant dense shaping (same optimum as +/-1)
+  pbrs_gamma: 0.99               # MUST equal ppo.gamma for invariance
+  pbrs_prod_weight: 1.0
+  pbrs_planet_weight: 0.5
+  pbrs_scale: 0.01
+
+eval:
+  eval_every: 100
+  eval_games: 8
+  eval_opponents: [producer, v5]
+  eval_seed: 20000
+  eval_workers: 12
+
+imitation:
+  enabled: false
+
+ppo:
+  total_updates: 3000
+  rollout_steps: 32              # short -> ~22s/update (throughput); PBRS gives per-step signal
+  num_envs: 8
+  epochs: 4
+  minibatch_size: 256
+  lr: 1.0e-4
+  ent_coef: 0.01
+  ent_coef_end: 0.003
+  gamma: 0.99                    # matches pbrs_gamma
+  gae_lambda: 0.95
+  clip_coef: 0.2
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  num_workers: 0
+  use_batched_env: true
