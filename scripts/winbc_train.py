@@ -484,6 +484,11 @@ def run_sharded(cfg, args, device):
             best = sel
             torch.save(ck, out)
         torch.save({**ck, "optimizer": opt.state_dict(), "epoch": ep, "best": best}, last)
+        # Per-epoch lean archive (arena-gate each, keep the peak — best-on-sel is misleading).
+        if args.archive_dir:
+            adir = Path(args.archive_dir)
+            adir.mkdir(parents=True, exist_ok=True)
+            torch.save(ck, adir / f"ep_{ep:03d}.pt")
     if cf:
         cf.close()
     print(f"saved best (sel={best:.3f}) -> {out}")
@@ -538,6 +543,10 @@ def main() -> None:
     ap.add_argument("--resume", action="store_true",
                     help="resume from <out>.last.pt if present (model+optimizer+epoch); "
                          "safe to always pass — no ckpt means a fresh run from epoch 0")
+    ap.add_argument("--archive-dir", default="",
+                    help="if set, ALSO save a lean per-epoch checkpoint ep_NNN.pt here each "
+                         "epoch (e.g. a Drive path). best-on-sel diverges from arena win-rate "
+                         "(it oscillates), so keep every epoch to arena-gate and pick the peak")
     ap.add_argument("--val-frac", type=float, default=0.05, help="fraction of shards held out")
     ap.add_argument("--val-cap", type=int, default=200000, help="max val examples")
     # Data-loading throughput (sharded path): decode-once RAM cache vs prefetched streaming.
